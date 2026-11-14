@@ -13,8 +13,9 @@ tool ignores a wider set (PHOTOMETRY_BAD_FLAGS) that includes BLOOM and
 SUR_ERROR; those cover the cores of bright stars such as Barnard's Star, so they
 are left for the photometry/detection pipeline to apply.
 
-TODO: the disk cache (settings.cache_dir/cutouts, ~4 MB per entry) has no size cap
-or eviction yet; a long-running deployment or the survey crawler needs one.
+Disk cache: settings.cache_dir/cutouts, ~4 MB per entry, capped at
+settings.cache_max_mb. A hit refreshes the entry's mtime; after each new download
+the least recently used entries are deleted until the cache fits the cap.
 """
 import base64
 import hashlib
@@ -65,6 +66,7 @@ PHOTOMETRY_BAD_FLAGS = (
 _SIP_CARD = re.compile(r"(A|B|AP|BP)_(ORDER|\d+_\d+)")
 # Striped locks: concurrent requests for the same cutout download it once.
 _download_locks = [threading.Lock() for _ in range(64)]
+_evict_lock = threading.Lock()
 
 
 def flag_mask(names: tuple[str, ...]) -> int:
@@ -134,11 +136,47 @@ def cached_cutout(url: str, ra: float, dec: float, size_deg: float) -> Path:
     if not lock.acquire(timeout=irsa.TOTAL_DEADLINE_S):
         raise irsa.IrsaBusy("cutout downloads are queued up; try again shortly")
     try:
-        if not path.exists():
-            _atomic_write(path, irsa.fetch_cutout(url, ra, dec, size_deg))
+        if path.exists():
+            _touch(path)
+            return path
+        _atomic_write(path, irsa.fetch_cutout(url, ra, dec, size_deg))
     finally:
         lock.release()
+    _evict(settings.cache_dir / "cutouts", settings.cache_max_mb * 1024 * 1024, keep=path)
     return path
+
+
+def _touch(path: Path) -> None:
+    """Mark a cache entry as recently used (mtime drives eviction order)."""
+    try:
+        os.utime(path)
+    except FileNotFoundError:
+        pass  # evicted concurrently; the caller's open retries via aligned_cutout
+
+
+def _evict(root: Path, max_bytes: int, keep: Path) -> None:
+    """Delete least recently used cutouts until the cache is at most max_bytes.
+
+    `keep` (the entry just written) is never deleted, so a single cutout larger
+    than the cap still works. Entries vanishing mid-scan (another thread or
+    process evicting) are skipped.
+    """
+    with _evict_lock:
+        entries = []
+        for p in root.rglob("*.fits"):
+            try:
+                st = p.stat()
+            except FileNotFoundError:
+                continue
+            entries.append((st.st_mtime, st.st_size, p))
+        total = sum(size for _, size, _ in entries)
+        for _, size, p in sorted(entries, key=lambda e: e[0]):
+            if total <= max_bytes:
+                break
+            if p == keep:
+                continue
+            p.unlink(missing_ok=True)
+            total -= size
 
 
 def _wavelength_wcs(header: fits.Header, hdul: fits.HDUList) -> WCS:
@@ -191,8 +229,12 @@ def aligned_cutout(
     mask_flags: tuple[str, ...] = UNUSABLE_FLAGS,
 ) -> AlignedCutout:
     """Fetch (or reuse) the cutout of one SPHEREx file and align it to the common grid."""
-    path = cached_cutout(url, *cutout_request(ra, dec, size_deg))
-    return align(path, ra, dec, size_deg, mask_flags)
+    request = cutout_request(ra, dec, size_deg)
+    try:
+        return align(cached_cutout(url, *request), ra, dec, size_deg, mask_flags)
+    except FileNotFoundError:
+        # Evicted by another request between caching and opening: fetch it again once.
+        return align(cached_cutout(url, *request), ra, dec, size_deg, mask_flags)
 
 
 def encode_float32(data: np.ndarray) -> str:

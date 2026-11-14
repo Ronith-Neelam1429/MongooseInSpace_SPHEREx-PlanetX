@@ -18,12 +18,25 @@ def _split(value: str) -> list[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
+def _positive_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from None
+    if value <= 0:
+        raise ValueError(f"{name} must be positive, got {value}")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     # Disk cache for downloaded cutouts and other IRSA responses.
     cache_dir: Path = field(
         default_factory=lambda: Path(os.environ.get("PLANETX_CACHE_DIR", ".cache/planetx"))
     )
+    # Cap on the cutout cache (MB); least recently used cutouts are evicted beyond it.
+    cache_max_mb: int = field(default_factory=lambda: _positive_int("PLANETX_CACHE_MAX_MB", 2048))
     # SQLite database for the survey patch queue (and later, candidates).
     db_path: Path = field(
         default_factory=lambda: Path(os.environ.get("PLANETX_DB", "data/survey.sqlite"))

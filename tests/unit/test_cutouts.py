@@ -128,6 +128,58 @@ def test_cache_downloads_once_and_reuses(cache_dir, monkeypatch):
     assert not list(cache_dir.rglob("*.tmp"))
 
 
+def test_cache_evicts_least_recently_used_beyond_cap(tmp_path, monkeypatch):
+    """Cap 1 MB, 400 kB entries: the third download evicts the least recently used."""
+    import os
+
+    from planetx.config import Settings
+
+    monkeypatch.setattr(cutouts, "settings", Settings(cache_dir=tmp_path, cache_max_mb=1))
+    monkeypatch.setattr(irsa, "fetch_cutout", lambda *a: b"x" * 400_000)
+    a = cutouts.cached_cutout(URL, RA, DEC, 0.075)
+    b = cutouts.cached_cutout(URL, RA, DEC + 0.01, 0.075)
+    os.utime(a, (1_000, 1_000))
+    os.utime(b, (2_000, 2_000))
+    assert cutouts.cached_cutout(URL, RA, DEC, 0.075) == a  # hit: a is now most recent
+    c = cutouts.cached_cutout(URL, RA, DEC + 0.02, 0.075)  # 1.2 MB > cap: evict LRU (b)
+    assert a.exists() and c.exists() and not b.exists()
+
+
+def test_cache_keeps_new_entry_even_if_larger_than_cap(tmp_path, monkeypatch):
+    from planetx.config import Settings
+
+    monkeypatch.setattr(cutouts, "settings", Settings(cache_dir=tmp_path, cache_max_mb=1))
+    monkeypatch.setattr(irsa, "fetch_cutout", lambda *a: b"x" * 2_000_000)
+    old = cutouts.cached_cutout(URL, RA, DEC, 0.075)
+    new = cutouts.cached_cutout(URL, RA, DEC + 0.01, 0.075)
+    assert new.exists() and not old.exists()
+
+
+def test_aligned_cutout_refetches_if_evicted_before_open(cache_dir, monkeypatch):
+    body = make_mef(RA, DEC)
+    calls = []
+    monkeypatch.setattr(irsa, "fetch_cutout", lambda *a: calls.append(a) or body)
+    real_align = cutouts.align
+
+    def align_after_eviction(path, *args):
+        if len(calls) == 1:
+            path.unlink()  # another request evicted it in between
+        return real_align(path, *args)
+
+    monkeypatch.setattr(cutouts, "align", align_after_eviction)
+    out = cutouts.aligned_cutout(URL, RA, DEC, SIZE)
+    assert len(calls) == 2 and np.isfinite(out.data).any()
+
+
+@pytest.mark.parametrize("raw", ["0", "-5", "lots"])
+def test_cache_cap_setting_rejects_invalid_values(monkeypatch, raw):
+    from planetx.config import Settings
+
+    monkeypatch.setenv("PLANETX_CACHE_MAX_MB", raw)
+    with pytest.raises(ValueError, match="PLANETX_CACHE_MAX_MB"):
+        Settings()
+
+
 def test_failed_download_leaves_no_cache_entry(cache_dir, monkeypatch):
     def failing(*args):
         raise irsa.UpstreamError("HTTP 503: busy", status=503, transient=True)
