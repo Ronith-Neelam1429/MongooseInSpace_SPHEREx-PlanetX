@@ -1,167 +1,214 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import {
   equatorialToEcliptic, equatorialToGalactic, formatDec, formatFov, formatRa,
 } from '../lib/coords.js';
-import { API_BASE } from '../lib/services.js';
+import { FAST_PM } from '../lib/starfield.js';
 
-const fmt = (v, d = 2) => (v == null || !Number.isFinite(v) ? '—' : v.toFixed(d));
+const n = (v, d = 2) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
+const signed = (v, d) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`;
+const pmText = (pm) => (pm >= 1000 ? `${(pm / 1000).toFixed(2)}″` : `${pm.toFixed(1)}`);
 
-function Section({ title, count, children, defaultOpen = true }) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <section className="section">
-      <button type="button" className="section-head" onClick={() => setOpen(!open)} aria-expanded={open}>
-        <span>{title}</span>
-        {count != null && <span className="badge">{count}</span>}
-        <span className="chev" aria-hidden="true">{open ? '▾' : '▸'}</span>
-      </button>
-      {open && <div className="section-body">{children}</div>}
-    </section>
-  );
+function cadence(beta) {
+  const b = Math.abs(beta);
+  if (b >= 80) return 'Ecliptic pole. SPHEREx passes here on most orbits.';
+  if (b >= 60) return 'High ecliptic latitude. Above-average SPHEREx coverage.';
+  return 'Covered about every six months.';
 }
 
-function Status({ state, onRetry, what }) {
-  if (state.status === 'loading') return <p className="muted"><span className="spinner" aria-hidden="true" /> Loading {what}…</p>;
+function State({ state, what, onRetry }) {
+  if (state.status === 'loading') return <p className="state"><span className="ticker" aria-hidden="true" />Querying {what}</p>;
   if (state.status === 'error') {
     return (
-      <p className="error" role="alert">
-        Could not load {what}: {state.error}{' '}
-        <button type="button" className="link" onClick={onRetry}>Retry</button>
+      <p className="state err" role="alert">
+        {what} unavailable: {state.error}.{' '}
+        <button type="button" className="textbtn" onClick={onRetry}>Retry</button>
       </p>
     );
   }
   return null;
 }
 
-function cadenceNote(beta) {
-  const b = Math.abs(beta);
-  if (b >= 80) return 'Near an ecliptic pole: SPHEREx looks here on almost every orbit, so expect many visits.';
-  if (b >= 60) return 'High ecliptic latitude: more SPHEREx visits than average.';
-  return 'Typical cadence: SPHEREx maps the whole sky every ~6 months, so only a few visits so far.';
+function Epoch({ getYears, total }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    let raf;
+    const tick = () => {
+      if (ref.current) ref.current.textContent = `+${Math.round(getYears()).toLocaleString('en-US')}`;
+      raf = requestAnimationFrame(tick);
+    };
+    tick();
+    return () => cancelAnimationFrame(raf);
+  }, [getYears]);
+  return <span className="epoch"><span>2016.0</span><span ref={ref} className="tabular">+{total}</span><span className="dim">yr</span></span>;
+}
+
+function Focused({ focus, onClear }) {
+  const o = focus.obj;
+  if (focus.kind === 'simbad') {
+    return (
+      <section className="focus">
+        <header><span className="kicker">SIMBAD</span><button type="button" className="textbtn" onClick={onClear}>Clear</button></header>
+        <p className="focus-name">{o.name}</p>
+        <dl className="kv">
+          <dt>Type</dt><dd>{o.type || '–'}</dd>
+          <dt>Mag</dt><dd>{o.mag != null ? `${o.band} ${n(o.mag)}` : '–'}</dd>
+          {o.pmra != null && <><dt>µ</dt><dd>{pmText(Math.hypot(o.pmra, o.pmdec))} mas/yr</dd></>}
+          <dt>Position</dt><dd>{formatRa(o.ra)} {formatDec(o.dec)}</dd>
+        </dl>
+      </section>
+    );
+  }
+  const pm = o.pmra != null ? Math.hypot(o.pmra, o.pmdec) : null;
+  return (
+    <section className="focus">
+      <header><span className="kicker">Gaia DR3</span><button type="button" className="textbtn" onClick={onClear}>Clear</button></header>
+      <p className="focus-name mono">{o.id}</p>
+      <dl className="kv">
+        <dt>G</dt><dd>{n(o.gmag)}</dd>
+        <dt>µα*, µδ</dt><dd>{o.pmra != null ? `${signed(o.pmra, 1)}, ${signed(o.pmdec, 1)} mas/yr` : '–'}</dd>
+        <dt>µ</dt><dd className={pm >= FAST_PM ? 'signal' : ''}>{pm != null ? `${pmText(pm)} mas/yr` : '–'}</dd>
+        <dt>ϖ</dt><dd>{o.plx != null ? `${n(o.plx)} mas${o.plx > 0 ? ` · ${(1000 / o.plx).toFixed(o.plx > 100 ? 2 : 0)} pc` : ''}` : '–'}</dd>
+      </dl>
+    </section>
+  );
 }
 
 export default function InfoPanel({
-  sel, simbad, gaia, visits, focusId, onFocus, onClose, onRetry, onCopyLink, copied,
+  sel, simbad, gaia, visits, focus, onFocus, onClearFocus, onClose, onRetry, onCopyLink, copied,
+  playing, onTogglePlay, getYears,
 }) {
-  const coords = useMemo(() => {
-    const g = equatorialToGalactic(sel.ra, sel.dec);
-    const e = equatorialToEcliptic(sel.ra, sel.dec);
-    return { g, e };
-  }, [sel.ra, sel.dec]);
+  const { g, e } = useMemo(() => ({
+    g: equatorialToGalactic(sel.ra, sel.dec),
+    e: equatorialToEcliptic(sel.ra, sel.dec),
+  }), [sel.ra, sel.dec]);
 
-  const movers = useMemo(() => {
-    if (gaia.status !== 'ok') return [];
-    return gaia.stars
-      .filter((s) => s.pmra != null && s.pmdec != null)
-      .map((s) => ({ ...s, pm: Math.hypot(s.pmra, s.pmdec) }))
-      .sort((a, b) => b.pm - a.pm)
-      .slice(0, 12);
-  }, [gaia]);
+  const movers = useMemo(() => (gaia.status !== 'ok' ? [] : gaia.stars
+    .filter((s) => s.pmra != null && s.pmdec != null)
+    .map((s) => ({ s, pm: Math.hypot(s.pmra, s.pmdec) }))
+    .sort((a, b) => b.pm - a.pm)
+    .slice(0, 8)), [gaia]);
+
+  const fastCount = useMemo(() => movers.filter((m) => m.pm >= FAST_PM).length, [movers]);
 
   return (
-    <aside className="panel" aria-label="Selected position details">
+    <aside className="panel" aria-label="Field details">
       <header className="panel-head">
-        <div>
-          <h2>{sel.label || 'Selected position'}</h2>
-          <p className="muted small">Search radius {formatFov(sel.radius)}</p>
+        <div className="panel-tools">
+          <span className="kicker">{sel.label ? 'Target' : 'Field'} · r {formatFov(sel.radius)}</span>
+          <span className="tools">
+            <button type="button" className="textbtn" onClick={onCopyLink}>{copied ? 'Copied' : 'Copy link'}</button>
+            <button type="button" className="iconbtn" onClick={onClose} aria-label="Close panel">
+              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.25" /></svg>
+            </button>
+          </span>
         </div>
-        <div className="panel-actions">
-          <button type="button" className="btn ghost" onClick={onCopyLink}>{copied ? 'Copied!' : 'Copy link'}</button>
-          <button type="button" className="btn ghost icon" onClick={onClose} aria-label="Close panel">✕</button>
-        </div>
+        {sel.label
+          ? <h2 className="title">{sel.label}</h2>
+          : <h2 className="title title-coords">{formatRa(sel.ra)}<br />{formatDec(sel.dec)}</h2>}
+        {sel.label && <p className="coords">{formatRa(sel.ra)}&ensp;{formatDec(sel.dec)}</p>}
       </header>
 
-      <div className="panel-scroll">
-        <Section title="Coordinates">
-          <table className="kv">
-            <tbody>
-              <tr><th>RA, Dec (deg)</th><td className="mono">{sel.ra.toFixed(6)}, {sel.dec >= 0 ? '+' : ''}{sel.dec.toFixed(6)}</td></tr>
-              <tr><th>RA</th><td className="mono">{formatRa(sel.ra)}</td></tr>
-              <tr><th>Dec</th><td className="mono">{formatDec(sel.dec)}</td></tr>
-              <tr><th>Galactic l, b</th><td className="mono">{coords.g.l.toFixed(4)}°, {coords.g.b >= 0 ? '+' : ''}{coords.g.b.toFixed(4)}°</td></tr>
-              <tr><th>Ecliptic λ, β</th><td className="mono">{coords.e.lambda.toFixed(4)}°, {coords.e.beta >= 0 ? '+' : ''}{coords.e.beta.toFixed(4)}°</td></tr>
-            </tbody>
-          </table>
-          <p className="note">{cadenceNote(coords.e.beta)}</p>
-        </Section>
+      <div className="panel-body">
+        <section>
+          <h3>Position</h3>
+          <dl className="grid4">
+            <dt>α</dt><dd>{sel.ra.toFixed(5)}°</dd><dt>δ</dt><dd>{signed(sel.dec, 5)}°</dd>
+            <dt>l</dt><dd>{g.l.toFixed(4)}°</dd><dt>b</dt><dd>{signed(g.b, 4)}°</dd>
+            <dt>λ</dt><dd>{e.lambda.toFixed(4)}°</dd><dt>β</dt><dd>{signed(e.beta, 4)}°</dd>
+          </dl>
+        </section>
 
-        <Section title="SPHEREx visits" count={visits.status === 'ok' ? visits.visits.length : null}>
-          {visits.status === 'none' && (
-            <p className="muted">
-              Backend not connected yet. This will list SPHEREx visit dates from{' '}
-              <code>GET /visits?ra={sel.ra.toFixed(4)}&amp;dec={sel.dec.toFixed(4)}</code>.
-              {!API_BASE && ' Set VITE_API_BASE to enable it.'}
-            </p>
-          )}
-          <Status state={visits} onRetry={() => onRetry('visits')} what="SPHEREx visits (IRSA can be slow)" />
-          {visits.status === 'ok' && (visits.visits.length === 0 ? <p className="muted">No SPHEREx visits found here yet.</p> : (
-            <ul className="visits">
-              {visits.visits.map((v, i) => (
-                <li key={v.obs_id || i}>
-                  <span className="mono">{String(v.date || '').slice(0, 10) || '—'}</span>
-                  {v.band && <span className="muted small"> {v.band}</span>}
-                  {v.detector != null && <span className="muted small"> · D{v.detector}</span>}
-                </li>
-              ))}
-            </ul>
-          ))}
-        </Section>
+        <section>
+          <h3>SPHEREx</h3>
+          <p className="line">{cadence(e.beta)}</p>
+          {visits.status === 'none' && <p className="line dim">Visit dates need the PlanetX API, which is not connected.</p>}
+          <State state={visits} what="Visits" onRetry={() => onRetry('visits')} />
+          {visits.status === 'ok' && (visits.visits.length === 0
+            ? <p className="line dim">No visits yet.</p>
+            : (
+              <ol className="visits">
+                {visits.visits.map((v, i) => (
+                  <li key={v.obs_id || i}><span>{String(v.date || '').slice(0, 10) || '–'}</span><span className="dim">{v.band || ''}</span></li>
+                ))}
+              </ol>
+            ))}
+        </section>
 
-        <Section title="Known objects (SIMBAD)" count={simbad.status === 'ok' ? simbad.objects.length : null}>
-          <Status state={simbad} onRetry={() => onRetry('simbad')} what="SIMBAD objects" />
-          {simbad.status === 'ok' && simbad.objects.length >= 200 && <p className="muted small">Showing the 200 nearest objects.</p>}
-          {simbad.status === 'ok' && (simbad.objects.length === 0 ? <p className="muted">No catalogued objects in this region.</p> : (
-            <ul className="rows">
-              {simbad.objects.map((o, i) => {
-                const id = `s${i}`;
-                return (
-                  <li key={id}>
-                    <button type="button" className={`row ${focusId === id ? 'active' : ''}`} onClick={() => onFocus(id, o.ra, o.dec)}>
-                      <span className="row-main">{o.name}</span>
-                      <span className="row-sub">{o.type}</span>
-                      <span className="row-num mono">{o.mag != null ? `${o.band} ${fmt(o.mag)}` : ''}</span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          ))}
-        </Section>
-
-        <Section title="Gaia DR3 stars" count={gaia.status === 'ok' ? gaia.stars.length : null}>
-          <Status state={gaia} onRetry={() => onRetry('gaia')} what="Gaia DR3 stars" />
-          {gaia.status === 'ok' && (
+        <section>
+          <h3>
+            Proper motion
+            {gaia.status === 'ok' && <span className="count">{gaia.stars.length.toLocaleString('en-US')}{gaia.stars.length >= gaia.limit ? '+' : ''}</span>}
+          </h3>
+          <State state={gaia} what="Gaia DR3" onRetry={() => onRetry('gaia')} />
+          {gaia.status === 'ok' && (gaia.years ? (
             <>
-              {gaia.years ? (
-                <p className="note">
-                  Arrows show where each star moves in <strong>{gaia.years.toLocaleString()} years</strong> (proper motion).
-                  <span className="legend"><i className="sw fast" /> ≥ 100 mas/yr <i className="sw slow" /> slower</span>
-                  {gaia.stars.length >= gaia.limit && <span className="muted small"> Showing the {gaia.limit} brightest stars.</span>}
-                </p>
-              ) : <p className="muted">No proper motions in this region.</p>}
+              <div className="player">
+                <button type="button" className="iconbtn" onClick={onTogglePlay} aria-label={playing ? 'Pause motion' : 'Play motion'}>
+                  {playing
+                    ? <svg width="10" height="12" viewBox="0 0 10 12" aria-hidden="true"><path d="M1.5 0v12M8.5 0v12" stroke="currentColor" strokeWidth="2" /></svg>
+                    : <svg width="10" height="12" viewBox="0 0 10 12" aria-hidden="true"><path d="M0 0l10 6-10 6z" fill="currentColor" /></svg>}
+                </button>
+                <Epoch getYears={getYears} total={gaia.years.toLocaleString('en-US')} />
+                <span className="legend"><i className="dot signal-bg" />≥ {FAST_PM} mas/yr</span>
+              </div>
               {movers.length > 0 && (
-                <>
-                  <h3 className="sub">Fastest movers</h3>
-                  <ul className="rows">
-                    {movers.map((s) => {
-                      const id = `g${s.id}`;
-                      return (
-                        <li key={id}>
-                          <button type="button" className={`row ${focusId === id ? 'active' : ''}`} onClick={() => onFocus(id, s.ra, s.dec)}>
-                            <span className="row-main mono">Gaia DR3 {s.id}</span>
-                            <span className="row-sub">G {fmt(s.gmag)}{s.plx != null ? ` · ϖ ${fmt(s.plx)} mas` : ''}</span>
-                            <span className="row-num mono">{s.pm >= 1000 ? `${(s.pm / 1000).toFixed(2)}″/yr` : `${s.pm.toFixed(1)} mas/yr`}</span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </>
+                <table className="rows">
+                  <thead><tr><th>Gaia DR3</th><th>G</th><th>µ mas/yr</th></tr></thead>
+                  <tbody>
+                    {movers.map(({ s, pm }) => (
+                      <tr
+                        key={s.id}
+                        className={focus?.obj === s ? 'on' : ''}
+                        onClick={() => onFocus('gaia', s)}
+                        onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onFocus('gaia', s); } }}
+                        tabIndex={0}
+                      >
+                        <td className="id">{s.id}</td>
+                        <td>{n(s.gmag, 1)}</td>
+                        <td className={pm >= FAST_PM ? 'signal' : ''}>{pmText(pm)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               )}
+              {fastCount === 0 && <p className="line dim">No star here moves faster than {FAST_PM} mas/yr.</p>}
             </>
-          )}
-        </Section>
+          ) : <p className="line dim">No proper motions measured in this field.</p>)}
+        </section>
+
+        <section>
+          <h3>
+            Catalogued
+            {simbad.status === 'ok' && <span className="count">{simbad.objects.length}{simbad.objects.length >= 200 ? '+' : ''}</span>}
+          </h3>
+          <State state={simbad} what="SIMBAD" onRetry={() => onRetry('simbad')} />
+          {simbad.status === 'ok' && (simbad.objects.length === 0
+            ? <p className="line dim">Nothing catalogued in this field.</p>
+            : (
+              <table className="rows">
+                <thead><tr><th>Name</th><th>Type</th><th>Mag</th></tr></thead>
+                <tbody>
+                  {simbad.objects.map((o, i) => (
+                    <tr
+                      key={`${o.name}-${i}`}
+                      className={focus?.obj === o ? 'on' : ''}
+                      onClick={() => onFocus('simbad', o)}
+                      onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onFocus('simbad', o); } }}
+                      tabIndex={0}
+                    >
+                      <td className="name" title={o.name}>{o.name}</td>
+                      <td className="type" title={o.type}>{o.type}</td>
+                      <td>{o.mag != null ? n(o.mag, 1) : ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ))}
+        </section>
+
+        <footer className="credits">Data: NASA/SPHEREx DR1 (IRSA) · ESA Gaia DR3 (VizieR) · SIMBAD (CDS)</footer>
       </div>
+      {focus && <Focused focus={focus} onClear={onClearFocus} />}
     </aside>
   );
 }

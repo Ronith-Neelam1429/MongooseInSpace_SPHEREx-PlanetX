@@ -24,29 +24,41 @@ function withTimeout(signal, ms) {
   return { signal: ctrl.signal, done: () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); } };
 }
 
-/** Try each mirror in turn; `build(base)` returns [url, init]; `parse(res)` validates + parses. */
-async function fromMirrors(key, mirrors, build, parse, { signal, timeoutMs = 15000 } = {}) {
+const sleep = (ms, signal) => new Promise((resolve, reject) => {
+  const t = setTimeout(resolve, ms);
+  signal?.addEventListener('abort', () => { clearTimeout(t); reject(signal.reason); }, { once: true });
+});
+
+/**
+ * Try each mirror in turn, twice (public services fail transiently), starting with the one that
+ * answered last. `build(base)` returns [url, init]; `parse(res)` validates and parses.
+ */
+async function fromMirrors(key, mirrors, build, parse, { signal, timeoutMs = 15000, rounds = 2 } = {}) {
   const start = preferred.get(key) || 0;
   const order = mirrors.map((_, i) => (start + i) % mirrors.length);
   let lastErr;
-  for (const i of order) {
-    if (signal?.aborted) throw signal.reason;
-    const t = withTimeout(signal, timeoutMs);
-    try {
-      const [url, init] = build(mirrors[i]);
-      const res = await fetch(url, { ...init, signal: t.signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const out = await parse(res);
-      preferred.set(key, i);
-      return out;
-    } catch (err) {
+  for (let round = 0; round < rounds; round++) {
+    if (round) await sleep(800, signal);
+    for (const i of order) {
       if (signal?.aborted) throw signal.reason;
-      lastErr = err;
-    } finally {
-      t.done();
+      const t = withTimeout(signal, timeoutMs);
+      try {
+        const [url, init] = build(mirrors[i]);
+        const res = await fetch(url, { ...init, signal: t.signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const out = await parse(res);
+        preferred.set(key, i);
+        return out;
+      } catch (err) {
+        if (signal?.aborted) throw signal.reason;
+        lastErr = err;
+      } finally {
+        t.done();
+      }
     }
   }
-  throw new Error(`${key} unavailable (${lastErr?.message || 'network error'})`);
+  const reason = lastErr?.name === 'TimeoutError' ? 'timed out' : lastErr?.message || 'network error';
+  throw new Error(`no ${key} mirror answered (${reason})`);
 }
 
 function tap(query) {
@@ -95,11 +107,17 @@ export async function querySimbad(ra, dec, radiusDeg, { limit = 200, signal } = 
   }).filter((r) => r.dist <= radiusDeg).sort((a, b) => a.dist - b.dist).slice(0, limit);
 }
 
-/** Parse VizieR asu-tsv output (header row, units row, dashes row, data). */
+/**
+ * Parse VizieR asu-tsv output (header row, units row, dashes row, data). An empty result still
+ * carries a '#RESOURCE' block; anything else (error or outage pages) is rejected.
+ */
 export function parseVizierTsv(text) {
   const lines = text.split(/\r?\n/).filter((l) => l && !l.startsWith('#'));
   const dash = lines.findIndex((l) => /^-+(\t-+)*\s*$/.test(l));
-  if (dash < 1) return [];
+  if (dash < 1) {
+    if (/^#RESOURCE=/m.test(text) && !lines.length) return [];
+    throw new Error('unexpected VizieR response');
+  }
   const cols = lines[0].split('\t').map((c) => c.trim());
   return lines.slice(dash + 1).map((l) => {
     const v = l.split('\t');
@@ -134,6 +152,7 @@ export async function resolveName(name, { signal } = {}) {
   const path = `/viz-bin/nph-sesame/-oxp/SNV?${encodeURIComponent(name.trim())}`;
   return fromMirrors('Sesame', VIZIER, (base) => [base + path, {}], async (res) => {
     const xml = await res.text();
+    if (!/<Sesame/i.test(xml)) throw new Error('unexpected Sesame response');
     const ra = xml.match(/<jradeg>\s*([-\d.eE+]+)/);
     const dec = xml.match(/<jdedeg>\s*([-\d.eE+]+)/);
     if (!ra || !dec) return null;

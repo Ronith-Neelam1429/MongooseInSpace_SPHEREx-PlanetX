@@ -127,3 +127,12 @@ export function parseCoords(text) {
   if (!Number.isFinite(ra) || !Number.isFinite(dec) || ra < 0 || ra >= 360 || dec < -90 || dec > 90) return null;
   return { ra, dec };
 }
+
+/** Point at angular distance `distDeg` and position angle `paDeg` (east of north) from (ra, dec). */
+export function offsetPoint(ra, dec, distDeg, paDeg) {
+  const d = distDeg * D2R, pa = paDeg * D2R, d0 = dec * D2R;
+  const sinDec = Math.sin(d0) * Math.cos(d) + Math.cos(d0) * Math.sin(d) * Math.cos(pa);
+  const dec2 = Math.asin(Math.max(-1, Math.min(1, sinDec)));
+  const dRa = Math.atan2(Math.sin(pa) * Math.sin(d) * Math.cos(d0), Math.cos(d) - Math.sin(d0) * sinDec);
+  return { ra: normRa(ra + dRa * R2D), dec: dec2 * R2D };
+}

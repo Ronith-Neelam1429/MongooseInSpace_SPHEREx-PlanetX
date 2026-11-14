@@ -1,41 +1,50 @@
-# SPHEREx PlanetX: Sky Explorer (frontend)
+# PlanetX: SPHEREx sky explorer (frontend)
 
-Full-sky Aladin Lite v3 map. Click anywhere to center and zoom, and an info panel opens for that spot:
+A full-sky map of SPHEREx data. Click anywhere to zoom in and open the field:
 
-- **Coordinates**: RA/Dec in decimal and sexagesimal, plus galactic and ecliptic. Ecliptic latitude sets how often SPHEREx revisits a spot.
-- **Known objects (SIMBAD)**: name, type and magnitude. Positions are moved to the current epoch using proper motion. Click a row to center on it.
-- **Gaia DR3 stars**: drawn with proper-motion arrows (pink if ≥ 100 mas/yr), with a list of the fastest movers.
-- **SPHEREx visits**: calls the backend `GET /visits?ra=&dec=` (placeholder until the API exists).
+- **Sky**: the SPHEREx DR1 all-sky cube from IRSA, in monochrome, with a wavelength control
+  covering all 100 usable frames (0.75–5.0 µm). AllWISE, 2MASS and DSS2 are available for comparison.
+- **Proper motion**: Gaia DR3 stars drawn on the sky, sized and shaded by G magnitude. Their
+  motion is animated forward from epoch 2016.0, and stars faster than 100 mas/yr are drawn in red.
+  For Barnard's Star, the motion carries the 2016 Gaia position onto the star in the 2025 SPHEREx image.
+- **Catalogued**: SIMBAD objects, moved to the current epoch using their proper motion.
+- **Position**: equatorial, galactic and ecliptic coordinates, plus how often SPHEREx revisits the spot.
+- Hover or click any star or object for its details. Search accepts names or coordinates, and the
+  five project test targets come up as suggestions. The view is kept in the URL
+  (`?ra=&dec=&fov=` or `?target=`). Shortcuts: `/` focuses search, `Esc` closes the field.
 
-You can also search by object name or coordinates, use the shortcuts for the 5 test targets, switch the background (AllWISE / 2MASS / DSS2) and turn the overlays on or off.
-The view is kept in the URL (`?ra=&dec=&fov=`, or `?target=<name>`), so any link restores it.
-
-All catalog queries run in the browser. Each service has mirrors, tried in order: SIMBAD TAP (CDS → Harvard), VizieR and Sesame (CDS → Harvard), HiPS tiles (IRSA → ESA → CDS).
-If one data centre is down, the map keeps working.
+All queries run in the browser. Each service has mirrors, tried in order and retried once:
+SIMBAD TAP (CDS, Harvard), VizieR and Sesame (CDS, Harvard), HiPS (IRSA, ESA, CDS).
 
 ## Commands
 ```bash
 npm install
 npm run dev       # http://localhost:5173
-npm test          # unit tests (coordinates, parsing, URL state)
+npm test          # unit tests
 npm run lint
-npm run build     # static site in dist/ (relative base, works on GitHub Pages or Vercel)
+npm run build     # static site in dist/ (relative base: GitHub Pages or Vercel)
 ```
 
-## Backend contract (proposed)
-Set `VITE_API_BASE` (see `.env.example`) to the FastAPI base URL.
+## SPHEREx visit dates need the backend
+IRSA's SIA service sends no CORS headers, so a browser can't list SPHEREx exposures directly.
+Set `VITE_API_BASE` (see `.env.example`) once the PlanetX API serves:
 
 ```
 GET /visits?ra=<deg>&dec=<deg>
--> { "visits": [ { "date": "2025-05-12T03:14:00Z", "obs_id": "...", "band": "D3", "detector": 3 } ] }
+-> { "visits": [ { "date": "2025-05-12T03:14:00Z", "obs_id": "...", "band": "D3" } ] }
 ```
-With no `VITE_API_BASE` set, the panel shows a "backend not connected" note.
+Until then, the field panel says the API is not connected.
+
+## Notes on Aladin Lite
+`aladin-lite` is pinned to exactly 3.8.2 because `src/components/SkyMap.jsx` works around two
+issues in it: cube frames are selected by frequency (its `setSliceNumber` lands on the wrong frame
+for this cube), and the renderer's grey clear colour is replaced with black. Re-check both when upgrading.
 
 ## Layout
-- `src/App.jsx`: app state, search, targets, layer toggles, selection flow
-- `src/components/SkyMap.jsx`: Aladin Lite setup and events
-- `src/components/InfoPanel.jsx`: side panel (bottom sheet on phones)
-- `src/lib/coords.js`: parsing, formatting, galactic/ecliptic conversion, proper-motion propagation
+- `src/App.jsx`: app state, search, layers, selection flow, HUD
+- `src/components/SkyMap.jsx`: Aladin setup, survey/cube handling, events
+- `src/components/InfoPanel.jsx`: field panel (stacks under the map on phones)
+- `src/components/Search.jsx`: name/coordinate combobox with target suggestions
+- `src/lib/starfield.js`: canvas layer for stars, proper-motion animation, labels, hit-testing
 - `src/lib/services.js`: SIMBAD / VizieR / Sesame / backend clients with mirror fallback
-- `src/lib/overlays.js`: Aladin overlays (query circle, SIMBAD markers, Gaia arrows)
-- `src/lib/surveys.js`, `src/lib/targets.js`, `src/lib/url.js`
+- `src/lib/coords.js`, `surveys.js`, `targets.js`, `url.js`

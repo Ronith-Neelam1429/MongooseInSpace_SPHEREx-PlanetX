@@ -58,6 +58,8 @@ describe('vizier tsv + url', () => {
   it('parses asu-tsv', () => {
     const tsv = '#comment\n\nSource\tRA_ICRS\tpmRA\n \tdeg\tmas/yr\n------\t-------\t-----\n123\t269.45\t -4.5\n';
     expect(parseVizierTsv(tsv)).toEqual([{ Source: '123', RA_ICRS: '269.45', pmRA: '-4.5' }]);
+    expect(parseVizierTsv('#RESOURCE=yCat_1355\n#Name: I/355\n')).toEqual([]);
+    expect(() => parseVizierTsv('<!doctype html><html></html>')).toThrow();
   });
   it('round-trips the view through the query string', () => {
     const s = viewToSearch({ ra: 269.45208, dec: 4.69336, fov: 0.25 }, '');
@@ -74,5 +76,30 @@ describe('targets', async () => {
     expect(findTarget('r dra').id).toBe('rdra');
     expect(findTarget("Barnard's Star").id).toBe('barnard');
     expect(findTarget('M31')).toBeNull();
+  });
+});
+
+describe('star field scaling', async () => {
+  const { starStyle, arrowYears } = await import('./starfield.js');
+  it('draws brighter stars larger and more opaque', () => {
+    const bright = starStyle(8), faint = starStyle(19);
+    expect(bright.r).toBeGreaterThan(faint.r);
+    expect(bright.a).toBeGreaterThan(faint.a);
+    expect(starStyle(null).r).toBeGreaterThan(0);
+  });
+  it('picks a nice motion span from the fastest star', () => {
+    // Barnard's Star (10.4"/yr) in a 4.5' field: half the radius in a nice number of years.
+    expect(arrowYears([{ pmra: -801.551, pmdec: 10362.394 }, { pmra: 1, pmdec: 1 }], 0.075)).toBe(10);
+    expect(arrowYears([{ pmra: null, pmdec: null }], 0.1)).toBeNull();
+  });
+});
+
+describe('surveys', async () => {
+  const { SPHEREX_FRAMES, SPHEREX_WAVELENGTHS, DEFAULT_FRAME } = await import('./surveys.js');
+  it('lists 102 SPHEREx frames minus the two blank dichroic ones', () => {
+    expect(SPHEREX_WAVELENGTHS).toHaveLength(102);
+    expect(SPHEREX_FRAMES).toHaveLength(100);
+    expect(SPHEREX_FRAMES.some((f) => f.frame === 50 || f.frame === 51)).toBe(false);
+    expect(SPHEREX_FRAMES.find((f) => f.frame === DEFAULT_FRAME).band).toBe(2);
   });
 });
