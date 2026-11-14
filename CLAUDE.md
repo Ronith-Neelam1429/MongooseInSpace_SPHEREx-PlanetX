@@ -72,6 +72,9 @@ tutorials https://caltech-ipac.github.io/irsa-tutorials/spherex-intro
 - Live API tests (network): `uv run pytest tests/api -q -m network`
 - Connection tests (live network): `uv run pytest tests/connections -v`
 - API server: `uv run uvicorn planetx.api.app:app --reload` (docs at http://127.0.0.1:8000/docs)
+- Engine tests: `uv run pytest tests/engine -q` (synthetic offline; `-m network` real targets, cached in `.cache/dev`)
+- Engine dev viewer: `uv run python dev/devview.py barnard --open` (also `wise0855 --stack`, `eps-indi-b`,
+  `r-dra --per-pass 30`, `rw-aur`, a SIMBAD name or "ra dec"); writes `dev/out/<target>.html`
 - Survey (branch `feature/survey-queue`): `uv run python -m planetx.survey init|status|run --processor <name>|requeue-failed`
 - Settings (env vars, see `src/planetx/config.py`): `PLANETX_CACHE_DIR`, `PLANETX_CACHE_MAX_MB` (default 2048),
   `PLANETX_DB`, `PLANETX_CORS_ORIGINS`
@@ -81,7 +84,12 @@ tutorials https://caltech-ipac.github.io/irsa-tutorials/spherex-intro
 - `src/planetx/cutouts.py`: capped disk cache, resampling onto one north-up grid per position, PNG/float rendering
 - `src/planetx/api/`: FastAPI app; `schemas.py` is the frontend contract (guide: `docs/API.md`)
 - `src/planetx/survey/`: HEALPix crawl order from the NEP, resumable SQLite patch queue, worker + CLI
-- `src/planetx/engine/`: motion engine (pure functions; built in another session on `feature/motion-engine`)
+- `src/planetx/engine/`: motion engine, pure functions (no network). `frame_from_hdul(hdul)` -> `Frame`;
+  `find_motion(frames, stack=False)` -> `EngineResult` (.movers, .variables, .objects, .notes).
+  `detect.py` per-frame sources (saturated stars located from their OVERFLOW/BLOOM patch); `motion.py` passes,
+  alignment, linking, astrometric fit (parallax when it explains a misfit), variability at matched wavelengths;
+  `stack.py` per-pass co-adds for faint objects
+- `dev/`: engine dev tools only (`fetch.py` cached cutout fetcher, `devview.py` HTML blink viewer)
 - `tests/unit/` offline, `tests/api/` live API, `tests/connections/`: live tests proving each external
   data service works (`conftest.py` holds the Barnard's Star reference fixture)
 
@@ -107,6 +115,25 @@ survey queue (`feature/survey-queue`) and motion engine (`feature/motion-engine`
    - 40-45: deploy, fix bugs, backup demo video
    - 45-48: pitch
 3. Scope rule: after hour 24, only must-have features; cut from the bottom of the list.
+
+## Engine results (real data, 2026-11-14)
+- Barnard 10.45"/yr PA 358 (Gaia 10.39/356); Eps Indi B 4.67"/yr PA 122, parallax 0.36±0.18" (lit 4.7/122,
+  0.28"); R Dra variable (P3/P1 0.56); no false movers on these fields.
+- WISE 0855 only in per-pass stacks: 8.9"/yr PA 284 but 3.2 sigma (stack centroid errors underestimated), so it's
+  a "candidate", not a mover.
+- Constants tuned on these few targets (SATURATED_PASS_FLOOR_PX, PASS_FLOOR_ARCSEC, centroid sigma FWHM/SNR,
+  wing annuli): re-derive from many static stars before trusting survey-wide significances.
+
+## Engine known problems (from review; fix before the survey crawler relies on it)
+- Passes split on > 60-day gaps: near the ecliptic poles (where the crawl starts) SPHEREx revisits continuously,
+  so everything becomes one pass and nothing is measured. Bin by time windows instead.
+- Linking is O(n^2) in unlinked sources with per-call SkyCoord transforms: minutes per crowded field.
+  Vectorise offsets once and use scipy cKDTree.
+- Stack mode: one co-add across detectors dilutes red objects; stacks carry no wavelength, so no variability.
+- A mover blending with a field star in one pass is rejected via the missing-pass check.
+- Variability pairs overlap (one detection in many pairs), which overstates significance in deep fields.
+- Results depend on input order (reference frame tie-break): sort frames before calling `find_motion`.
+- Real-target tests resolve names via SIMBAD each run (not fully offline).
 
 ## Open questions
 - Whether the DR1 all-sky cube can be used directly as an Aladin sky map.
