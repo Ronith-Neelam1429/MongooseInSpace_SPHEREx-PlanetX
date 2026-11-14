@@ -1,0 +1,27 @@
+[project]
+name = "spherex-planetx"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "astropy>=8.0.2",
+    "astroquery>=0.4.11",
+    "certifi>=2026.10.23",
+    "pyvo>=1.10.0",
+    "requests>=2.34.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-timeout>=2.4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["network: test talks to an external data service"]
+addopts = "-ra --strict-markers"
+timeout = 180  # pyvo SIA queries have no timeout and can hang
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
