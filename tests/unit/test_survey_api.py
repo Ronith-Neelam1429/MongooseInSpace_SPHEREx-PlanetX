@@ -1,4 +1,6 @@
 """Offline tests for the /api/survey endpoints against temp databases."""
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -25,6 +27,7 @@ def test_status_without_database(db_path):
     assert body["total"] == 0
     assert body["nside"] is None and body["current_rank"] is None
     assert body["counts"] == {"pending": 0, "in_progress": 0, "done": 0, "failed": 0}
+    assert body["readable"] is True
     # The API never creates the database file. (Reading an existing WAL
     # database may leave -wal/-shm files beside it; that is SQLite's doing.)
     assert not db_path.exists()
@@ -35,6 +38,23 @@ def test_coverage_without_database(db_path):
     assert resp.status_code == 200
     assert resp.json() == {"6": []}
     assert not db_path.exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_unopenable_database_reports_zeros_not_500(db_path):
+    with PatchQueue(db_path, create=True) as q:
+        q.init(1)
+    # After the last writer closes there are no -wal/-shm files; in a
+    # read-only directory SQLite cannot create them, so the open fails.
+    os.chmod(db_path.parent, 0o555)
+    try:
+        status = client.get("/api/survey/status")
+        coverage = client.get("/api/survey/coverage")
+    finally:
+        os.chmod(db_path.parent, 0o755)
+    assert status.status_code == 200
+    assert status.json()["readable"] is False and status.json()["total"] == 0
+    assert coverage.status_code == 200 and coverage.json() == {"6": []}
 
 
 def test_status_of_an_empty_schema(db_path):

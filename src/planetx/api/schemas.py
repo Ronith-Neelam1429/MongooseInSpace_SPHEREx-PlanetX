@@ -112,6 +112,10 @@ class SurveyStatus(BaseModel):
     current_radius_deg: float | None = Field(
         default=None, description="Distance of that patch from the North Ecliptic Pole (how far out the crawl is)"
     )
+    readable: bool = Field(
+        default=True,
+        description="False if the survey database exists but could not be opened (counts are then zero)",
+    )
 
 
 # Done patches as an Aladin Lite MOC JSON: {"<order>": [NESTED ipix, ...]}, with
