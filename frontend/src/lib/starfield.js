@@ -1,11 +1,13 @@
 // Canvas layer drawn over Aladin for the selected field: Gaia DR3 stars sized and shaded by
 // G magnitude, their proper motion animated forward in time from epoch 2016.0, SIMBAD objects,
-// the query circle, hover labels and the focus marker. Everything is projected with Aladin's own
-// world2pix, so it stays registered to the sky while panning and zooming.
+// the motion engine's detections, the query circle, hover labels and the focus marker. Everything
+// is projected with Aladin's own world2pix, so it stays registered to the sky while panning and zooming.
 import { offsetPoint, propagate } from './coords.js';
 
 export const FAST_PM = 100; // mas/yr; above this a star is drawn in the motion colour
 const SIGNAL = [255, 77, 46];
+// What the motion engine measured in SPHEREx frames; red stays Gaia's catalogued motion.
+export const MEASURED = [92, 225, 255];
 const PERIOD_MS = 7000;
 const HOLD = 0.12; // fraction of the cycle spent resting at the end
 const HIT_PX = 9;
@@ -27,12 +29,13 @@ export class StarField {
     this.onHover = onHover;
     this.gaia = [];
     this.simbad = [];
+    this.motion = [];
     this.region = null;
     this.years = 0;
     this.focus = null;
     this.hover = null;
     this.pointer = null;
-    this.show = { gaia: true, simbad: true };
+    this.show = { gaia: true, simbad: true, engine: true };
     this.moversOnly = false;
     this.playing = !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     this.t0 = performance.now();
@@ -81,6 +84,8 @@ export class StarField {
   }
 
   setSimbad(objects) { this.simbad = objects; this.viewKey = ''; }
+  /** Engine objects to mark: movers, candidates and variables (see MotionObject in the API). */
+  setMotion(objects) { this.motion = objects; this.viewKey = ''; }
   setFocus(obj) { this.focus = obj; }
   setVisible(show) { this.show = { ...this.show, ...show }; }
   /** Fade everything slower than FAST_PM and show each fast star's full predicted path. */
@@ -108,7 +113,7 @@ export class StarField {
   setPointer(p) {
     this.pointer = p;
     const hit = p ? this.hitTest(p.x, p.y) : null;
-    const key = hit ? `${hit.kind}:${hit.kind === 'gaia' ? hit.obj.id : hit.obj.name}` : null;
+    const key = hit ? `${hit.kind}:${hit.kind === 'simbad' ? hit.obj.name : hit.obj.id}` : null;
     if (key !== this.hoverKey) {
       this.hoverKey = key;
       this.hover = hit;
@@ -153,6 +158,10 @@ export class StarField {
       return { g, a, b };
     }).filter(Boolean);
     this.simbadPx = this.simbad.map((o) => ({ o, p: this.project(o.ra, o.dec) })).filter((x) => inView(x.p));
+    this.motionPx = this.motion.map((o) => {
+      const pts = o.track.map((t) => this.project(t.ra, t.dec));
+      return { o, pts, last: pts[pts.length - 1] };
+    }).filter((m) => m.pts.every(Boolean) && inView(m.last));
     this.regionPx = null;
     if (this.region) {
       const pts = [];
@@ -168,7 +177,7 @@ export class StarField {
     this.raf = requestAnimationFrame(this.loop);
     const { ctx } = this;
     ctx.clearRect(0, 0, this.w, this.h);
-    if (!this.region && !this.gaia.length && !this.simbad.length) { this.projected = []; return; }
+    if (!this.region && !this.gaia.length && !this.simbad.length && !this.motion.length) { this.projected = []; return; }
     this.reproject();
     const k = this.progress();
     const projected = [];
@@ -234,6 +243,13 @@ export class StarField {
       ctx.stroke();
     }
 
+    if (this.show.engine && this.motionPx) {
+      for (const m of this.motionPx) {
+        this.drawMeasured(m);
+        projected.push({ kind: 'engine', obj: m.o, x: m.last[0], y: m.last[1] });
+      }
+    }
+
     this.projected = projected;
     if (this.focus) this.drawFocus();
     if (this.hover) this.drawLabel(this.hover);
@@ -290,6 +306,40 @@ export class StarField {
     ctx.stroke();
   }
 
+  /**
+   * One engine object: its measured per-pass positions joined in time order, ending in a ring at
+   * the latest pass. Candidates are dashed; variables get a diamond.
+   */
+  drawMeasured({ o, pts, last }) {
+    const { ctx } = this;
+    const [x, y] = last;
+    ctx.save();
+    ctx.strokeStyle = `rgb(${MEASURED})`;
+    ctx.fillStyle = `rgb(${MEASURED})`;
+    ctx.lineWidth = 1.25;
+    if (o.kind !== 'static') {
+      if (o.kind === 'candidate') ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      pts.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(x, y, 9, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      for (const p of pts) { ctx.moveTo(p[0] + 1.5, p[1]); ctx.arc(p[0], p[1], 1.5, 0, Math.PI * 2); }
+      ctx.fill();
+    }
+    if (o.is_variable) {
+      const r = o.kind === 'static' ? 8 : 14;
+      ctx.beginPath();
+      ctx.moveTo(x, y - r); ctx.lineTo(x + r, y); ctx.lineTo(x, y + r); ctx.lineTo(x - r, y);
+      ctx.closePath();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   pixelOf(obj) {
     const hit = this.projected.find((p) => p.obj === obj);
     if (hit) return [hit.x, hit.y];
@@ -317,9 +367,11 @@ export class StarField {
     const p = this.pixelOf(hit.obj);
     if (!p) return;
     const o = hit.obj;
-    const text = hit.kind === 'simbad'
-      ? `${o.name}${o.type ? `  ${o.type}` : ''}`
-      : `G ${o.gmag != null ? o.gmag.toFixed(1) : '–'}  µ ${o.pmra != null ? Math.hypot(o.pmra, o.pmdec).toFixed(1) : '–'} mas/yr`;
+    const text = hit.kind === 'engine'
+      ? engineLabel(o)
+      : hit.kind === 'simbad'
+        ? `${o.name}${o.type ? `  ${o.type}` : ''}`
+        : `G ${o.gmag != null ? o.gmag.toFixed(1) : '–'}  µ ${o.pmra != null ? Math.hypot(o.pmra, o.pmdec).toFixed(1) : '–'} mas/yr`;
     const { ctx } = this;
     ctx.font = this.font;
     const w = ctx.measureText(text).width + 12;
@@ -335,6 +387,28 @@ export class StarField {
     ctx.textBaseline = 'middle';
     ctx.fillText(text, x + 6, y + 9.5);
   }
+}
+
+/**
+ * The motion to quote for an engine object: the fit with archival positions when those confirm
+ * the motion (decades of baseline), otherwise SPHEREx alone. Returns { pm, sigma } in ″/yr.
+ */
+export function measuredMotion(o) {
+  const a = o.archive;
+  if (a?.verdict === 'confirmed' && a.pm_ra_cosdec != null && a.pm_err > 0) {
+    const pm = Math.hypot(a.pm_ra_cosdec, a.pm_dec);
+    return { pm, sigma: pm / a.pm_err, fused: true };
+  }
+  return { pm: o.pm_total, sigma: o.significance, fused: false };
+}
+
+/** Short description of an engine object, e.g. `SPHEREx mover  µ 10.45″/yr  12σ`. */
+export function engineLabel(o) {
+  const parts = [];
+  const m = measuredMotion(o);
+  if (o.kind !== 'static') parts.push(`SPHEREx ${o.kind}  µ ${m.pm.toFixed(2)}″/yr  ${m.sigma.toFixed(0)}σ`);
+  if (o.is_variable && o.variability) parts.push(`${o.kind === 'static' ? 'SPHEREx variable  ' : 'variable '}×${o.variability.ratio.toFixed(2)}`);
+  return parts.join('  ·  ');
 }
 
 /** Pick a "nice" span of years so the fastest star travels about half the region radius. */

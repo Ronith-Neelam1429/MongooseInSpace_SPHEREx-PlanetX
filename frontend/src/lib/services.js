@@ -183,3 +183,37 @@ export async function fetchVisits(ra, dec, { signal } = {}) {
     t.done();
   }
 }
+
+const MOTION_POLL_MS = 2500;
+
+/**
+ * Run the PlanetX motion engine on SPHEREx frames of a position (GET {API_BASE}/motion).
+ * The backend works in the background (it downloads tens of frames on first use), so this polls
+ * until the run ends. `onProgress` gets { stage, frames_done, frames_total } on every poll.
+ * Resolves to the MotionResult (see backend/planetx/api/schemas.py) plus `field: { ra, dec, size_deg }`,
+ * the field as the backend analysed it (pass it back to ask about this run's objects), or null when
+ * no backend is configured; rejects with the backend's reason when the run fails.
+ */
+export async function runMotion(ra, dec, sizeDeg, { signal, onProgress } = {}) {
+  if (!API_BASE) return null;
+  const url = `${API_BASE}/motion?ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}&size_deg=${sizeDeg.toFixed(4)}`;
+  for (;;) {
+    const t = withTimeout(signal, 30000);
+    let job;
+    try {
+      const res = await fetch(url, { signal: t.signal });
+      if (res.status === 503) throw new Error('the engine is busy with other fields; try again shortly');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      job = await res.json();
+    } finally {
+      t.done();
+    }
+    if (job.status === 'done' && job.result) {
+      return { ...job.result, field: { ra: job.ra, dec: job.dec, size_deg: job.size_deg } };
+    }
+    if (job.status === 'failed') throw new Error(job.error || 'the run failed');
+    if (job.status !== 'running') throw new Error('bad response');
+    onProgress?.(job);
+    await sleep(MOTION_POLL_MS, signal);
+  }
+}

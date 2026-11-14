@@ -4,14 +4,24 @@
 
 Interactive API docs at http://127.0.0.1:8000/docs
 """
+from contextlib import asynccontextmanager
+
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from planetx.api.routes import sky, survey
+from planetx.api import motion as runs
+from planetx.api.routes import candidates, evidence, motion, sky, survey
 from planetx.api.schemas import Health
 from planetx.config import settings
 
-app = FastAPI(title="SPHEREx PlanetX API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    yield
+    runs.shutdown()  # queued engine runs would otherwise delay exit
+
+
+app = FastAPI(title="SPHEREx PlanetX API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -28,5 +38,8 @@ def health() -> Health:
 
 
 api.include_router(sky.router)
+api.include_router(motion.router)
+api.include_router(evidence.router)
+api.include_router(candidates.router)
 api.include_router(survey.router)
 app.include_router(api)

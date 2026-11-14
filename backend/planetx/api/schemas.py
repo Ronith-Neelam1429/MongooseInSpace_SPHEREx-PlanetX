@@ -90,6 +90,115 @@ class CutoutData(BaseModel):
     data_b64: str
 
 
+class TrackPoint(BaseModel):
+    """Where one object was seen in one survey pass (its frames averaged)."""
+
+    ra: float
+    dec: float
+    mjd: float
+    date: str
+    sigma_arcsec: float = Field(description="Position error of this pass, per axis")
+    n_frames: int = Field(description="Frames of the pass that detected the object")
+
+
+class Variability(BaseModel):
+    """Brightness change between two passes, from frames at matching wavelengths."""
+
+    band: str = Field(description='Detector and measurement kind, e.g. "D3" or "D3-wing"')
+    ratio: float = Field(description="Brighter over fainter pass, >= 1")
+    significance: float
+    change: str = Field(description='Later pass relative to earlier, e.g. "P3/P1 = 0.56"')
+    caution: str | None = Field(None, description="Set when a nearby very bright star may cause it")
+
+
+class ArchiveCheck(BaseModel):
+    """The SPHEREx track refitted together with archival positions (2MASS, AllWISE, CatWISE)."""
+
+    verdict: str = Field(description="confirmed | stationary | refuted | unconfirmed | spherex_only")
+    pm_ra_cosdec: float | None = None
+    pm_dec: float | None = None
+    pm_err: float | None = None
+    baseline_yr: float | None = None
+    observatories: list[str] = Field(description="Observatories whose positions entered the fit")
+
+
+class KnownMatch(BaseModel):
+    """A catalogued object that an engine object was matched to."""
+
+    catalog: str = Field(description="gaia | simbad | skybot")
+    name: str = Field(description='Designation, e.g. "Gaia DR3 4472832130942575872", "Barnard\'s Star", "(433) Eros"')
+    kind: str | None = Field(None, description='Object type in plain words, e.g. "High proper-motion star", "Asteroid"')
+    sep_arcsec: float = Field(description="Distance from the engine position, at the SPHEREx epoch")
+    pm_ra_cosdec: float | None = Field(None, description="Catalogued proper motion, arcsec/yr (to compare with ours)")
+    pm_dec: float | None = None
+    magnitude: float | None = Field(None, description="Catalogue magnitude, if any")
+
+
+class MotionObject(BaseModel):
+    """One object the engine tracked across passes.
+
+    `kind` is the motion class: "mover" (significant motion, or motion confirmed
+    by archival positions), "candidate" (3-5 sigma in SPHEREx alone and the
+    archive cannot settle it) or "static". Motions are SPHEREx-only measurements
+    in arcsec/yr, east and north positive; `archive` carries the multi-epoch refit.
+    """
+
+    id: int = Field(0, description="Index in MotionResult.objects")
+    kind: str
+    is_variable: bool
+    ra: float = Field(description="Position at ref_mjd")
+    dec: float
+    ref_mjd: float
+    pm_ra_cosdec: float
+    pm_dec: float
+    pm_total: float
+    pm_err: float = Field(description="Includes the field's systematic floor")
+    significance: float = Field(description="pm_total / pm_err")
+    position_angle_deg: float = Field(description="Direction of motion, east of north")
+    parallax_arcsec: float | None = Field(None, description="Only when it explains a poor straight-line fit")
+    parallax_err_arcsec: float | None = None
+    saturated: bool = Field(description="Positions come from a saturated star's masked core")
+    track: list[TrackPoint] = Field(description="One point per pass, time-ordered")
+    variability: Variability | None = Field(None, description="Set only when is_variable")
+    archive: ArchiveCheck
+    name: str | None = Field(None, description="Best catalogue name, when the object matches a known one")
+    classification: str | None = Field(
+        None,
+        description="known_star | known_asteroid | variable_star | artifact | unknown_candidate | static; "
+        "null when the catalogue check did not run",
+    )
+    matches: list[KnownMatch] = Field(default_factory=list, description="Catalogue matches, best first")
+
+
+class MotionPass(BaseModel):
+    start: str
+    end: str
+    n_frames: int
+
+
+class MotionResult(BaseModel):
+    n_frames: int = Field(description="Frames analysed (a sample of the visits, not all of them)")
+    passes: list[MotionPass]
+    detectors: list[int]
+    pm_floor_arcsec_yr: float = Field(description="Systematic motion floor measured from the static stars")
+    objects: list[MotionObject] = Field(description="Movers first, then candidates, then the rest")
+    notes: list[str] = Field(description="Caveats from the engine and the archival check")
+
+
+class MotionResponse(BaseModel):
+    """State of a motion-engine run. Poll until `status` is no longer "running"."""
+
+    ra: float = Field(description="Centre actually analysed (the request snapped to 0.001 deg)")
+    dec: float
+    size_deg: float
+    status: str = Field(description="running | done | failed")
+    stage: str = Field(description="queued | listing | downloading | analysing | checking")
+    frames_done: int
+    frames_total: int = Field(description="0 until the visits are listed")
+    error: str | None = None
+    result: MotionResult | None = None
+
+
 class SurveyCounts(BaseModel):
     pending: int = 0
     in_progress: int = 0

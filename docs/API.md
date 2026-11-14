@@ -86,6 +86,32 @@ async function loadCutout(apiOrigin, dataUrl) {
 // Difference of two frames on the shared grid: a[i] - b[i], skip NaN.
 ```
 
+### `GET /api/motion?ra=&dec=&size_deg=`
+Runs the motion engine on SPHEREx frames of the position and returns what moves or
+changes brightness (`MotionResponse`). The run is a background job, so **poll**: the
+first call starts it and answers `status: "running"`; repeat the same call every few
+seconds until `status` is `"done"` (with `result`) or `"failed"` (with `error`).
+- `size_deg`: default 0.1, range 0.03-0.2. Frames reach 1.5x this (the raw cutout,
+  shared with `/api/cutout.*`), so objects can lie a little outside the square.
+- The position is snapped to 0.001 deg; nearby requests share one run. Results are
+  kept for an hour. A failed run is reported for 10 s, then asking again retries it. A run nobody polls for 30 s is dropped.
+- While running, `stage` is `queued | listing | downloading | analysing | checking`
+  and `frames_done / frames_total` counts downloads.
+- The engine samples detectors 1-3, up to 6 frames per pass and detector (about 54
+  frames, ~4 MB each from IRSA on first use: one to two minutes; seconds once cached).
+- `result.objects` lists every tracked object, movers first. `kind` is `mover`,
+  `candidate` (3-5 sigma in SPHEREx alone) or `static`; `is_variable` marks brightness
+  changes. Motions are in arcsec/yr (east, north). `track` has one position per pass.
+  `archive` is the refit with 2MASS/AllWISE/CatWISE positions and its verdict
+  (set `PLANETX_OBSERVATORIES=spherex` to skip the catalogs).
+- One run executes at a time; **503 with `Retry-After`** when more than 4 are waiting.
+- Jobs live in the API process's memory: run a single worker process.
+
+```sh
+curl 'http://127.0.0.1:8000/api/motion?ra=269.4485&dec=4.7394'
+# Barnard's Star: mover, 9.9"/yr at PA 2 deg from 54 frames in 3 passes
+```
+
 ## Errors
 
 | Status | Meaning |
@@ -94,7 +120,7 @@ async function loadCutout(apiOrigin, dataUrl) {
 | 404 | IRSA has no cutout for this file at this position (e.g. outside the file) |
 | 422 | Parameter missing or out of range (FastAPI validation body) |
 | 502 | IRSA failed after retries (`detail` gives the reason) |
-| 503 | Too many IRSA downloads in flight; retry after `Retry-After` seconds |
+| 503 | Too many IRSA downloads in flight, or too many motion runs waiting; retry after `Retry-After` seconds |
 
 ## Pixel masking
 

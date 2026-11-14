@@ -9,6 +9,10 @@ opens that field:
   motion is animated forward from epoch 2016.0, and stars faster than 100 mas/yr are drawn in red.
   The **Movers** toggle fades everything slower and draws each fast star's full predicted path.
   For Barnard's Star, the motion carries the 2016 Gaia position onto the star in the 2025 SPHEREx image.
+- **Motion engine**: "Run engine" in the field panel asks the PlanetX API to measure motion and brightness
+  changes between SPHEREx passes of the field. Movers, candidates and variables are listed and drawn in cyan
+  (a line through the per-pass positions, ending in a ring; variables get a diamond). Red remains Gaia's
+  catalogued motion, so the two can be compared directly. Needs `VITE_API_BASE`.
 - **Catalogued**: SIMBAD objects, moved to the current epoch using their proper motion.
 - **Position**: equatorial, galactic and ecliptic coordinates, plus how often SPHEREx revisits the spot.
 - Hover or click any star or object for its details. Search accepts names or coordinates, and the
@@ -29,7 +33,7 @@ npm run lint
 npm run build     # static site in dist/ (relative base: GitHub Pages or Vercel)
 ```
 
-## SPHEREx visit dates need the backend
+## SPHEREx visit dates and the motion engine need the backend
 IRSA's SIA service sends no CORS headers, so a browser can't list SPHEREx exposures directly.
 Set `VITE_API_BASE` (see `.env.example`) once the PlanetX API serves:
 
@@ -38,6 +42,7 @@ GET /visits?ra=<deg>&dec=<deg>
 -> { "visits": [ { "date": "2025-05-12T03:14:00Z", "obs_id": "...", "band": "D3" } ] }
 ```
 Until then, the field panel says the API is not connected.
+The motion engine uses `GET /motion?ra=&dec=&size_deg=` (polled; see `docs/API.md` in the repo root).
 
 ## Notes on Aladin Lite
 `aladin-lite` is pinned to exactly 3.8.2 because `src/components/SkyMap.jsx` works around two

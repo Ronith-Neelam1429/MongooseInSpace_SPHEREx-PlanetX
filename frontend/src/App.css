@@ -161,6 +161,8 @@
 .rows tbody tr.on td { color: var(--bg); }
 .rows tbody tr:focus-visible { outline-offset: -1px; }
 .panel-body > section > .rows + .line { margin-top: 10px; }
+.panel-body > section > .line + .rows { margin-top: 12px; }
+.rows.measured th .dot { margin-right: 6px; vertical-align: 1px; }
 
 .visits li { display: flex; justify-content: space-between; padding: 4px 0; font-size: 12.5px; font-variant-numeric: tabular-nums; }
 

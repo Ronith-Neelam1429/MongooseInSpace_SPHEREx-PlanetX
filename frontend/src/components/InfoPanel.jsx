@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import {
   equatorialToEcliptic, equatorialToGalactic, formatDec, formatFov, formatRa,
 } from '../lib/coords.js';
-import { FAST_PM } from '../lib/starfield.js';
+import { FAST_PM, MEASURED, measuredMotion } from '../lib/starfield.js';
 
 const n = (v, d = 2) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
 const signed = (v, d) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`;
@@ -28,6 +28,110 @@ function State({ state, what, onRetry }) {
   return null;
 }
 
+const STAGES = { queued: 'Waiting for the engine', listing: 'Listing exposures', analysing: 'Measuring motion', checking: 'Checking archival catalogues' };
+
+function motionProgress(job) {
+  if (!job) return 'Starting the engine';
+  if (job.stage === 'downloading') return `Fetching frames ${job.frames_done}/${job.frames_total}`;
+  return STAGES[job.stage] || 'Working';
+}
+
+const KIND = { mover: 'Mover', candidate: 'Candidate', static: 'Variable' };
+const VERDICT = {
+  confirmed: 'Motion confirmed by archival positions',
+  stationary: 'Stationary in archival positions',
+  refuted: 'Refuted: separate archival sources at each position',
+  unconfirmed: 'Not enough archival data to check',
+  spherex_only: 'SPHEREx only',
+};
+const OBSERVATORY = { spherex: 'SPHEREx', twomass: '2MASS', allwise: 'AllWISE', catwise: 'CatWISE', neowise: 'NEOWISE' };
+
+/** The motion engine's section: a run button, progress, then the movers, candidates and variables. */
+function Motion({ motion, focus, onFocus, onRun }) {
+  const r = motion.result;
+  const rows = useMemo(() => (r ? r.objects.filter((o) => o.kind !== 'static' || o.is_variable) : []), [r]);
+  return (
+    <section>
+      <h3>
+        Motion engine
+        {motion.status === 'ok' && <span className="count">{r.objects.length} tracked</span>}
+      </h3>
+      {motion.status === 'none' && <p className="line dim">The engine needs the PlanetX API, which is not connected.</p>}
+      {motion.status === 'idle' && (
+        <>
+          <p className="line">Measure what moves or changes brightness between SPHEREx passes of this field.</p>
+          <p className="line dim">Fetches about 50 frames from IRSA: a minute or two the first time.</p>
+          <p className="line"><button type="button" className="textbtn" onClick={onRun}>Run engine</button></p>
+        </>
+      )}
+      {motion.status === 'loading' && <p className="state"><span className="ticker" aria-hidden="true" />{motionProgress(motion.job)}</p>}
+      {motion.status === 'error' && (
+        <p className="state err" role="alert">
+          Engine run failed: {motion.error}.{' '}
+          <button type="button" className="textbtn" onClick={onRun}>Retry</button>
+        </p>
+      )}
+      {motion.status === 'ok' && (
+        <>
+          <p className="line">
+            {r.n_frames} frames in {r.passes.length} {r.passes.length === 1 ? 'pass' : 'passes'}
+            {r.passes.length > 0 && <span className="dim"> · {r.passes[0].start} to {r.passes[r.passes.length - 1].end}</span>}
+          </p>
+          {rows.length === 0
+            ? <p className="line dim">Nothing moving or varying above the threshold.</p>
+            : (
+              <table className="rows measured">
+                <thead><tr><th><i className="dot" style={{ background: `rgb(${MEASURED})` }} /> Measured</th><th>µ ″/yr</th><th>σ</th></tr></thead>
+                <tbody>
+                  {rows.map((o) => (
+                    <tr
+                      key={o.id}
+                      className={focus?.obj === o ? 'on' : ''}
+                      onClick={() => onFocus('engine', o)}
+                      onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onFocus('engine', o); } }}
+                      tabIndex={0}
+                    >
+                      <td className="name">{KIND[o.kind]}{o.kind !== 'static' && o.is_variable ? ' · variable' : ''}</td>
+                      <td>{o.kind === 'static' ? `×${n(o.variability?.ratio)}` : n(measuredMotion(o).pm)}</td>
+                      <td>{n(o.kind === 'static' ? o.variability?.significance : measuredMotion(o).sigma, 1)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          {r.notes.map((note) => <p key={note} className="line dim">{note}</p>)}
+        </>
+      )}
+    </section>
+  );
+}
+
+function EngineFocus({ o, onClear }) {
+  const a = o.archive;
+  const others = a.observatories.filter((x) => x !== 'spherex').map((x) => OBSERVATORY[x] || x);
+  const title = o.kind === 'static' ? 'Variable source' : o.kind === 'candidate' ? 'Candidate mover' : 'Moving source';
+  return (
+    <section className="focus">
+      <header><span className="kicker">SPHEREx engine</span><button type="button" className="textbtn" onClick={onClear}>Clear</button></header>
+      <p className="focus-name">{title}</p>
+      <dl className="kv">
+        <dt>µ SPHEREx</dt><dd>{n(o.pm_total)} ± {n(o.pm_err)} ″/yr · {n(o.significance, 1)}σ</dd>
+        <dt>µα*, µδ</dt><dd>{signed(o.pm_ra_cosdec, 2)}, {signed(o.pm_dec, 2)} ″/yr · PA {n(o.position_angle_deg, 0)}°</dd>
+        {o.parallax_arcsec != null && <><dt>ϖ</dt><dd>{n(o.parallax_arcsec)} ± {n(o.parallax_err_arcsec)} ″</dd></>}
+        <dt>Passes</dt><dd>{o.track.map((t) => t.date).join(' · ')}</dd>
+        {o.variability && <><dt>Flux</dt><dd>{o.variability.band} {o.variability.change} · {n(o.variability.significance, 1)}σ</dd></>}
+        {o.variability?.caution && <><dt /><dd className="dim">{o.variability.caution}</dd></>}
+        <dt>Archive</dt><dd>{VERDICT[a.verdict] || a.verdict}{others.length > 0 && <span className="dim"> ({others.join(', ')})</span>}</dd>
+        {others.length > 0 && a.pm_ra_cosdec != null && a.pm_err != null && (
+          <><dt>µ fused</dt><dd>{signed(a.pm_ra_cosdec, 3)}, {signed(a.pm_dec, 3)} ± {n(a.pm_err, 3)} ″/yr · {n(a.baseline_yr, 1)} yr</dd></>
+        )}
+        <dt>Position</dt><dd>{formatRa(o.ra)} {formatDec(o.dec)}</dd>
+        {o.saturated && <><dt /><dd className="dim">Saturated star: position from its masked core.</dd></>}
+      </dl>
+    </section>
+  );
+}
+
 function Epoch({ getYears, total }) {
   const ref = useRef(null);
   useEffect(() => {
@@ -44,6 +148,7 @@ function Epoch({ getYears, total }) {
 
 function Focused({ focus, onClear }) {
   const o = focus.obj;
+  if (focus.kind === 'engine') return <EngineFocus o={o} onClear={onClear} />;
   if (focus.kind === 'simbad') {
     return (
       <section className="focus">
@@ -74,7 +179,7 @@ function Focused({ focus, onClear }) {
 }
 
 export default function InfoPanel({
-  sel, simbad, gaia, visits, focus, onFocus, onClearFocus, onClose, onRetry, onCopyLink, copied,
+  sel, simbad, gaia, visits, motion, focus, onFocus, onClearFocus, onClose, onRetry, onCopyLink, copied,
   playing, onTogglePlay, getYears, moversOnly, onToggleMovers,
 }) {
   const { g, e } = useMemo(() => ({
@@ -134,6 +239,8 @@ export default function InfoPanel({
               </ol>
             ))}
         </section>
+
+        <Motion motion={motion} focus={focus} onFocus={onFocus} onRun={() => onRetry('motion')} />
 
         <section>
           <h3>
@@ -215,7 +322,7 @@ export default function InfoPanel({
             ))}
         </section>
 
-        <footer className="credits">Data: NASA/SPHEREx DR1 (IRSA) · ESA Gaia DR3 (VizieR) · SIMBAD (CDS)</footer>
+        <footer className="credits">Data: NASA/SPHEREx DR1 + QR3 (IRSA) · ESA Gaia DR3 (VizieR) · SIMBAD (CDS) · 2MASS, AllWISE, CatWISE (IRSA)</footer>
       </div>
       {focus && <Focused focus={focus} onClear={onClearFocus} />}
     </aside>

@@ -84,6 +84,8 @@ tutorials https://caltech-ipac.github.io/irsa-tutorials/spherex-intro
 - `backend/planetx/spherex/archive.py`: SIA2 queries (dr1 + qr3), IRSA URL allow-list, cutout download with timeouts/retries
 - `backend/planetx/spherex/cutouts.py`: capped disk cache, resampling onto one north-up grid per position, PNG/float rendering
 - `backend/planetx/api/`: FastAPI app; `schemas.py` is the frontend contract (guide: `docs/API.md`)
+- `backend/planetx/api/motion.py`: `/api/motion` background runs (visit sample -> cutouts -> `find_motion` ->
+  `refine_objects`), polled by the frontend's "Motion engine" panel section (`runMotion` in `frontend/src/lib/services.js`)
 - `backend/planetx/survey/`: HEALPix crawl order from the NEP, resumable SQLite patch queue, worker + CLI
 - `backend/planetx/engine/`: motion engine, pure functions (no network). `frame_from_hdul(hdul)` -> `Frame`;
   `find_motion(frames, stack=False)` -> `EngineResult` (.movers, .variables, .objects, .notes).
@@ -153,6 +155,15 @@ Work lands on `main` via feature branches (data connections, backend API, survey
 - Variability pairs overlap (one detection in many pairs), which overstates significance in deep fields.
 - Results depend on input order (reference frame tie-break): sort frames before calling `find_motion`.
 - Real-target tests resolve names via SIMBAD each run (not fully offline).
+
+## Engine in the website (2026-11-14)
+- "Run engine" in the field panel polls `GET /api/motion`; results are drawn in cyan on the sky (`StarField.setMotion`),
+  Gaia's catalogued motion stays red. The engine runs only on request (about 54 frames, ~216 MB from IRSA the first time).
+- Live on Barnard's Star (54 frames, detectors 1-3): mover 9.91"/yr PA 2, 5.1 sigma; 281 tracks, 1 candidate.
+- Seen there: a second "mover" that SPHEREx alone puts at 1.4 sigma but AllWISE+CatWISE "confirm" at 2.0"/yr.
+  Likely a false match in Barnard's halo (see the CatWISE note above); the fusion guards need a look.
+- `engine/frames.py` evaluates WCS-WAVE without dropping the SIP cards (`spherex/cutouts.py` drops them): astropy logs
+  an INFO per frame and the frame wavelength may be slightly off.
 
 ## Open questions
 - Whether the DR1 all-sky cube (HiPS order-5 tiles) can be used directly as an Aladin sky map.

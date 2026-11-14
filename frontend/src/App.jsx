@@ -3,7 +3,7 @@ import SkyMap from './components/SkyMap.jsx';
 import InfoPanel from './components/InfoPanel.jsx';
 import Search from './components/Search.jsx';
 import { decimalYear, formatDec, formatFov, formatRa, parseCoords, propagate } from './lib/coords.js';
-import { fetchVisits, queryGaia, querySimbad, resolveName } from './lib/services.js';
+import { API_BASE, fetchVisits, queryGaia, querySimbad, resolveName, runMotion } from './lib/services.js';
 import { StarField, arrowYears } from './lib/starfield.js';
 import { Camera, prefersReducedMotion } from './lib/camera.js';
 import { DEFAULT_FRAME, SPHEREX_FRAMES, SURVEYS, surveyById } from './lib/surveys.js';
@@ -20,6 +20,10 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 /** Each click zooms in until ~0.3°, then only recenters. */
 const nextFov = (fov) => (fov > 0.5 ? Math.max(fov / 5, 0.3) : fov);
 const radiusFor = (fov) => clamp(fov * 0.3, 0.5 / 60, 0.25);
+/** Field side for the motion engine: its frames reach 1.5x this, covering the selection circle. */
+const motionSize = (radius) => clamp((radius * 4) / 3, 0.03, 0.2);
+/** Engine objects worth marking on the sky: everything but plain static stars. */
+const notable = (result) => result.objects.filter((o) => o.kind !== 'static' || o.is_variable);
 
 /** Cursor / centre readout, updated imperatively so mouse moves don't re-render the app. */
 const Readout = forwardRef(function Readout(_, ref) {
@@ -63,12 +67,13 @@ export default function App() {
   const [frame, setFrame] = useState(DEFAULT_FRAME);
   const [skyFrame, setSkyFrame] = useState(DEFAULT_FRAME); // debounced: dragging shouldn't fetch every frame
   const [surveyError, setSurveyError] = useState(null);
-  const [show, setShow] = useState({ gaia: true, simbad: true, grid: false });
+  const [show, setShow] = useState({ gaia: true, simbad: true, engine: true, grid: false });
   const [layersOpen, setLayersOpen] = useState(false);
   const [sel, setSel] = useState(null);
   const [simbad, setSimbad] = useState({ status: 'idle' });
   const [gaia, setGaia] = useState({ status: 'idle' });
   const [visits, setVisits] = useState({ status: 'idle' });
+  const [motion, setMotion] = useState({ status: 'idle' });
   const [focus, setFocus] = useState(null);
   const [playing, setPlaying] = useState(() => !prefersReducedMotion());
   const [moversOnly, setMoversOnly] = useState(false);
@@ -106,6 +111,17 @@ export default function App() {
       fetchVisits(s.ra, s.dec, { signal: ctrl.signal }).then((v) => {
         if (!ctrl.signal.aborted) setVisits(v === null ? { status: 'none' } : { status: 'ok', visits: v });
       }, fail(setVisits));
+    } else if (kind === 'motion') {
+      setMotion({ status: 'loading' });
+      f?.setMotion([]);
+      runMotion(s.ra, s.dec, motionSize(s.radius), {
+        signal: ctrl.signal,
+        onProgress: (job) => { if (!ctrl.signal.aborted) setMotion({ status: 'loading', job }); },
+      }).then((result) => {
+        if (ctrl.signal.aborted) return;
+        setMotion({ status: 'ok', result });
+        f?.setMotion(notable(result));
+      }, fail(setMotion));
     }
   }, []);
 
@@ -119,6 +135,10 @@ export default function App() {
     setFocus(null);
     field.current?.setFocus(null);
     field.current?.setRegion(s);
+    // The engine is costly (it downloads tens of frames), so it runs only on request.
+    aborts.current.motion?.abort();
+    field.current?.setMotion([]);
+    setMotion({ status: API_BASE ? 'idle' : 'none' });
     load('simbad', s);
     load('gaia', s);
     load('visits', s);
@@ -127,7 +147,7 @@ export default function App() {
   const closePanel = useCallback(() => {
     Object.values(aborts.current).forEach((c) => c.abort());
     const f = field.current;
-    if (f) { f.setRegion(null); f.setGaia([], null); f.setSimbad([]); f.setFocus(null); }
+    if (f) { f.setRegion(null); f.setGaia([], null); f.setSimbad([]); f.setMotion([]); f.setFocus(null); }
     setSel(null);
     setFocus(null);
   }, []);
@@ -180,7 +200,7 @@ export default function App() {
 
   useEffect(() => () => { field.current?.destroy(); camera.current?.stop(); }, []);
   useEffect(() => { field.current?.setMoversOnly(moversOnly); }, [moversOnly, ready]);
-  useEffect(() => { field.current?.setVisible({ gaia: show.gaia, simbad: show.simbad }); }, [show, ready]);
+  useEffect(() => { field.current?.setVisible({ gaia: show.gaia, simbad: show.simbad, engine: show.engine }); }, [show, ready]);
   useEffect(() => { field.current?.setPlaying(playing); }, [playing, ready]);
 
   useEffect(() => {
@@ -290,6 +310,7 @@ export default function App() {
             <div className="group" role="group" aria-label="Overlays">
               <Toggle on={show.gaia} onClick={() => setShow({ ...show, gaia: !show.gaia })}>Gaia</Toggle>
               <Toggle on={show.simbad} onClick={() => setShow({ ...show, simbad: !show.simbad })}>SIMBAD</Toggle>
+              <Toggle on={show.engine} onClick={() => setShow({ ...show, engine: !show.engine })}>Engine</Toggle>
               <Toggle on={show.grid} onClick={() => setShow({ ...show, grid: !show.grid })}>Grid</Toggle>
             </div>
           </div>
@@ -333,6 +354,7 @@ export default function App() {
           simbad={simbad}
           gaia={gaia}
           visits={visits}
+          motion={motion}
           focus={focus}
           onFocus={onFocus}
           onClearFocus={clearFocus}
