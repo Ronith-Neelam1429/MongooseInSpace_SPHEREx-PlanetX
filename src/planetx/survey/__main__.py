@@ -9,15 +9,17 @@ The database defaults to settings.db_path (env PLANETX_DB); `--db` overrides it.
 """
 import argparse
 import logging
+import math
 import sys
 from pathlib import Path
 
 from planetx.config import settings
-from planetx.survey.patches import DEFAULT_NSIDE, NEP, nep_distance
+from planetx.survey.patches import DEFAULT_NSIDE, NEP, nep_distance, validate_nside
 from planetx.survey.queue import (
     DEFAULT_LEASE_S,
     DEFAULT_MAX_ATTEMPTS,
     DEFAULT_RETRY_DELAY_S,
+    NsideMismatchError,
     PatchQueue,
 )
 from planetx.survey.worker import PROCESSORS, run
@@ -26,8 +28,12 @@ log = logging.getLogger("planetx.survey")
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
-    with PatchQueue(args.db) as queue:
-        added = queue.init(args.nside)
+    with PatchQueue(args.db, create=True) as queue:
+        try:
+            added = queue.init(args.nside)
+        except NsideMismatchError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
         stats = queue.stats()
     print(f"{args.db}: added {added} patches (nside {stats.nside}, {stats.total} total)")
     return 0
@@ -69,16 +75,21 @@ def _cmd_run(args: argparse.Namespace) -> int:
             max_attempts=args.max_attempts,
             retry_delay_s=args.retry_delay_s,
         )
-    except RuntimeError as exc:
+    except (FileNotFoundError, RuntimeError) as exc:  # no database / not initialised
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"stopped: {result.reason}; done {result.done}, failed attempts {result.failed}, "
-          f"lost leases {result.lease_lost}")
+          f"released {result.released}, lost leases {result.lease_lost}")
     return 130 if result.aborted else 0
 
 
 def _cmd_requeue_failed(args: argparse.Namespace) -> int:
-    with PatchQueue(args.db) as queue:
+    try:
+        queue = PatchQueue(args.db)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    with queue:
         n = queue.requeue_failed()
     print(f"{args.db}: requeued {n} failed patches")
     return 0
@@ -93,9 +104,16 @@ def _positive_int(text: str) -> int:
 
 def _positive_float(text: str) -> float:
     value = float(text)
-    if not value > 0:
-        raise argparse.ArgumentTypeError(f"must be > 0, got {value}")
+    if not (math.isfinite(value) and value > 0):
+        raise argparse.ArgumentTypeError(f"must be a finite number > 0, got {value}")
     return value
+
+
+def _nside(text: str) -> int:
+    try:
+        return validate_nside(int(text))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -104,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_init = sub.add_parser("init", help="create the patch queue (idempotent)")
-    p_init.add_argument("--nside", type=int, default=DEFAULT_NSIDE, help="HEALPix nside, power of two")
+    p_init.add_argument("--nside", type=_nside, default=DEFAULT_NSIDE, help="HEALPix nside, power of two")
     p_init.set_defaults(func=_cmd_init)
 
     p_status = sub.add_parser("status", help="show progress")
@@ -123,11 +141,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    try:
-        return args.func(args)
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+    return args.func(args)
 
 
 if __name__ == "__main__":

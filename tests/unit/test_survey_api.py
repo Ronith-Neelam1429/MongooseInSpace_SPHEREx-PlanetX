@@ -25,7 +25,9 @@ def test_status_without_database(db_path):
     assert body["total"] == 0
     assert body["nside"] is None and body["current_rank"] is None
     assert body["counts"] == {"pending": 0, "in_progress": 0, "done": 0, "failed": 0}
-    assert not db_path.exists()  # reading never creates the database
+    # The API never creates the database file. (Reading an existing WAL
+    # database may leave -wal/-shm files beside it; that is SQLite's doing.)
+    assert not db_path.exists()
 
 
 def test_coverage_without_database(db_path):
@@ -36,14 +38,14 @@ def test_coverage_without_database(db_path):
 
 
 def test_status_of_an_empty_schema(db_path):
-    PatchQueue(db_path).close()  # schema, no patches
+    PatchQueue(db_path, create=True).close()  # schema, no patches
     assert client.get("/api/survey/status").json()["total"] == 0
     assert client.get("/api/survey/coverage").json() == {"6": []}
 
 
 def test_status_and_coverage_after_progress(db_path):
     order = crawl_order(2)
-    with PatchQueue(db_path) as q:
+    with PatchQueue(db_path, create=True) as q:
         q.init(2)
         first, second, third = q.claim_next(), q.claim_next(), q.claim_next()
         q.complete(first, {"n_visits": 4})
@@ -63,7 +65,7 @@ def test_status_and_coverage_after_progress(db_path):
 
 
 def test_status_when_finished(db_path):
-    with PatchQueue(db_path) as q:
+    with PatchQueue(db_path, create=True) as q:
         q.init(1)
         while (p := q.claim_next()) is not None:
             q.complete(p, {})
@@ -74,7 +76,7 @@ def test_status_when_finished(db_path):
 
 
 def test_frontier_starts_at_the_nep(db_path):
-    with PatchQueue(db_path) as q:
+    with PatchQueue(db_path, create=True) as q:
         q.init(64)
     status = client.get("/api/survey/status").json()
     assert status["current_rank"] == 0

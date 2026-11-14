@@ -2,11 +2,13 @@
 import multiprocessing
 import sqlite3
 import threading
+import time
 
 import pytest
 
+from planetx.survey import queue as queue_module
 from planetx.survey.patches import crawl_order
-from planetx.survey.queue import LeaseLostError, PatchQueue
+from planetx.survey.queue import LeaseLostError, NsideMismatchError, PatchQueue
 
 NSIDE = 2  # 48 patches: fast, but still a real crawl order
 
@@ -22,7 +24,7 @@ class FakeClock:
 @pytest.fixture
 def db(tmp_path):
     path = tmp_path / "sub" / "survey.sqlite"  # parent dir does not exist yet
-    with PatchQueue(path) as q:
+    with PatchQueue(path, create=True) as q:
         q.init(NSIDE)
     return path
 
@@ -47,6 +49,28 @@ def test_init_creates_parent_dir_and_all_patches(db):
     assert stats.current_ipix == crawl_order(NSIDE)[0]
 
 
+def test_missing_database_is_not_created_without_create(tmp_path):
+    path = tmp_path / "nested" / "survey.sqlite"
+    with pytest.raises(FileNotFoundError):
+        PatchQueue(path)
+    assert not path.parent.exists()
+
+
+def test_opening_an_existing_database_takes_no_write_lock(db, monkeypatch):
+    # The heartbeat opens a connection per patch; that must not wait on writers.
+    monkeypatch.setattr(queue_module, "BUSY_TIMEOUT_S", 1.0)
+    writer = sqlite3.connect(db, isolation_level=None)
+    writer.execute("BEGIN IMMEDIATE")
+    try:
+        started = time.monotonic()
+        with PatchQueue(db) as q:
+            assert q.stats().total == 48
+        assert time.monotonic() - started < 0.9
+    finally:
+        writer.execute("ROLLBACK")
+        writer.close()
+
+
 def test_database_uses_wal(db):
     conn = sqlite3.connect(db)
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
@@ -67,14 +91,14 @@ def test_init_is_idempotent_and_keeps_progress(db, clock):
 
 def test_init_default_nside_twice(tmp_path):
     path = tmp_path / "survey.sqlite"
-    with PatchQueue(path) as q:
+    with PatchQueue(path, create=True) as q:
         assert q.init() == 49152
         assert q.init() == 0
         assert q.stats().total == 49152
 
 
 def test_init_refuses_a_second_nside(db):
-    with PatchQueue(db) as q, pytest.raises(ValueError, match="nside=2"):
+    with PatchQueue(db) as q, pytest.raises(NsideMismatchError, match="nside=2"):
         q.init(4)
 
 
@@ -89,7 +113,7 @@ def test_claims_follow_rank_order(db, clock):
 
 
 def test_claim_on_empty_queue_returns_none(tmp_path):
-    with PatchQueue(tmp_path / "empty.sqlite") as q:
+    with PatchQueue(tmp_path / "empty.sqlite", create=True) as q:
         assert q.claim_next() is None
         assert q.stats().total == 0
 
@@ -204,6 +228,41 @@ def test_repeatedly_expiring_patch_ends_failed(db, clock):
         assert q.stats().counts["failed"] == 1
 
 
+def test_stats_count_expired_leases_as_pending(db, clock):
+    with open_queue(db, clock, worker_id="dead", lease_s=10) as q:
+        q.claim_next()
+        assert q.stats().counts["in_progress"] == 1
+        clock.t += 10
+        stats = q.stats()
+    assert stats.counts["in_progress"] == 0 and stats.counts["pending"] == 48
+    assert stats.current_rank == 0
+
+
+def test_complete_accepts_a_swept_but_unclaimed_patch(db, clock):
+    a = open_queue(db, clock, worker_id="a", lease_s=10)
+    b = open_queue(db, clock, worker_id="b", lease_s=10)
+    p0, p1 = a.claim_next(), a.claim_next()
+    clock.t += 11
+    assert b.claim_next().ipix == p0.ipix  # sweeps both, reclaims rank 0 only
+    assert a.patch_row(NSIDE, p1.ipix)["status"] == "pending"
+    a.complete(p1, {"n_visits": 2})  # nobody else holds it: keep the result
+    assert a.patch_row(NSIDE, p1.ipix)["status"] == "done"
+    with pytest.raises(LeaseLostError):
+        a.complete(p0, {})  # b holds it now
+    a.close()
+    b.close()
+
+
+def test_complete_accepts_a_patch_swept_to_failed(db, clock):
+    with open_queue(db, clock, worker_id="a", lease_s=10, max_attempts=1) as a:
+        p0, p1 = a.claim_next(), a.claim_next()
+        clock.t += 11
+        assert a.claim_next().rank == 2  # the sweep marked ranks 0 and 1 failed
+        a.complete(p0, {"n_visits": 1})
+        assert a.patch_row(NSIDE, p0.ipix)["status"] == "done"
+        assert a.patch_row(NSIDE, p1.ipix)["status"] == "failed"
+
+
 def test_lost_lease_cannot_be_completed(db, clock):
     a = open_queue(db, clock, worker_id="a", lease_s=10)
     b = open_queue(db, clock, worker_id="b", lease_s=10)
@@ -247,6 +306,11 @@ def test_readonly_open(db, tmp_path):
 def test_invalid_settings_rejected(tmp_path, kw):
     with pytest.raises(ValueError):
         PatchQueue(tmp_path / "x.sqlite", **kw)
+
+
+def test_readonly_and_create_are_exclusive(tmp_path):
+    with pytest.raises(ValueError):
+        PatchQueue(tmp_path / "x.sqlite", readonly=True, create=True)
 
 
 def _claim_all(path, worker_id: str) -> list[int]:

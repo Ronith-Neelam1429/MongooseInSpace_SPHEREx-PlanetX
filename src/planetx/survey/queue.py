@@ -3,12 +3,19 @@
 One row per HEALPix patch, created by `PatchQueue.init` with its crawl rank.
 Workers `claim_next()` the lowest-ranked available patch, process it, then
 `complete()` or `fail()` it. All state lives in the database, so a worker can
-be killed at any moment and restarted without losing or duplicating work:
+be killed at any moment and restarted without losing a patch.
+
+Processing is AT-LEAST-ONCE: a patch can be processed more than once (a
+worker dies after doing the work but before `complete()`, or stalls past its
+lease and another worker reclaims it). Only one result per patch is recorded
+here, but anything a processor writes elsewhere must be idempotent.
 
   * A claim takes a lease (`lease_s`) that the worker renews while it works.
     If the worker dies, the lease runs out and the next claim by any worker
     sweeps the patch back to pending, counting it as a failed attempt (so a
     patch that crashes the worker every time ends up `failed`, not looping).
+    Known cost: a redeploy that kills a worker mid-patch also uses up an
+    attempt; `requeue_failed()` gives such patches a fresh set.
   * `fail()` returns a patch to pending with a growing retry delay until
     `max_attempts`, then marks it failed. `release()` (clean shutdown) returns
     it to pending without counting an attempt.
@@ -71,6 +78,10 @@ _SCHEMA = (
 )
 
 
+class NsideMismatchError(ValueError):
+    """The database already holds patches at a different nside."""
+
+
 class LeaseLostError(RuntimeError):
     """The worker no longer holds this patch (its lease expired and it was reclaimed)."""
 
@@ -123,8 +134,12 @@ def _encode_summary(summary: dict[str, Any]) -> str:
 class PatchQueue:
     """Connection to the patch queue database. Not thread-safe: one per thread.
 
-    `readonly=True` opens an existing database without creating or changing
-    anything (for the API); it raises FileNotFoundError if the file is missing.
+    The database must already exist (FileNotFoundError otherwise) unless
+    `create=True`, which creates it and its parent directories. Opening an
+    existing database only reads unless the schema is missing, so opening
+    a connection per patch (the lease heartbeat does) takes no write lock.
+    `readonly=True` never writes (for the API). It does not create the
+    database file, but SQLite may create its -wal/-shm files next to it.
     """
 
     def __init__(
@@ -136,6 +151,7 @@ class PatchQueue:
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         retry_delay_s: float = DEFAULT_RETRY_DELAY_S,
         clock: Callable[[], float] = time.time,
+        create: bool = False,
         readonly: bool = False,
     ) -> None:
         if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
@@ -148,21 +164,33 @@ class PatchQueue:
         self.clock = clock
         self.readonly = readonly
 
-        if readonly:
-            if not self.path.is_file():
-                raise FileNotFoundError(f"survey database not found: {self.path}")
-            uri = f"{self.path.resolve().as_uri()}?mode=ro"
-            self._conn = sqlite3.connect(uri, uri=True, timeout=BUSY_TIMEOUT_S, isolation_level=None)
-        else:
+        if readonly and create:
+            raise ValueError("a read-only queue cannot create the database")
+        if create:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            # isolation_level=None: autocommit; transactions are explicit below.
-            self._conn = sqlite3.connect(self.path, timeout=BUSY_TIMEOUT_S, isolation_level=None)
-            mode = self._conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
-            if mode.lower() != "wal":
-                raise RuntimeError(f"could not enable WAL mode on {self.path} (got {mode!r})")
-            with self._write():
-                for statement in _SCHEMA:
-                    self._conn.execute(statement)
+        elif not self.path.is_file():
+            raise FileNotFoundError(f"survey database not found: {self.path} (run `init` first)")
+        # mode=rw/ro never creates the file; rwc does. isolation_level=None:
+        # autocommit, transactions are explicit (see _ImmediateTransaction).
+        mode = "ro" if readonly else ("rwc" if create else "rw")
+        uri = f"{self.path.resolve().as_uri()}?mode={mode}"
+        self._conn = sqlite3.connect(uri, uri=True, timeout=BUSY_TIMEOUT_S, isolation_level=None)
+        if readonly:
+            return
+        try:
+            # WAL is persistent in the file, so this only writes on first open.
+            journal = self._conn.execute("PRAGMA journal_mode").fetchone()[0]
+            if journal.lower() != "wal":
+                journal = self._conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                if journal.lower() != "wal":
+                    raise RuntimeError(f"could not enable WAL mode on {self.path} (got {journal!r})")
+            if not self._has_schema():
+                with self._write():
+                    for statement in _SCHEMA:
+                        self._conn.execute(statement)
+        except BaseException:
+            self._conn.close()
+            raise
 
     # -- connection plumbing -------------------------------------------------
 
@@ -192,7 +220,7 @@ class PatchQueue:
         """Add every patch at `nside` with its crawl rank. Returns how many were new.
 
         Idempotent: existing rows (and their progress) are left untouched.
-        Raises ValueError if the database already holds a different nside.
+        Raises NsideMismatchError if the database already holds a different nside.
         """
         validate_nside(nside)
         order = crawl_order(nside)
@@ -200,7 +228,9 @@ class PatchQueue:
         with self._write():
             existing = self.nside()
             if existing is not None and existing != nside:
-                raise ValueError(f"{self.path} already holds nside={existing}; refusing to add nside={nside}")
+                raise NsideMismatchError(
+                    f"{self.path} already holds nside={existing}; refusing to add nside={nside}"
+                )
             before = self._conn.total_changes
             self._conn.executemany(
                 "INSERT OR IGNORE INTO patches (nside, ipix, rank, created_at, updated_at)"
@@ -265,8 +295,13 @@ class PatchQueue:
     def complete(self, patch: Patch, summary: dict[str, Any]) -> None:
         """Mark `patch` done with a small JSON-serialisable result summary.
 
+        Also accepted when this worker's lease expired and the patch was swept
+        back to pending/failed but nobody has reclaimed it: the result is still
+        valid, and no one else is working on it.
+
         Raises TypeError/ValueError for a summary that is not a small JSON
-        object (nothing is written), LeaseLostError if this worker lost the patch.
+        object (nothing is written), LeaseLostError if another worker holds the
+        patch or it is already done.
         """
         text = _encode_summary(summary)
         self._update_owned(
@@ -274,6 +309,7 @@ class PatchQueue:
             "status = 'done', summary = :summary, last_error = NULL, finished_at = :now,"
             " claimed_by = NULL, lease_expires = NULL, retry_at = NULL, updated_at = :now",
             {"summary": text, "now": self.clock()},
+            accept_unclaimed=True,
         )
 
     def fail(self, patch: Patch, error: str) -> str:
@@ -306,14 +342,23 @@ class PatchQueue:
             {"now": self.clock()},
         )
 
-    def _update_owned(self, patch: Patch, assignments: str, params: dict[str, Any]) -> str:
-        """Apply `assignments` to `patch` if this worker still holds it; return the new status."""
+    def _update_owned(
+        self, patch: Patch, assignments: str, params: dict[str, Any], *, accept_unclaimed: bool = False
+    ) -> str:
+        """Apply `assignments` to `patch` if this worker still holds it; return the new status.
+
+        `accept_unclaimed` also matches a patch that is pending/failed with no
+        holder (swept after this worker's lease expired). The check and the
+        update are one statement, so no other worker can claim it in between.
+        `assignments` is always a constant from this module, never user input.
+        """
+        unclaimed = " OR (status IN ('pending', 'failed') AND claimed_by IS NULL)" if accept_unclaimed else ""
         with self._write():
             row = self._conn.execute(
                 f"""
                 UPDATE patches SET {assignments}
                 WHERE nside = :nside AND ipix = :ipix
-                  AND status = 'in_progress' AND claimed_by = :worker
+                  AND ((status = 'in_progress' AND claimed_by = :worker){unclaimed})
                 RETURNING status
                 """,
                 {**params, "nside": patch.nside, "ipix": patch.ipix, "worker": self.worker_id},
@@ -336,11 +381,24 @@ class PatchQueue:
     # -- reporting -----------------------------------------------------------
 
     def stats(self) -> QueueStats:
-        """Patch counts per status, plus the crawl frontier."""
+        """Patch counts per status, plus the crawl frontier.
+
+        An in_progress patch whose lease has expired counts as pending: its
+        worker is gone and the next claim sweeps it back (as pending, or as
+        failed if that was its last attempt).
+        """
         counts: dict[str, int] = dict.fromkeys(STATUSES, 0)
         if not self._has_schema():
             return QueueStats(nside=None, counts=counts, total=0, current_rank=None, current_ipix=None)
-        for status, n in self._conn.execute("SELECT status, COUNT(*) FROM patches GROUP BY status"):
+        rows = self._conn.execute(
+            """
+            SELECT CASE WHEN status = 'in_progress' AND lease_expires <= ? THEN 'pending' ELSE status END AS s,
+                   COUNT(*)
+            FROM patches GROUP BY s
+            """,
+            (self.clock(),),
+        )
+        for status, n in rows:
             counts[status] = n
         frontier = self._conn.execute(
             "SELECT rank, ipix FROM patches WHERE status IN ('pending', 'in_progress') ORDER BY rank LIMIT 1"
