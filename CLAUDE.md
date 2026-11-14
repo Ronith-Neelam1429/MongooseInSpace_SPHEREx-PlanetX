@@ -75,7 +75,7 @@ tutorials https://caltech-ipac.github.io/irsa-tutorials/spherex-intro
   (`conftest.py` holds the Barnard's Star reference fixture; `test_spherex.py`; `test_catalogs.py`)
 
 ## Plan / timeline
-Status: step 1 (connecting to the datasets and testing the connections) in progress on branch `setup/data-connections`.
+Status: step 1 (data connections) done, all services reachable (CDS through mirrors); branch `setup/data-connections`.
 1. Before the hackathon: data connections tested; notebook showing Barnard's Star moving; FastAPI + Aladin skeleton.
 2. Hackathon (48 h):
    - 0-4: roles and API contract
@@ -88,6 +88,22 @@ Status: step 1 (connecting to the datasets and testing the connections) in progr
    - 45-48: pitch
 3. Scope rule: after hour 24, only must-have features; cut from the bottom of the list.
 
+## Verified facts (connection tests, 2026-11-14)
+- SPHEREx MEF layers: IMAGE (MJy/sr, TAN-SIP WCS), FLAGS, VARIANCE, ZODI, EPSF, WCS-WAVE. The header has
+  MJD-AVG/DATE-AVG. Get wavelength per pixel with `WCS(hdul["IMAGE"].header, fobj=hdul, key="W")`,
+  which returns (wavelength, bandwidth) in um.
+- Barnard: DR1 has 2 passes (Aug-Oct 2025, Mar-May 2026); QR3 has a 3rd (Aug-Sep 2026). DR1 and QR3 share **no**
+  frames, so merging them doesn't double-count. Measured star position agrees with the Gaia-propagated one to 0.2 px.
+- Barnard is effectively missing from CatWISE2020 (saturated), and its halo has fake movers. Use CatWISE
+  for fainter objects (WISE 0855 gives ~8"/yr). The VizieR table is `II/365/catwise`, with PM in arcsec/yr.
+- CDS primary hosts (simbad/vizier/alasky.cds.unistra.fr) returned 404 on 2026-11-14. Use mirrors:
+  `Simbad().server = "simbad.harvard.edu"`, `Vizier(vizier_server="vizier.cfa.harvard.edu")`, HiPS mirrors at
+  irsa.ipac.caltech.edu / skies.esac.esa.int. The HiPS IDs are `CDS/P/allWISE/color` and `CDS/P/2MASS/color`
+  (alasky paths `AllWISE/RGB-W4-W2-W1` and `2MASS/Color`).
+- python.org CPython has no CA bundle: set `SSL_CERT_FILE=certifi.where()` at app startup.
+- astroquery caches responses, including errors, for a week. Disable the cache for anything that checks service health.
+- JPL SBIdent is slow (~20 s per call). SkyBoT is ~4 s. Gaia is ~7 s.
+
 ## Open questions
-- Cutout `size` units (assumed degrees) and the SPHEREx file layer names: confirm from the connection tests.
-- Whether the DR1 all-sky cube can be used directly as an Aladin sky map.
+- Whether the DR1 all-sky cube (HiPS order-5 tiles) can be used directly as an Aladin sky map.
+- Observer location: Horizons/SkyBoT/SBIdent tests use geocentric (500). Near-Earth objects need SPHEREx's own orbit as the observer location.
