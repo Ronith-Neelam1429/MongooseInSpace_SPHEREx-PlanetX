@@ -68,6 +68,19 @@ def test_r_draconis_is_variable_not_moving():
     assert rdra.variability["ratio"] > 1.25
 
 
+def test_north_ecliptic_pole_is_measured_in_time_windows():
+    # At the pole SPHEREx (detectors 2 and 5 only) comes back every week or two
+    # for the whole survey, so there are no gaps to split passes at. The field's
+    # stars must still be tracked, across time windows, and none of them moves.
+    coord, r = run("270.0 66.5607", per_pass=4)
+    assert len(r.passes) >= 9
+    assert all(r.frames[p[-1]].mjd - r.frames[p[0]].mjd <= 60 for p in r.passes)
+    assert not any("only one pass" in n for n in r.notes)
+    assert len(r.objects) >= 20
+    assert r.movers == []
+    assert r.pm_floor_arcsec_yr < 0.5
+
+
 def test_wise0855_motion_measured_in_stacks():
     # Too faint for single frames; found in per-pass stacks. Direction and
     # speed come out right, but its stacked positions scatter more than their
