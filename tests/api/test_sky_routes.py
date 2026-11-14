@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from planetx import cutouts, irsa
+from planetx.spherex import archive, cutouts
 from planetx.api.app import app
 from planetx.api.schemas import Visit
 from synthetic import make_mef
@@ -21,7 +21,7 @@ RA, DEC = 269.4485, 4.7394
 def _visit(obs_id, mjd, detector, collection="spherex_dr1"):
     return Visit(
         obs_id=obs_id, collection=collection, detector=detector, mjd=mjd,
-        date=irsa.mjd_to_date(mjd), wavelength_min_um=1.6, wavelength_max_um=2.4,
+        date=archive.mjd_to_date(mjd), wavelength_min_um=1.6, wavelength_max_um=2.4,
         access_url=URL.replace("0001_1D6", f"{obs_id}D{detector}"),
     )
 
@@ -40,7 +40,7 @@ def fake_visits(monkeypatch):
         calls.append((ra, dec, radius_arcsec))
         return list(VISITS)
 
-    monkeypatch.setattr(irsa, "query_visits", fake)
+    monkeypatch.setattr(archive, "query_visits", fake)
     return calls
 
 
@@ -69,9 +69,9 @@ def test_visits_rejects_bad_input(fake_visits, params):
 
 def test_visits_upstream_failure_is_502(monkeypatch):
     def down(*args):
-        raise irsa.UpstreamError("SIA query spherex_dr1 failed after 3 attempt(s): HTTP 503", 503, True)
+        raise archive.UpstreamError("SIA query spherex_dr1 failed after 3 attempt(s): HTTP 503", 503, True)
 
-    monkeypatch.setattr(irsa, "query_visits", down)
+    monkeypatch.setattr(archive, "query_visits", down)
     resp = client.get("/api/visits", params={"ra": RA, "dec": DEC})
     assert resp.status_code == 502
     assert "HTTP 503" in resp.json()["detail"]
@@ -113,7 +113,7 @@ def fake_fetch(cache_dir, monkeypatch):
         # Cutout centred where requested; the source sits 60" north of the TARGET.
         return make_mef(ra, dec, sources=[(RA, DEC + 60 / 3600, 100.0)])
 
-    monkeypatch.setattr(irsa, "fetch_cutout", fetch)
+    monkeypatch.setattr(archive, "fetch_cutout", fetch)
     return calls
 
 
@@ -169,9 +169,9 @@ def test_cutout_png_rejects_inverted_levels(fake_fetch):
 ])
 def test_cutout_upstream_errors(cache_dir, monkeypatch, status, expected):
     def fail(*args):
-        raise irsa.UpstreamError(f"cutout download failed: HTTP {status}", status, status == 503)
+        raise archive.UpstreamError(f"cutout download failed: HTTP {status}", status, status == 503)
 
-    monkeypatch.setattr(irsa, "fetch_cutout", fail)
+    monkeypatch.setattr(archive, "fetch_cutout", fail)
     resp = client.get("/api/cutout.json", params={"url": URL, "ra": RA, "dec": DEC})
     assert resp.status_code == expected
     assert f"HTTP {status}" in resp.json()["detail"]
@@ -179,10 +179,10 @@ def test_cutout_upstream_errors(cache_dir, monkeypatch, status, expected):
 
 def test_busy_irsa_slots_give_503_with_retry_after(cache_dir, monkeypatch):
     def busy(*args):
-        raise irsa.IrsaBusy("too many requests to IRSA in flight; try again shortly")
+        raise archive.IrsaBusy("too many requests to IRSA in flight; try again shortly")
 
-    monkeypatch.setattr(irsa, "fetch_cutout", busy)
-    monkeypatch.setattr(irsa, "query_visits", busy)
+    monkeypatch.setattr(archive, "fetch_cutout", busy)
+    monkeypatch.setattr(archive, "query_visits", busy)
     resp = client.get("/api/cutout.png", params={"url": URL, "ra": RA, "dec": DEC})
     assert resp.status_code == 503 and resp.headers["retry-after"] == "5"
     assert client.get("/api/visits", params={"ra": RA, "dec": DEC}).status_code == 503

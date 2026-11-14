@@ -1,6 +1,6 @@
 """Dev-only SPHEREx cutout fetcher for exercising the engine.
 
-Not the app's data layer (that's planetx.cutouts on feature/backend-api).
+Not the app's data layer (that's planetx.spherex.cutouts).
 Saves trimmed cutouts (IMAGE/FLAGS/VARIANCE/WCS-WAVE, ~40 KB instead of ~4 MB)
 under .cache/dev so reruns are offline.
 """

@@ -13,10 +13,10 @@ from astropy.io import fits
 from astropy.time import Time
 from PIL import Image
 
-from conftest import (
+from targets import (
     BARNARD_DEC_DEG, BARNARD_DISTANCE_PC, BARNARD_PMDEC, BARNARD_PMRA_COSDEC, BARNARD_RA_DEG,
 )
-from planetx import cutouts, irsa
+from planetx.spherex import archive, cutouts
 
 pytestmark = pytest.mark.network
 
@@ -60,7 +60,7 @@ def test_visits_at_barnard_span_at_least_three_passes(visits):
         assert 0.7 <= v["wavelength_min_um"] < v["wavelength_max_um"] <= 5.1
     assert len({v["access_url"] for v in rows}) == len(rows)
     for v in rows:  # every file (dr1 and qr3) must pass the cutout URL allow-list
-        irsa.validate_spherex_url(v["access_url"])
+        archive.validate_spherex_url(v["access_url"])
 
 
 def _frame_url(frame) -> str:

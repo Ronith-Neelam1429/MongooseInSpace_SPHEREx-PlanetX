@@ -13,7 +13,7 @@ from .fusion import (
     fuse_track,
     refine_objects,
 )
-from .irsa import ArchiveError, fetch_catalog
+from .catalogs import ArchiveError, fetch_catalog
 from .sources import (
     ALL,
     DEFAULT_MULTI,

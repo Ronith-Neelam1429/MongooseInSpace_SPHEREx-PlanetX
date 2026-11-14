@@ -3,7 +3,7 @@
 Base URL for local development: `http://127.0.0.1:8000` (run
 `uv run uvicorn planetx.api.app:app --reload`). Interactive docs: `/docs`.
 All angles are in degrees (ICRS), times are MJD (UTC) plus a `YYYY-MM-DD` date, and
-wavelengths are in microns. Response shapes are in `src/planetx/api/schemas.py`.
+wavelengths are in microns. Response shapes are in `backend/planetx/api/schemas.py`.
 
 ## Typical flow
 

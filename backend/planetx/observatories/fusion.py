@@ -39,7 +39,7 @@ from typing import Protocol
 
 import numpy as np
 
-from . import irsa
+from . import catalogs
 from .sources import (
     SPHEREX_ONLY,
     ArchivalSource,
@@ -494,7 +494,7 @@ def refine_objects(
     objects: Sequence[TrackLike],
     *,
     observatories: str | Iterable[str] | None = None,
-    fetch: Fetch = irsa.fetch_catalog,
+    fetch: Fetch = catalogs.fetch_catalog,
     params: FusionParams = FusionParams(),
     reach_arcsec: float = 300.0,
     neowise_radius_arcsec: float = 30.0,
@@ -532,18 +532,18 @@ def refine_objects(
     cx, cy = float(px.mean()), float(py.mean())
     c_ra, c_dec = _deproject(cx, cy, ra0, dec0)
     radius = float(np.hypot(px - cx, py - cy).max()) + reach_arcsec
-    if radius > irsa.MAX_RADIUS_ARCSEC:
+    if radius > catalogs.MAX_RADIUS_ARCSEC:
         result.notes.append(
-            f"archive search clipped from {radius:.0f}\" to {irsa.MAX_RADIUS_ARCSEC:.0f}\"; "
+            f"archive search clipped from {radius:.0f}\" to {catalogs.MAX_RADIUS_ARCSEC:.0f}\"; "
             "fast movers near the patch edge may lack counterparts"
         )
-        radius = irsa.MAX_RADIUS_ARCSEC
+        radius = catalogs.MAX_RADIUS_ARCSEC
 
     archive: dict[Observatory, list[ArchivalSource]] = {}
     for o in sorted(obs - {Observatory.SPHEREX, Observatory.NEOWISE}):
         try:
             archive[o] = fetch(o, c_ra, c_dec, radius)
-        except irsa.ArchiveError as exc:
+        except catalogs.ArchiveError as exc:
             log.warning("skipping %s: %s", o.value, exc)
             result.notes.append(f"{o.value} unavailable: {exc}")
             continue
@@ -563,7 +563,7 @@ def refine_objects(
             last = max(objects[i].sources, key=lambda s: s.mjd)
             try:
                 extra[i] = fetch(Observatory.NEOWISE, float(last.ra), float(last.dec), neowise_radius_arcsec)
-            except irsa.ArchiveError as exc:
+            except catalogs.ArchiveError as exc:
                 log.warning("skipping neowise for track %d: %s", i, exc)
                 result.notes.append(f"neowise unavailable for track {i}: {exc}")
                 continue

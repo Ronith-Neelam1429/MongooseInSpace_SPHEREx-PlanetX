@@ -14,7 +14,7 @@ from astropy import log
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "dev"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 from fetch import fetch_all, find_visits, pick_visits, resolve  # noqa: E402
 
 from planetx.engine import find_motion, frame_from_hdul  # noqa: E402

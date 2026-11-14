@@ -17,7 +17,7 @@ from planetx.observatories import (
     parse_observatories,
     refine_objects,
 )
-from planetx.observatories import irsa
+from planetx.observatories import catalogs
 from planetx.observatories.fusion import _deproject, _project
 
 RA0, DEC0 = 269.45, 4.74  # near Barnard's Star
@@ -285,7 +285,7 @@ def test_patch_frame_offset_is_measured_and_removed():
     assert all(f.verdict is Verdict.STATIONARY for f in result.fused)
     assert max(f.pm_total for f in result.fused) < 0.01
     assert {c[0] for c in calls} == {Observatory.TWOMASS, Observatory.ALLWISE, Observatory.CATWISE}
-    assert all(300 < radius <= irsa.MAX_RADIUS_ARCSEC for _, radius in calls)
+    assert all(300 < radius <= catalogs.MAX_RADIUS_ARCSEC for _, radius in calls)
     assert result.archive_counts[Observatory.CATWISE] == 12
 
 
@@ -365,8 +365,8 @@ def test_fetch_parses_2mass_and_filters_bad_rows(monkeypatch):
         seen.update(params)
         return FakeResponse(text=GATOR_2MASS)
 
-    monkeypatch.setattr(irsa.requests, "get", get)
-    sources = irsa.fetch_catalog(Observatory.TWOMASS, 269.4521, 4.6934, 40.0)
+    monkeypatch.setattr(catalogs.requests, "get", get)
+    sources = catalogs.fetch_catalog(Observatory.TWOMASS, 269.4521, 4.6934, 40.0)
 
     assert seen["catalog"] == "fp_psc" and seen["spatial"] == "cone"
     assert seen["objstr"] == "269.4521000 +4.6934000" and seen["radius"] == "40.00"
@@ -382,21 +382,21 @@ def test_fetch_parses_2mass_and_filters_bad_rows(monkeypatch):
 
 def test_fetch_reports_gator_errors_and_bad_input(monkeypatch):
     monkeypatch.setattr(
-        irsa.requests, "get",
+        catalogs.requests, "get",
         lambda url, params, timeout: FakeResponse(text='[struct stat="ERROR", msg="The catalog is not on the list."]'),
     )
     with pytest.raises(ArchiveError, match="not on the list"):
-        irsa.fetch_catalog(Observatory.TWOMASS, 10.0, 10.0, 30.0)
+        catalogs.fetch_catalog(Observatory.TWOMASS, 10.0, 10.0, 30.0)
     with pytest.raises(ValueError, match="radius"):
-        irsa.fetch_catalog(Observatory.NEOWISE, 10.0, 10.0, 300.0)
+        catalogs.fetch_catalog(Observatory.NEOWISE, 10.0, 10.0, 300.0)
     with pytest.raises(ValueError, match="invalid position"):
-        irsa.fetch_catalog(Observatory.TWOMASS, 10.0, 95.0, 30.0)
+        catalogs.fetch_catalog(Observatory.TWOMASS, 10.0, 95.0, 30.0)
     with pytest.raises(ValueError, match="no archival catalog"):
-        irsa.fetch_catalog(Observatory.SPHEREX, 10.0, 10.0, 30.0)
+        catalogs.fetch_catalog(Observatory.SPHEREX, 10.0, 10.0, 30.0)
 
 
 def test_fetch_retries_only_on_5xx(monkeypatch):
-    monkeypatch.setattr(irsa.time, "sleep", lambda s: None)
+    monkeypatch.setattr(catalogs.time, "sleep", lambda s: None)
     responses = [FakeResponse(502), FakeResponse(503), FakeResponse(text=GATOR_2MASS)]
     calls = []
 
@@ -404,14 +404,14 @@ def test_fetch_retries_only_on_5xx(monkeypatch):
         calls.append(1)
         return responses[len(calls) - 1]
 
-    monkeypatch.setattr(irsa.requests, "get", get)
-    assert len(irsa.fetch_catalog(Observatory.TWOMASS, 269.45, 4.69, 40.0)) == 3
+    monkeypatch.setattr(catalogs.requests, "get", get)
+    assert len(catalogs.fetch_catalog(Observatory.TWOMASS, 269.45, 4.69, 40.0)) == 3
     assert len(calls) == 3
 
     calls.clear()
     responses[:] = [FakeResponse(404)]
     with pytest.raises(ArchiveError, match="404"):
-        irsa.fetch_catalog(Observatory.TWOMASS, 269.45, 4.69, 40.0)
+        catalogs.fetch_catalog(Observatory.TWOMASS, 269.45, 4.69, 40.0)
     assert len(calls) == 1
 
 
@@ -433,7 +433,7 @@ def test_neowise_exposures_are_binned_per_visit_and_object():
     dec += [DEC0, DEC0]
     mjd += [58000.1, 58000.2]
     n = len(ra)
-    out = irsa.bin_exposures(
+    out = catalogs.bin_exposures(
         np.array(ra), np.array(dec), np.array(mjd), np.full(n, 0.3), np.full(n, 14.0)
     )
     assert len(out) == 3
@@ -580,7 +580,7 @@ def test_patch_frame_offset_ignores_movers():
 
 def test_binning_across_ra_zero():
     ra = np.array([359.99995, 0.00005] * 6)
-    out = irsa.bin_exposures(
+    out = catalogs.bin_exposures(
         ra, np.full(12, 66.56), 58000.0 + np.arange(12) * 0.066, np.full(12, 0.3), np.full(12, 14.0)
     )
     assert len(out) == 1
@@ -588,10 +588,10 @@ def test_binning_across_ra_zero():
 
 
 def test_truncated_catalog_response_is_an_error(monkeypatch):
-    monkeypatch.setattr(irsa.requests, "get", lambda url, params, timeout: FakeResponse(text=GATOR_2MASS))
+    monkeypatch.setattr(catalogs.requests, "get", lambda url, params, timeout: FakeResponse(text=GATOR_2MASS))
     monkeypatch.setitem(
-        irsa._CATALOGS, Observatory.TWOMASS,
-        irsa._Catalog("fp_psc", "ra", irsa._parse_2mass, max_rows=5),
+        catalogs._CATALOGS, Observatory.TWOMASS,
+        catalogs._Catalog("fp_psc", "ra", catalogs._parse_2mass, max_rows=5),
     )
     with pytest.raises(ArchiveError, match="smaller radius"):
-        irsa.fetch_catalog(Observatory.TWOMASS, 269.45, 4.69, 40.0)
+        catalogs.fetch_catalog(Observatory.TWOMASS, 269.45, 4.69, 40.0)

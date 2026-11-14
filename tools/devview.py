@@ -1,8 +1,8 @@
 """Barebones dev viewer: run the motion engine on a target and write an HTML page.
 
-    uv run python dev/devview.py barnard
-    uv run python dev/devview.py r-dra --detectors 1,2,3 --open
-    uv run python dev/devview.py "269.45 4.77" --size 0.08
+    uv run python tools/devview.py barnard
+    uv run python tools/devview.py r-dra --detectors 1,2,3 --open
+    uv run python tools/devview.py "269.45 4.77" --size 0.08
 
 The page blinks between survey passes (median of each pass's frames), can show
 each pass minus the first, draws movers' tracks and marks variables. It's a

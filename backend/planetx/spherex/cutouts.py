@@ -34,7 +34,7 @@ from astropy.wcs import WCS, FITSFixedWarning
 from PIL import Image
 from reproject import reproject_interp
 
-from planetx import irsa
+from planetx.spherex import archive
 from planetx.config import settings
 
 PIXEL_SCALE_ARCSEC = 6.15  # SPHEREx (SIA s_pixel_scale)
@@ -128,18 +128,18 @@ def cached_cutout(url: str, ra: float, dec: float, size_deg: float) -> Path:
 
     Keyed by (url, centre, size) as sent to IRSA. Only validated FITS is cached.
     """
-    irsa.validate_spherex_url(url)
+    archive.validate_spherex_url(url)
     ra, dec, size_deg = round(ra, 7), round(dec, 7), round(size_deg, 5)
     digest = hashlib.sha256(f"{url}|{ra:.7f}|{dec:.7f}|{size_deg:.5f}".encode()).hexdigest()
     path = settings.cache_dir / "cutouts" / digest[:2] / f"{digest}.fits"
     lock = _download_locks[int(digest[:8], 16) % len(_download_locks)]
-    if not lock.acquire(timeout=irsa.TOTAL_DEADLINE_S):
-        raise irsa.IrsaBusy("cutout downloads are queued up; try again shortly")
+    if not lock.acquire(timeout=archive.TOTAL_DEADLINE_S):
+        raise archive.IrsaBusy("cutout downloads are queued up; try again shortly")
     try:
         if path.exists():
             _touch(path)
             return path
-        _atomic_write(path, irsa.fetch_cutout(url, ra, dec, size_deg))
+        _atomic_write(path, archive.fetch_cutout(url, ra, dec, size_deg))
     finally:
         lock.release()
     _evict(settings.cache_dir / "cutouts", settings.cache_max_mb * 1024 * 1024, keep=path)

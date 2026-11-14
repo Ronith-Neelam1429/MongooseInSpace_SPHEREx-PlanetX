@@ -68,37 +68,40 @@ tutorials https://caltech-ipac.github.io/irsa-tutorials/spherex-intro
 
 ## Commands
 - Install: `uv sync`
-- Offline unit tests: `uv run pytest tests/unit -q`
-- Live API tests (network): `uv run pytest tests/api -q -m network`
-- Connection tests (live network): `uv run pytest tests/connections -v`
+- Offline tests (what CI runs): `uv run pytest -m "not network" -q`
+- Live tests (network): `uv run pytest -m network -q`; one part: e.g. `uv run pytest tests/api -m network`
 - API server: `uv run uvicorn planetx.api.app:app --reload` (docs at http://127.0.0.1:8000/docs)
-- Engine tests: `uv run pytest tests/engine -q` (synthetic offline; `-m network` real targets, cached in `.cache/dev`)
-- Engine dev viewer: `uv run python dev/devview.py barnard --open` (also `wise0855 --stack`, `eps-indi-b`,
-  `r-dra --per-pass 30`, `rw-aur`, a SIMBAD name or "ra dec"); writes `dev/out/<target>.html`
-- Survey (branch `feature/survey-queue`): `uv run python -m planetx.survey init|status|run --processor <name>|requeue-failed`
-- Settings (env vars, see `src/planetx/config.py`): `PLANETX_CACHE_DIR`, `PLANETX_CACHE_MAX_MB` (default 2048),
-  `PLANETX_DB`, `PLANETX_CORS_ORIGINS`
+- Frontend: `cd frontend && npm install && VITE_API_BASE=http://127.0.0.1:8000/api npm run dev` (http://localhost:5173)
+- Engine dev viewer: `uv run python tools/devview.py barnard --open` (also `wise0855 --stack`, `eps-indi-b`,
+  `r-dra --per-pass 30`, `rw-aur`, a SIMBAD name or "ra dec"); writes `tools/out/<target>.html`
+- Survey: `uv run python -m planetx.survey init|status|run --processor <name>|requeue-failed`
+- Settings (env vars, see `backend/planetx/config.py`): `PLANETX_CACHE_DIR`, `PLANETX_CACHE_MAX_MB` (default 2048),
+  `PLANETX_DB`, `PLANETX_CORS_ORIGINS`, `PLANETX_OBSERVATORIES`
 
 ## Layout
-- `src/planetx/irsa.py`: SIA2 queries (dr1 + qr3), IRSA URL allow-list, cutout download with timeouts/retries
-- `src/planetx/cutouts.py`: capped disk cache, resampling onto one north-up grid per position, PNG/float rendering
-- `src/planetx/api/`: FastAPI app; `schemas.py` is the frontend contract (guide: `docs/API.md`)
-- `src/planetx/survey/`: HEALPix crawl order from the NEP, resumable SQLite patch queue, worker + CLI
-- `src/planetx/engine/`: motion engine, pure functions (no network). `frame_from_hdul(hdul)` -> `Frame`;
+`frontend/` website (see `frontend/README.md`); `backend/planetx/` all Python code (import name `planetx`);
+`tests/<part>/` mirrors the backend parts; `tools/` dev scripts; `docs/`.
+- `backend/planetx/spherex/archive.py`: SIA2 queries (dr1 + qr3), IRSA URL allow-list, cutout download with timeouts/retries
+- `backend/planetx/spherex/cutouts.py`: capped disk cache, resampling onto one north-up grid per position, PNG/float rendering
+- `backend/planetx/api/`: FastAPI app; `schemas.py` is the frontend contract (guide: `docs/API.md`)
+- `backend/planetx/survey/`: HEALPix crawl order from the NEP, resumable SQLite patch queue, worker + CLI
+- `backend/planetx/engine/`: motion engine, pure functions (no network). `frame_from_hdul(hdul)` -> `Frame`;
   `find_motion(frames, stack=False)` -> `EngineResult` (.movers, .variables, .objects, .notes).
   `detect.py` per-frame sources (saturated stars located from their OVERFLOW/BLOOM patch); `motion.py` passes,
   alignment, linking, astrometric fit (parallax when it explains a misfit), variability at matched wavelengths;
   `stack.py` per-pass co-adds for faint objects
-- `dev/`: engine dev tools only (`fetch.py` cached cutout fetcher, `devview.py` HTML blink viewer)
-- `tests/unit/` offline, `tests/api/` live API, `tests/connections/`: live tests proving each external
-  data service works (`conftest.py` holds the Barnard's Star reference fixture)
+- `backend/planetx/observatories/`: archival cross-check (`catalogs.py` IRSA Gator queries, `fusion.py` refit)
+- `tools/`: engine dev tools only (`fetch.py` cached cutout fetcher, `devview.py` HTML blink viewer)
+- `tests/`: `api/ spherex/ engine/ observatories/ survey/` per part; `services/` live checks that each external
+  data service works. Live tests are marked `network`. Shared helpers sit in `tests/` (`conftest.py` keeps offline
+  tests off the network, `synthetic.py` fake SPHEREx files, `targets.py` reference positions).
 
 ## Key facts (verified live)
 - Cutout `size` is in degrees. Cutout HDUs: PRIMARY, IMAGE, FLAGS, VARIANCE, ZODI, EPSF, WCS-WAVE.
 - SIA `em_min/em_max` are metres. `obs_id` is shared by the 6 detectors of one exposure: key frames by
   `access_url` or (obs_id, detector).
 - Bright-star cores (e.g. Barnard's) carry BLOOM/SUR_ERROR flags: display masks only NONFUNC, MISSING_DATA,
-  HOT, COLD; photometry should use `cutouts.PHOTOMETRY_BAD_FLAGS`.
+  HOT, COLD; photometry should use `planetx.spherex.cutouts.PHOTOMETRY_BAD_FLAGS`.
 - ~360 visits at Barnard's Star in 3 passes; each first-time cutout is ~4 MB from IRSA.
 
 ## Plan / timeline
@@ -155,7 +158,7 @@ Work lands on `main` via feature branches (data connections, backend API, survey
 - Whether the DR1 all-sky cube (HiPS order-5 tiles) can be used directly as an Aladin sky map.
 - Observer location: Horizons/SkyBoT/SBIdent tests use geocentric (500). Near-Earth objects need SPHEREx's own orbit as the observer location.
 
-## Multi-observatory motion (`src/planetx/observatories/`)
+## Multi-observatory motion (`backend/planetx/observatories/`)
 - `refine_objects(engine_result.objects, observatories=...)` refits each SPHEREx track together with archival
   positions: 2MASS (~2000), AllWISE (2010.5), CatWISE2020 (2015.4), optionally NEOWISE single exposures (to 2024).
 - Toggle: `observatories="spherex"` (SPHEREx only, no network) | `"multi"` (default) | `"all"` (+NEOWISE) | comma list.

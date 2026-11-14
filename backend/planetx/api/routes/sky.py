@@ -1,14 +1,14 @@
 """SPHEREx data endpoints: visits, aligned frames and cutouts for a sky position.
 
 Handlers are plain ``def`` (run in the threadpool) because they block on IRSA
-and disk I/O. The data logic lives in planetx.irsa and planetx.cutouts.
+and disk I/O. The data logic lives in planetx.spherex.archive and planetx.spherex.cutouts.
 """
 from typing import Annotated
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Query, Response
 
-from planetx import cutouts, irsa
+from planetx.spherex import archive, cutouts
 from planetx.api.schemas import CutoutData, Frame, FramesResponse, Visit, VisitsResponse
 
 router = APIRouter(tags=["sky"])
@@ -37,28 +37,28 @@ FileUrl = Annotated[str, Query(
 _NO_CUTOUT_STATUS = {400, 404, 422}
 
 
-def _upstream_failure(exc: irsa.UpstreamError) -> HTTPException:
-    if isinstance(exc, irsa.IrsaBusy):
+def _upstream_failure(exc: archive.UpstreamError) -> HTTPException:
+    if isinstance(exc, archive.IrsaBusy):
         return HTTPException(503, str(exc), headers={"Retry-After": "5"})
     return HTTPException(502, f"IRSA request failed: {exc}")
 
 
 def _visits(ra: float, dec: float, radius_arcsec: float) -> list[Visit]:
     try:
-        return irsa.query_visits(ra, dec, radius_arcsec)
-    except irsa.UpstreamError as exc:
+        return archive.query_visits(ra, dec, radius_arcsec)
+    except archive.UpstreamError as exc:
         raise _upstream_failure(exc) from exc
 
 
 def _aligned(url: str, ra: float, dec: float, size_deg: float) -> cutouts.AlignedCutout:
     try:
-        irsa.validate_spherex_url(url)
+        archive.validate_spherex_url(url)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     try:
         return cutouts.aligned_cutout(url, ra, dec, size_deg)
-    except irsa.UpstreamError as exc:
-        if exc.status in _NO_CUTOUT_STATUS and not isinstance(exc, irsa.IrsaBusy):
+    except archive.UpstreamError as exc:
+        if exc.status in _NO_CUTOUT_STATUS and not isinstance(exc, archive.IrsaBusy):
             raise HTTPException(404, f"No cutout for this file and position: {exc}") from exc
         raise _upstream_failure(exc) from exc
 
@@ -73,7 +73,7 @@ def visits(
     found = _visits(ra, dec, radius_arcsec)
     return VisitsResponse(
         ra=ra, dec=dec, radius_arcsec=radius_arcsec, n_visits=len(found),
-        passes=irsa.group_passes(found), visits=found,
+        passes=archive.group_passes(found), visits=found,
     )
 
 

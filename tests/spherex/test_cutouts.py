@@ -1,4 +1,4 @@
-"""Offline tests for planetx.cutouts: grid orientation, masking, cache, encodings."""
+"""Offline tests for planetx.spherex.cutouts: grid orientation, masking, cache, encodings."""
 import io
 
 import numpy as np
@@ -7,7 +7,7 @@ from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS
 from PIL import Image
 
-from planetx import cutouts, irsa
+from planetx.spherex import archive, cutouts
 from synthetic import SHAPE, make_mef, synthetic_header, wavelength_at_raw_pixel
 
 RA, DEC = 120.0, 40.0
@@ -116,7 +116,7 @@ def test_cache_downloads_once_and_reuses(cache_dir, monkeypatch):
         calls.append((url, ra, dec, size))
         return body
 
-    monkeypatch.setattr(irsa, "fetch_cutout", fake_fetch)
+    monkeypatch.setattr(archive, "fetch_cutout", fake_fetch)
     p1 = cutouts.cached_cutout(URL, RA, DEC, 0.075)
     p2 = cutouts.cached_cutout(URL, RA, DEC, 0.075)
     assert p1 == p2 and p1.read_bytes() == body
@@ -135,7 +135,7 @@ def test_cache_evicts_least_recently_used_beyond_cap(tmp_path, monkeypatch):
     from planetx.config import Settings
 
     monkeypatch.setattr(cutouts, "settings", Settings(cache_dir=tmp_path, cache_max_mb=1))
-    monkeypatch.setattr(irsa, "fetch_cutout", lambda *a: b"x" * 400_000)
+    monkeypatch.setattr(archive, "fetch_cutout", lambda *a: b"x" * 400_000)
     a = cutouts.cached_cutout(URL, RA, DEC, 0.075)
     b = cutouts.cached_cutout(URL, RA, DEC + 0.01, 0.075)
     os.utime(a, (1_000, 1_000))
@@ -149,7 +149,7 @@ def test_cache_keeps_new_entry_even_if_larger_than_cap(tmp_path, monkeypatch):
     from planetx.config import Settings
 
     monkeypatch.setattr(cutouts, "settings", Settings(cache_dir=tmp_path, cache_max_mb=1))
-    monkeypatch.setattr(irsa, "fetch_cutout", lambda *a: b"x" * 2_000_000)
+    monkeypatch.setattr(archive, "fetch_cutout", lambda *a: b"x" * 2_000_000)
     old = cutouts.cached_cutout(URL, RA, DEC, 0.075)
     new = cutouts.cached_cutout(URL, RA, DEC + 0.01, 0.075)
     assert new.exists() and not old.exists()
@@ -158,7 +158,7 @@ def test_cache_keeps_new_entry_even_if_larger_than_cap(tmp_path, monkeypatch):
 def test_aligned_cutout_refetches_if_evicted_before_open(cache_dir, monkeypatch):
     body = make_mef(RA, DEC)
     calls = []
-    monkeypatch.setattr(irsa, "fetch_cutout", lambda *a: calls.append(a) or body)
+    monkeypatch.setattr(archive, "fetch_cutout", lambda *a: calls.append(a) or body)
     real_align = cutouts.align
 
     def align_after_eviction(path, *args):
@@ -182,16 +182,16 @@ def test_cache_cap_setting_rejects_invalid_values(monkeypatch, raw):
 
 def test_failed_download_leaves_no_cache_entry(cache_dir, monkeypatch):
     def failing(*args):
-        raise irsa.UpstreamError("HTTP 503: busy", status=503, transient=True)
+        raise archive.UpstreamError("HTTP 503: busy", status=503, transient=True)
 
-    monkeypatch.setattr(irsa, "fetch_cutout", failing)
-    with pytest.raises(irsa.UpstreamError):
+    monkeypatch.setattr(archive, "fetch_cutout", failing)
+    with pytest.raises(archive.UpstreamError):
         cutouts.cached_cutout(URL, RA, DEC, 0.075)
     assert not [p for p in cache_dir.rglob("*") if p.is_file()]
 
 
 def test_crash_during_write_leaves_no_partial_file(cache_dir, monkeypatch):
-    monkeypatch.setattr(irsa, "fetch_cutout", lambda *a: make_mef(RA, DEC))
+    monkeypatch.setattr(archive, "fetch_cutout", lambda *a: make_mef(RA, DEC))
 
     def crash(fd):
         raise OSError("disk full")
@@ -213,7 +213,7 @@ def test_concurrent_requests_for_one_cutout_download_it_once(cache_dir, monkeypa
         time.sleep(0.2)
         return make_mef(RA, DEC)
 
-    monkeypatch.setattr(irsa, "fetch_cutout", slow_fetch)
+    monkeypatch.setattr(archive, "fetch_cutout", slow_fetch)
     paths = []
     threads = [threading.Thread(target=lambda: paths.append(cutouts.cached_cutout(URL, RA, DEC, 0.075)))
                for _ in range(4)]
@@ -246,7 +246,7 @@ def test_align_masks_infinite_pixels(tmp_path):
 
 
 def test_cached_cutout_rejects_disallowed_url(cache_dir, monkeypatch):
-    monkeypatch.setattr(irsa, "fetch_cutout", lambda *a: pytest.fail("must not fetch"))
+    monkeypatch.setattr(archive, "fetch_cutout", lambda *a: pytest.fail("must not fetch"))
     with pytest.raises(ValueError):
         cutouts.cached_cutout("https://evil.example/ibe/data/spherex/x.fits", RA, DEC, 0.1)
 

@@ -1,6 +1,6 @@
 """Live tests: IRSA archival catalogs used to extend the SPHEREx time baseline.
 
-Run with `uv run pytest tests/connections -v` (needs network).
+Run with `uv run pytest tests/services -v` (needs network).
 """
 from dataclasses import dataclass
 
