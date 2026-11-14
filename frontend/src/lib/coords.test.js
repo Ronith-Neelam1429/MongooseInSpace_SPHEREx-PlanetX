@@ -103,3 +103,25 @@ describe('surveys', async () => {
     expect(SPHEREX_FRAMES.find((f) => f.frame === DEFAULT_FRAME).band).toBe(2);
   });
 });
+
+describe('camera flight path', async () => {
+  const { flightPath } = await import('./camera.js');
+  const { separation } = await import('./coords.js');
+  it('starts and ends on the requested views', () => {
+    const from = { ra: 350, dec: 10, fov: 180 }, to = { ra: 10, dec: -5, fov: 0.25 };
+    const p = flightPath(from, to);
+    const a = p.at(0), b = p.at(1);
+    expect(separation(a.ra, a.dec, from.ra, from.dec)).toBeLessThan(1e-6);
+    expect(separation(b.ra, b.dec, to.ra, to.dec)).toBeLessThan(1e-6);
+    expect(b.fov).toBeCloseTo(0.25, 6);
+    expect(p.duration).toBeGreaterThan(0.5);
+    expect(p.duration).toBeLessThanOrEqual(2.6);
+  });
+  it('crosses RA 0 the short way and widens on long hops at high zoom', () => {
+    const p = flightPath({ ra: 359, dec: 0, fov: 0.3 }, { ra: 1, dec: 0, fov: 0.3 });
+    const mid = p.at(0.5);
+    expect(mid.ra < 1 || mid.ra > 359).toBe(true);
+    const far = flightPath({ ra: 0, dec: 0, fov: 0.3 }, { ra: 90, dec: 0, fov: 0.3 });
+    expect(far.at(0.5).fov).toBeGreaterThan(10);
+  });
+});

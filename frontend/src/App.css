@@ -140,7 +140,7 @@
 .player { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
 .epoch { display: flex; gap: 6px; font-size: 13px; font-variant-numeric: tabular-nums; }
 .epoch .tabular { min-width: 3ch; }
-.legend { margin-left: auto; display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--dim); }
+.legend { margin-left: auto; display: flex; align-items: center; gap: 7px; padding: 6px 0; }
 .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
 
 .rows { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; font-variant-numeric: tabular-nums; }

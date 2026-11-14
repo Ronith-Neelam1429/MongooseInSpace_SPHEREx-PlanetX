@@ -33,6 +33,7 @@ export class StarField {
     this.hover = null;
     this.pointer = null;
     this.show = { gaia: true, simbad: true };
+    this.moversOnly = false;
     this.playing = !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     this.t0 = performance.now();
     this.pausedPhase = 1;
@@ -82,6 +83,8 @@ export class StarField {
   setSimbad(objects) { this.simbad = objects; this.viewKey = ''; }
   setFocus(obj) { this.focus = obj; }
   setVisible(show) { this.show = { ...this.show, ...show }; }
+  /** Fade everything slower than FAST_PM and show each fast star's full predicted path. */
+  setMoversOnly(on) { this.moversOnly = !!on; }
 
   setPlaying(on) {
     if (on === this.playing) return;
@@ -185,21 +188,31 @@ export class StarField {
         c.x = x; c.y = y;
         if (Math.hypot(x - c.a[0], y - c.a[1]) < 1.5) continue;
         if (c.g.pm >= FAST_PM) { fast.push(c); continue; }
+        if (this.moversOnly) continue;
         ctx.moveTo(c.a[0], c.a[1]);
         ctx.lineTo(x, y);
       }
       ctx.stroke();
+      if (this.moversOnly) for (const c of fast) this.drawPath(c);
       for (const c of fast) this.drawFastTrail(c, k);
 
       // Stars, binned by opacity to keep state changes low.
       const bins = new Map();
+      const faded = [];
       for (const c of this.cache) {
         const x = c.b ? c.x : c.a[0], y = c.b ? c.y : c.a[1];
         const isFast = c.g.pm >= FAST_PM;
+        if (this.moversOnly && !isFast) { faded.push([x, y, c.g.r]); continue; }
         const key = isFast ? 'fast' : Math.round(c.g.a * 10);
         if (!bins.has(key)) bins.set(key, []);
         bins.get(key).push([x, y, c.g.r]);
         projected.push({ kind: 'gaia', obj: c.g.s, x, y });
+      }
+      if (faded.length) {
+        ctx.beginPath();
+        for (const [x, y, r] of faded) { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, Math.PI * 2); }
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        ctx.fill();
       }
       for (const [key, list] of bins) {
         ctx.beginPath();
@@ -238,6 +251,20 @@ export class StarField {
     }
     ctx.setLineDash([2, 5]);
     ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Full predicted track (catalogue epoch to end of the span), dashed. */
+  drawPath(c) {
+    const { ctx } = this;
+    ctx.save();
+    ctx.setLineDash([2, 4]);
+    ctx.beginPath();
+    ctx.moveTo(c.a[0], c.a[1]);
+    ctx.lineTo(c.b[0], c.b[1]);
+    ctx.strokeStyle = `rgba(${SIGNAL},0.45)`;
     ctx.lineWidth = 1;
     ctx.stroke();
     ctx.restore();

@@ -69,7 +69,8 @@ export default function SkyMap({ initial, survey, frame, grid, onReady, onViewCh
     A.init.then(() => {
       if (cancelled || aladinRef.current || !divRef.current) return;
       const aladin = withBlackClear(() => A.aladin(divRef.current, {
-        projection: 'AIT',
+        // Orthographic: at wide zoom the sky reads as a globe seen from outside.
+        projection: 'SIN',
         cooFrame: 'ICRSd',
         fov: initial.fov,
         target: `${initial.ra} ${initial.dec}`,

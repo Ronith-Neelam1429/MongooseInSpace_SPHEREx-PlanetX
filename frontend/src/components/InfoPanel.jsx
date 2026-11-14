@@ -75,7 +75,7 @@ function Focused({ focus, onClear }) {
 
 export default function InfoPanel({
   sel, simbad, gaia, visits, focus, onFocus, onClearFocus, onClose, onRetry, onCopyLink, copied,
-  playing, onTogglePlay, getYears,
+  playing, onTogglePlay, getYears, moversOnly, onToggleMovers,
 }) {
   const { g, e } = useMemo(() => ({
     g: equatorialToGalactic(sel.ra, sel.dec),
@@ -149,7 +149,15 @@ export default function InfoPanel({
                     : <svg width="10" height="12" viewBox="0 0 10 12" aria-hidden="true"><path d="M0 0l10 6-10 6z" fill="currentColor" /></svg>}
                 </button>
                 <Epoch getYears={getYears} total={gaia.years.toLocaleString('en-US')} />
-                <span className="legend"><i className="dot signal-bg" />≥ {FAST_PM} mas/yr</span>
+                <button
+                  type="button"
+                  className={`opt legend ${moversOnly ? 'on' : ''}`}
+                  aria-pressed={moversOnly}
+                  title={`Show only stars moving faster than ${FAST_PM} mas/yr`}
+                  onClick={onToggleMovers}
+                >
+                  <i className="dot signal-bg" />Movers ≥ {FAST_PM}
+                </button>
               </div>
               {movers.length > 0 && (
                 <table className="rows">

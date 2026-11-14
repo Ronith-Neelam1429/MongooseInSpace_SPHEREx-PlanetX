@@ -5,6 +5,7 @@ import Search from './components/Search.jsx';
 import { decimalYear, formatDec, formatFov, formatRa, parseCoords, propagate } from './lib/coords.js';
 import { fetchVisits, queryGaia, querySimbad, resolveName } from './lib/services.js';
 import { StarField, arrowYears } from './lib/starfield.js';
+import { Camera, prefersReducedMotion } from './lib/camera.js';
 import { DEFAULT_FRAME, SPHEREX_FRAMES, SURVEYS, surveyById } from './lib/surveys.js';
 import { TARGET_FOV, findTarget } from './lib/targets.js';
 import { readViewFromUrl, writeViewToUrl } from './lib/url.js';
@@ -12,7 +13,8 @@ import './App.css';
 
 const GAIA_LIMIT = 1500;
 const urlView = readViewFromUrl();
-const INITIAL = { ra: 266.4, dec: -28.9, fov: 360, ...urlView };
+// Opens on a globe centred near the Galactic Centre, so the Milky Way crosses the sphere.
+const INITIAL = { ra: 266.4, dec: -18, fov: 180, ...urlView };
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 /** Each click zooms in until ~0.3°, then only recenters. */
@@ -48,6 +50,7 @@ function Toggle({ on, onClick, children }) {
 export default function App() {
   const map = useRef(null); // { aladin, el }
   const field = useRef(null);
+  const camera = useRef(null);
   const canvasRef = useRef(null);
   const searchRef = useRef(null);
   const readout = useRef(null);
@@ -67,7 +70,8 @@ export default function App() {
   const [gaia, setGaia] = useState({ status: 'idle' });
   const [visits, setVisits] = useState({ status: 'idle' });
   const [focus, setFocus] = useState(null);
-  const [playing, setPlaying] = useState(() => !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+  const [playing, setPlaying] = useState(() => !prefersReducedMotion());
+  const [moversOnly, setMoversOnly] = useState(false);
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState({ status: 'idle' });
   const [copied, setCopied] = useState(false);
@@ -109,8 +113,7 @@ export default function App() {
     const m = map.current;
     if (!m) return;
     const targetFov = fov ?? nextFov(m.aladin.getFov()[0]);
-    m.aladin.gotoRaDec(ra, dec);
-    m.aladin.setFoV(targetFov);
+    camera.current.flyTo({ ra, dec, fov: targetFov });
     const s = { ra, dec, radius: radiusFor(targetFov), label };
     setSel(s);
     setFocus(null);
@@ -160,6 +163,7 @@ export default function App() {
 
   const onReady = useCallback(({ aladin, el }) => {
     map.current = { aladin, el };
+    camera.current = new Camera(aladin, el);
     field.current = new StarField(canvasRef.current, aladin, {
       onHover: (hit) => el.classList.toggle('pointing', !!hit),
     });
@@ -169,10 +173,13 @@ export default function App() {
       runSearch(urlView.name);
     } else if (urlView.ra != null && (urlView.fov ?? 360) <= 5) {
       select(urlView.ra, urlView.dec, { fov: urlView.fov });
+    } else if (INITIAL.fov >= 60) {
+      camera.current.spin();
     }
   }, [runSearch, select]);
 
-  useEffect(() => () => field.current?.destroy(), []);
+  useEffect(() => () => { field.current?.destroy(); camera.current?.stop(); }, []);
+  useEffect(() => { field.current?.setMoversOnly(moversOnly); }, [moversOnly, ready]);
   useEffect(() => { field.current?.setVisible({ gaia: show.gaia, simbad: show.simbad }); }, [show, ready]);
   useEffect(() => { field.current?.setPlaying(playing); }, [playing, ready]);
 
@@ -221,7 +228,8 @@ export default function App() {
   const onFocus = useCallback((kind, obj) => {
     setFocus({ kind, obj });
     field.current?.setFocus(obj);
-    map.current?.aladin.gotoRaDec(obj.ra, obj.dec);
+    const c = camera.current;
+    if (c) c.flyTo({ ra: obj.ra, dec: obj.dec, fov: c.view().fov });
   }, []);
 
   const clearFocus = useCallback(() => { setFocus(null); field.current?.setFocus(null); }, []);
@@ -334,6 +342,8 @@ export default function App() {
           copied={copied}
           playing={playing}
           onTogglePlay={() => setPlaying(!playing)}
+          moversOnly={moversOnly}
+          onToggleMovers={() => setMoversOnly(!moversOnly)}
           getYears={getYears}
         />
       )}
