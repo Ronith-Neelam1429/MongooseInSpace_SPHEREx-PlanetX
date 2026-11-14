@@ -88,3 +88,37 @@ class CutoutData(BaseModel):
     wavelength_um: float | None = None
     bunit: str = Field(description="Pixel unit, e.g. MJy/sr")
     data_b64: str
+
+
+class SurveyCounts(BaseModel):
+    pending: int = 0
+    in_progress: int = 0
+    done: int = 0
+    failed: int = 0
+
+
+class SurveyStatus(BaseModel):
+    """Progress of the offline survey crawler (all zero before the queue exists)."""
+
+    nside: int | None = Field(default=None, description="HEALPix nside of the patches; null before init")
+    moc_order: int | None = Field(default=None, description="HEALPix order = log2(nside)")
+    total: int = Field(description="Number of patches in the queue")
+    counts: SurveyCounts
+    current_rank: int | None = Field(
+        default=None, description="Crawl rank of the lowest patch not yet done or failed; null when finished"
+    )
+    current_ra: float | None = Field(default=None, description="Centre RA of the patch at current_rank")
+    current_dec: float | None = Field(default=None, description="Centre Dec of the patch at current_rank")
+    current_radius_deg: float | None = Field(
+        default=None, description="Distance of that patch from the North Ecliptic Pole (how far out the crawl is)"
+    )
+    readable: bool = Field(
+        default=True,
+        description="False if the survey database exists but could not be opened (counts are then zero)",
+    )
+
+
+# Done patches as an Aladin Lite MOC JSON: {"<order>": [NESTED ipix, ...]}, with
+# order = log2(nside). Pass straight to `A.MOCFromJSON(coverage)`. The list is
+# empty until the first patch is done (skip drawing then).
+SurveyCoverage = dict[str, list[int]]
