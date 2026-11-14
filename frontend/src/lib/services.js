@@ -165,6 +165,8 @@ export async function resolveName(name, { signal } = {}) {
  * SPHEREx visits for a position. Backend contract (proposed):
  *   GET {API_BASE}/visits?ra=<deg>&dec=<deg>
  *   -> { visits: [{ date: ISO string, obs_id?: string, band?: string, detector?: number }] }
+ *   The PlanetX API serves this at {API_BASE}=<host>/api; it sends date (YYYY-MM-DD), detector (1-6),
+ *   access_url (unique per visit) and obs_id (shared by an exposure's 6 detectors).
  * Returns null when no backend is configured.
  */
 export async function fetchVisits(ra, dec, { signal } = {}) {

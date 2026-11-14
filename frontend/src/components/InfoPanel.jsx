@@ -128,7 +128,8 @@ export default function InfoPanel({
             : (
               <ol className="visits">
                 {visits.visits.map((v, i) => (
-                  <li key={v.obs_id || i}><span>{String(v.date || '').slice(0, 10) || '–'}</span><span className="dim">{v.band || ''}</span></li>
+                  // obs_id is shared by an exposure's 6 detectors; access_url is unique per visit.
+                  <li key={v.access_url || i}><span>{String(v.date || '').slice(0, 10) || '–'}</span><span className="dim">{v.band || (v.detector ? `D${v.detector}` : '')}</span></li>
                 ))}
               </ol>
             ))}
