@@ -68,14 +68,34 @@ tutorials https://caltech-ipac.github.io/irsa-tutorials/spherex-intro
 
 ## Commands
 - Install: `uv sync`
+- Offline unit tests: `uv run pytest tests/unit -q`
+- Live API tests (network): `uv run pytest tests/api -q -m network`
 - Connection tests (live network): `uv run pytest tests/connections -v`
+- API server: `uv run uvicorn planetx.api.app:app --reload` (docs at http://127.0.0.1:8000/docs)
+- Survey (branch `feature/survey-queue`): `uv run python -m planetx.survey init|status|run --processor <name>|requeue-failed`
+- Settings (env vars, see `src/planetx/config.py`): `PLANETX_CACHE_DIR`, `PLANETX_CACHE_MAX_MB` (default 2048),
+  `PLANETX_DB`, `PLANETX_CORS_ORIGINS`
 
 ## Layout
-- `tests/connections/`: live tests proving each external data service works
-  (`conftest.py` holds the Barnard's Star reference fixture; `test_spherex.py`; `test_catalogs.py`)
+- `src/planetx/irsa.py`: SIA2 queries (dr1 + qr3), IRSA URL allow-list, cutout download with timeouts/retries
+- `src/planetx/cutouts.py`: capped disk cache, resampling onto one north-up grid per position, PNG/float rendering
+- `src/planetx/api/`: FastAPI app; `schemas.py` is the frontend contract (guide: `docs/API.md`)
+- `src/planetx/survey/`: HEALPix crawl order from the NEP, resumable SQLite patch queue, worker + CLI
+- `src/planetx/engine/`: motion engine (pure functions; built in another session on `feature/motion-engine`)
+- `tests/unit/` offline, `tests/api/` live API, `tests/connections/`: live tests proving each external
+  data service works (`conftest.py` holds the Barnard's Star reference fixture)
+
+## Key facts (verified live)
+- Cutout `size` is in degrees. Cutout HDUs: PRIMARY, IMAGE, FLAGS, VARIANCE, ZODI, EPSF, WCS-WAVE.
+- SIA `em_min/em_max` are metres. `obs_id` is shared by the 6 detectors of one exposure: key frames by
+  `access_url` or (obs_id, detector).
+- Bright-star cores (e.g. Barnard's) carry BLOOM/SUR_ERROR flags: display masks only NONFUNC, MISSING_DATA,
+  HOT, COLD; photometry should use `cutouts.PHOTOMETRY_BAD_FLAGS`.
+- ~360 visits at Barnard's Star in 3 passes; each first-time cutout is ~4 MB from IRSA.
 
 ## Plan / timeline
-Status: step 1 (data connections) done, all services reachable (CDS through mirrors); branch `setup/data-connections`.
+Status: hackathon in progress. Step 1 (data connections) done, all services reachable (CDS through mirrors).
+Work lands on `main` via feature branches (data connections, backend API, survey queue, motion engine, frontend).
 1. Before the hackathon: data connections tested; notebook showing Barnard's Star moving; FastAPI + Aladin skeleton.
 2. Hackathon (48 h):
    - 0-4: roles and API contract
