@@ -91,3 +91,23 @@ Status: step 1 (connecting to the datasets and testing the connections) in progr
 ## Open questions
 - Cutout `size` units (assumed degrees) and the SPHEREx file layer names: confirm from the connection tests.
 - Whether the DR1 all-sky cube can be used directly as an Aladin sky map.
+
+## Multi-observatory motion (`src/planetx/observatories/`)
+- `refine_objects(engine_result.objects, observatories=...)` refits each SPHEREx track together with archival
+  positions: 2MASS (~2000), AllWISE (2010.5), CatWISE2020 (2015.4), optionally NEOWISE single exposures (to 2024).
+- Toggle: `observatories="spherex"` (SPHEREx only, no network) | `"multi"` (default) | `"all"` (+NEOWISE) | comma list.
+  Default comes from env `PLANETX_OBSERVATORIES`. The engine itself stays SPHEREx-only and network-free.
+- Verdicts: confirmed / stationary / refuted / unconfirmed / spherex_only. `FusedMotion.is_mover` is None when the
+  archive has no say, so keep the engine's own flag then.
+- Catalogs come from IRSA Gator (`/cgi-bin/Gator/nph-query`), ~1.5 s per cone. IRSA TAP timed out (>90 s) on
+  `catwise_2020` and `neowiser_p1bs_psd` on 2026-11-14. Gator reports errors as HTTP 200 with a `[struct stat="ERROR"` body.
+- NEOWISE single exposures near the NEP: ~45,000 rows in a 20" cone, ~1 min. Hence opt-in, per mover candidate, 30" cone.
+- CatWISE lists a fast mover as several entries (WISE 0855: three within 1.6" at the 2015.4 position); same-catalog
+  entries within 2" count as one object. Barnard's Star has no usable AllWISE/CatWISE entry (saturated); 2MASS carries it.
+- Real data (engine output on the cached Barnard cutouts, 163 frames, 95 tracks): Barnard goes from
+  (-0.48, +10.42) +- 1.77 to (-0.820, +10.362) +- 0.029 arcsec/yr (Gaia: -0.80, +10.36); 83 tracks stationary,
+  11 unconfirmed, no false movers. RW Aur field: 50 stationary, 2 unconfirmed, no movers.
+- False movers seen on the way and the guards that stop them: a faint bystander inside a loose first search
+  area (chance-alignment test, brightness-ranked); neighbours resolved by 2MASS/WISE inside one blended SPHEREx
+  pixel (motion needs > 6.2" total shift; a single archival epoch confirms only if SPHEREx alone sees >= 3 sigma).
+- Usage needs both this package and the engine: `refine_objects(find_motion(frames).objects)`.

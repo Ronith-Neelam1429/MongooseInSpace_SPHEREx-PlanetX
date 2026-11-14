@@ -28,6 +28,12 @@ class Settings:
     db_path: Path = field(
         default_factory=lambda: Path(os.environ.get("PLANETX_DB", "data/survey.sqlite"))
     )
+    # Observatories the motion engine may combine: "spherex" (SPHEREx only),
+    # "multi" (+ 2MASS, AllWISE, CatWISE), "all" (+ NEOWISE), or a comma list.
+    # Parsed by planetx.observatories.parse_observatories.
+    observatories: str = field(
+        default_factory=lambda: os.environ.get("PLANETX_OBSERVATORIES", "multi")
+    )
     # Browser origins allowed to call the API (the Vite dev server by default).
     cors_origins: list[str] = field(
         default_factory=lambda: _split(
