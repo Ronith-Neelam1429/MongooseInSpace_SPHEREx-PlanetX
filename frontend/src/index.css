@@ -1,0 +1,33 @@
+:root {
+  --bg: #000;
+  --fg: #f4f4f2;
+  --dim: #8f8f8c;
+  --faint: #55554f;
+  --line: #262624;
+  --hover: #121211;
+  --veil: rgba(0, 0, 0, 0.72);
+  --signal: #ff4d2e;
+  --serif: 'Instrument Serif', 'Times New Roman', serif;
+  --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+  color-scheme: dark;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'zero' 0;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body { overflow: hidden; background: var(--bg); }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+h1, h2, h3, p, ol, dl, dd { margin: 0; }
+ol { padding: 0; list-style: none; }
+:focus-visible { outline: 1px solid var(--fg); outline-offset: 2px; }
+::selection { background: var(--fg); color: var(--bg); }
+
+* { scrollbar-width: thin; scrollbar-color: #333 transparent; }
