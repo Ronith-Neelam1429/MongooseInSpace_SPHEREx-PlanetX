@@ -137,42 +137,54 @@ Work lands on `main` via feature branches (data connections, backend API, survey
 - astroquery caches responses, including errors, for a week. Disable the cache for anything that checks service health.
 - JPL SBIdent is slow (~20 s per call). SkyBoT is ~4 s. Gaia is ~7 s.
 
-## Engine results (real data, 2026-11-14)
-- Barnard 10.45"/yr PA 358 (Gaia 10.39/356); Eps Indi B 4.67"/yr PA 122, parallax 0.36±0.18" (lit 4.7/122,
-  0.28"); R Dra variable (P3/P1 0.56); no false movers on these fields.
-- WISE 0855 only in per-pass stacks: 8.9"/yr PA 284 but 3.2 sigma (stack centroid errors underestimated), so it's
-  a "candidate", not a mover.
-- Constants tuned on these few targets (SATURATED_PASS_FLOOR_PX, PASS_FLOOR_ARCSEC, centroid sigma FWHM/SNR,
-  wing annuli): re-derive from many static stars before trusting survey-wide significances.
+## Engine results (real data, cached cutouts, 2026-11-14 evening)
+- Single frames: Barnard 10.45"/yr PA 358, 6.0 sigma; Eps Indi B 4.65"/yr PA 122, 31 sigma, parallax 0.36" (lit 4.7/122,
+  0.28"); R Dra variable; no false movers on Barnard, Eps Indi B, R Dra, WISE 0855, NEP (RW Aur not rechecked).
+- Stacks (per pass and detector): WISE 0855 7.05 +- 1.35"/yr PA 276, 5.2 sigma (lit ~8.1); Eps Indi B 4.50"/yr 10 sigma.
+- Position errors are refitted on 361 static tracks (`tools/calibrate_errors.py`) and then calibrated per field and
+  per SNR band (<15, 15-40, >=40) from that field's static stars (`EngineResult.position_error_scale`, notes).
+  Static-star chi2/dof ~0.9-1.3 on most fields.
 
-## Engine known problems (from review; fix before the survey crawler relies on it)
-- Passes split on > 60-day gaps: near the ecliptic poles (where the crawl starts) SPHEREx revisits continuously,
-  so everything becomes one pass and nothing is measured. Bin by time windows instead.
-- Linking is O(n^2) in unlinked sources with per-call SkyCoord transforms: minutes per crowded field.
-  Vectorise offsets once and use scipy cKDTree.
-- Stack mode: one co-add across detectors dilutes red objects; stacks carry no wavelength, so no variability.
-- A mover blending with a field star in one pass is rejected via the missing-pass check.
-- Variability pairs overlap (one detection in many pairs), which overstates significance in deep fields.
-- `find_motion` now sorts its input by time (3e72fba), so results no longer depend on input order. That
-  exposed a stack-mode weakness: time-ordered stacks give Eps Indi B 4.28"/yr (true 4.68; 6.0" shift, just
-  under the 1 px mover bar) and make WISE 0855 a 6.6 sigma mover at 7.1"/yr. Both real-target stack tests
-  are strict xfails until stack positions are fixed. The website and survey never use stack mode.
-- The website samples ~76 frames per field: too few matching-wavelength pairs for R Dra's variability
-  (flagged only with the dev tools' 252-frame sample). Same before and after the Nov 14 merge.
-- Real-target tests resolve names via SIMBAD each run (not fully offline).
+## Engine known problems (still open)
+- Faint static 3-pass tracks can show large apparent motions (e.g. 5.5"/yr at 10 sigma, chi2 fine); they stay
+  non-movers only via the 1 px bar. Suspect photocentre shifts of blended pairs.
+- NEP single-frame errors still too small (static chi2/dof ~1.9).
+- Stack mode does no variability check (one stack per pass and detector gives too few pairs; needs forced photometry).
+- Stack epochs are frame-weighted, not weighted by a red object's own flux; parallax from 3 passes is unreliable
+  (a 1-dof parallax fit no longer removes the line fit's chi2 inflation).
+- Saturated-star floor (SATURATED_PASS_FLOOR_PX) and wing annuli not refitted (too few saturated static stars).
+- The website samples ~76 frames per field: too few matching-wavelength pairs for R Dra's variability.
+- Guards added this round (keep their tests): blended pass needs blend evidence (blocker seen in >= 2 other passes
+  and brighter by >= half the mover's flux); a 2-measured-pass track with a pass seen in < half its frames at
+  SNR < 10 cannot be a mover; 2-pass movers need 10 sigma.
 
 ## Engine in the website (2026-11-14)
-- "Run engine" in the field panel polls `GET /api/motion`; results are drawn in cyan on the sky (`StarField.setMotion`),
-  Gaia's catalogued motion stays red. The engine runs only on request (about 54 frames, ~216 MB from IRSA the first time).
-- Live on Barnard's Star (54 frames, detectors 1-3): mover 9.91"/yr PA 2, 5.1 sigma; 281 tracks, 1 candidate.
-- Seen there: a second "mover" that SPHEREx alone puts at 1.4 sigma but AllWISE+CatWISE "confirm" at 2.0"/yr.
-  Likely a false match in Barnard's halo (see the CatWISE note above); the fusion guards need a look.
-- `engine/frames.py` evaluates WCS-WAVE without dropping the SIP cards (`spherex/cutouts.py` drops them): astropy logs
-  an INFO per frame and the frame wavelength may be slightly off.
+- Every object card opens with telescope pictures oldest first (2MASS ~2000, WISE ~2010, SPHEREx passes), with
+  two zooms ("SPHEREx passes" / "25 years"); catalogued stars get pictures before any engine run
+  (`/api/motion/evidence/surveys`, `/api/frames`, `/api/cutout.png`, loaded lazily). Then the verdict, the
+  "Is the motion real?" checklist, the position chart, and a "Show spectrum" section (`GET /api/spectrum`).
+- "Find what moves" polls `GET /api/motion` (about 54 frames, ~216 MB from IRSA the first time); it only runs on request,
+  also from the candidates list ("Run the engine here").
+- Barnard's Star test URL: `?ra=269.4473&dec=4.7685&fov=0.25` (the J2000 position 269.452/4.693 is 4.5' off now
+  and falls outside the engine's field).
+- Dev servers on non-default ports need `PLANETX_CORS_ORIGINS` set to the page's exact origin.
+
+## Spectra (`backend/planetx/spherex/spectrum.py`, `GET /api/spectrum`)
+- Forced aperture photometry (1.5 px, EPSF aperture correction) following proper motion, binned to 102 bands, flux in
+  mJy; methane (1.6, 2.2, 3.3 um) and water (1.4, 1.9, 2.7 um) depths. Wording: "suggests", never "is".
+- Live: a plain star matches 2MASS to ~5% with no false dips; Eps Indi B shows methane and water ("suggests a cool
+  brown dwarf"); WISE 0855 shows 3.3 um methane but a G 16.3 star ~4" away supplies all its light below 2.5 um
+  (no neighbour check yet); Barnard is saturated in every exposure.
+
+## Known-asteroid check (`backend/planetx/classify/`)
+- SkyBoT takes only MPC codes (`-observer`; astroquery's `location` sends `-loc`, which SkyBoT ignores; SPHEREx's
+  code 288 answers as 500). JPL Horizons has SPHEREx as body -163182, so SkyBoT's geocentric positions are moved
+  to SPHEREx's position per pass (`classify/observer.py`, cached per day). JPL SBIdent takes `xobs` but is unused.
+  Horizons down -> radius widened by the worst-case parallax, a note, and a 10 min back-off. Stacked runs skip it.
+- An object near a slow Gaia star is static when its motion agrees with the star's; otherwise it is named "near Gaia DR3 ...".
 
 ## Open questions
 - Whether the DR1 all-sky cube (HiPS order-5 tiles) can be used directly as an Aladin sky map.
-- Observer location: Horizons/SkyBoT/SBIdent tests use geocentric (500). Near-Earth objects need SPHEREx's own orbit as the observer location.
 
 ## Multi-observatory motion (`backend/planetx/observatories/`)
 - `refine_objects(engine_result.objects, observatories=...)` refits each SPHEREx track together with archival
@@ -186,9 +198,11 @@ Work lands on `main` via feature branches (data connections, backend API, survey
 - NEOWISE single exposures near the NEP: ~45,000 rows in a 20" cone, ~1 min. Hence opt-in, per mover candidate, 30" cone.
 - CatWISE lists a fast mover as several entries (WISE 0855: three within 1.6" at the 2015.4 position); same-catalog
   entries within 2" count as one object. Barnard's Star has no usable AllWISE/CatWISE entry (saturated); 2MASS carries it.
-- Real data (engine output on the cached Barnard cutouts, 163 frames, 95 tracks): Barnard goes from
-  (-0.48, +10.42) +- 1.77 to (-0.820, +10.362) +- 0.029 arcsec/yr (Gaia: -0.80, +10.36); 83 tracks stationary,
-  11 unconfirmed, no false movers. RW Aur field: 50 stationary, 2 unconfirmed, no movers.
+- Real data (live 54-frame Barnard sample): Barnard refits to (-0.82, +10.36) +- 0.03 arcsec/yr (Gaia -0.80, +10.36).
+- Under 3 sigma in SPHEREx, confirmation needs secure (unlikely-by-chance) epochs from two independent survey
+  families (2MASS vs WISE; AllWISE+CatWISE share exposures and count as one). A significant one-family motion sets
+  `FusedMotion.archive_candidate` (API `ArchiveCheck.candidate`): shown as a candidate, never confirmed.
+  `ArchiveCheck.notes` says why. This stopped the Barnard-halo false "confirmed" mover.
 - False movers seen on the way and the guards that stop them: a faint bystander inside a loose first search
   area (chance-alignment test, brightness-ranked); neighbours resolved by 2MASS/WISE inside one blended SPHEREx
   pixel (motion needs > 6.2" total shift; a single archival epoch confirms only if SPHEREx alone sees >= 3 sigma).
