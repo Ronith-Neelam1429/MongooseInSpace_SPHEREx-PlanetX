@@ -11,10 +11,12 @@ import { EnginePictures, Exposures, Chart, Proof, VerdictReason } from './Motion
 import { useChecks, useEvidence, useVerdict } from './useEvidence.js';
 import StarTimelapse from './StarTimelapse.jsx';
 import Spectrum from './Spectrum.jsx';
+import Stats from './Stats.jsx';
 import { engineTarget, knownTarget } from '../lib/spectrum.js';
 
 const n = (v, d = 2) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
 const signed = (v, d) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`;
+const ly = (v) => (v == null ? null : `${v < 10 ? v.toFixed(1) : Math.round(v).toLocaleString('en-US')} ly`);
 const CATALOG = { gaia: 'Gaia', simbad: 'SIMBAD', skybot: 'SkyBoT' };
 const OBSERVATORY = { '2mass': '2MASS', allwise: 'AllWISE', catwise: 'CatWISE', neowise: 'NEOWISE' };
 // What a catalogued object is, in a few words, by its class (lib/classes.js).
@@ -125,10 +127,15 @@ function EngineCard({ o, who, field, backLabel, onBack, onClose }) {
     <>
       <Head tone="measured-bg" kicker={`Measured in SPHEREx images · ${verdict(o)}`} title={name} backLabel={backLabel} onBack={onBack} onClose={onClose} />
       <div className="panel-body">
+        <Stats label="This object in numbers" items={[
+          { label: 'Motion', value: moving ? `${speed(m.pm)}″/yr` : 'none', sub: moving ? compass(m.pa) : 'accepted', tone: moving ? 'measured' : '' },
+          { label: 'Certainty', value: moving ? `${m.sigma.toFixed(1)}σ` : null, sub: moving ? (m.fused ? 'with archives' : 'SPHEREx only') : '', title: 'How many times larger than its error the motion is' },
+          { label: 'Seen', value: String(o.track.length), sub: o.track.length === 1 ? 'pass' : 'passes' },
+          { label: 'Brightness', value: o.is_variable && o.variability ? `×${o.variability.ratio.toFixed(2)}` : 'steady', sub: o.is_variable ? 'changed' : '', tone: o.is_variable ? 'measured' : '' },
+        ]} />
         <section className="card-pictures ev" aria-label="Telescope pictures">
           <EvidenceBoundary><EnginePictures object={o} ev={ev} title={name} /></EvidenceBoundary>
         </section>
-        <SpectrumSection target={spectrumTarget} />
 
         <section className="card-verdict">
           {mv ? (
@@ -172,6 +179,8 @@ function EngineCard({ o, who, field, backLabel, onBack, onClose }) {
             <EvidenceBoundary><Exposures evidence={ev.evidence} /></EvidenceBoundary>
           </details>
         )}
+
+        <SpectrumSection target={spectrumTarget} />
 
         <details className="more">
           <summary>Details</summary>
@@ -230,10 +239,17 @@ function KnownCard({ row, measured, tracked, onPick, onBack, onClose }) {
     <>
       <Head tone={fast ? 'signal-bg' : 'plain-bg'} kicker={`In the ${source} catalogue${o && s ? 's' : ''}`} title={row.name} onBack={onBack} onClose={onClose} />
       <div className="panel-body">
+        <Stats label="This object in numbers" items={[
+          {
+            label: 'Motion', value: row.pm != null ? `${speed(row.pm)}″/yr` : null,
+            sub: row.pm != null && row.pm >= FAST_ARCSEC_YR / 10 ? compass(row.pa) : 'catalogue', tone: fast ? 'signal' : '',
+          },
+          { label: 'Distance', value: ly(row.distanceLy), sub: row.distanceLy != null ? 'from parallax' : '' },
+          { label: 'Magnitude', value: row.mag != null ? row.mag.toFixed(1) : null, sub: row.mag != null && row.band ? `${row.band} band` : '' },
+        ]} />
         <section className="card-pictures" aria-label="Telescope pictures">
           <EvidenceBoundary><StarTimelapse row={row} /></EvidenceBoundary>
         </section>
-        <SpectrumSection target={spectrumTarget} />
         <section className="card-verdict">
           <p className={`verdict-line ${fast ? 'signal' : ''}`}>{KNOWN_VERDICT[cls]}</p>
           {row.pm != null && row.pm >= FAST_ARCSEC_YR / 10 ? (
@@ -250,6 +266,7 @@ function KnownCard({ row, measured, tracked, onPick, onBack, onClose }) {
             </p>
           )}
         </section>
+        <SpectrumSection target={spectrumTarget} />
         <details className="more">
           <summary>Details</summary>
           <dl className="kv">

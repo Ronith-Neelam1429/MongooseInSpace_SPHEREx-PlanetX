@@ -390,3 +390,97 @@ def test_query_footprints_pairs_each_visit_with_its_footprint(session):
     found = archive.query_footprints(269.4485, 4.7394, 10)
     assert [v.obs_id for v, _ in found] == ["a", "b", "c"]
     assert [fp[0, 0] for _, fp in found] == [276.0, 276.35323504130406, 1.0]
+
+
+def test_parse_s_region_skips_any_stc_s_frame_words():
+    words = "POLYGON ICRS TOPOCENTER SPHERICAL2 1 2 3 4 5 6"
+    assert archive.parse_s_region(words).tolist() == [[1, 2], [3, 4], [5, 6]]
+    assert archive.parse_s_region("polygon j2000 1 2 3 4 5 6").shape == (3, 2)
+
+
+def test_query_footprints_leaves_out_rows_with_unreadable_footprints(session, caplog):
+    def table(rows, regions):
+        t = _sia_table(rows)
+        t["s_region"] = regions
+        return _votable_bytes(t)
+
+    dr1 = table([_row("a", 1, 60902.0), _row("b", 2, 60950.0)], [LIVE_S_REGION, "CIRCLE ICRS 1 2 3"])
+    qr3 = table([_row("c", 1, 61300.0, collection="spherex_qr3")], ["POLYGON ICRS 1 2 3 4 5 6"])
+    session(FakeResponse(200, dr1), FakeResponse(200, qr3))
+    with caplog.at_level("WARNING"):
+        found = archive.query_footprints(269.4485, 4.7394, 10)
+    assert [v.obs_id for v, _ in found] == ["a", "c"]
+    assert "left out 1 of 2 rows" in caplog.text
+
+
+def test_query_footprints_fails_when_no_row_is_readable(session):
+    t = _sia_table([_row("a", 1, 60902.0)])
+    t["s_region"] = ["BOX ICRS 1 2 3 4"]
+    session(FakeResponse(200, _votable_bytes(t)))
+    with pytest.raises(archive.UpstreamError, match="no row has a readable s_region"):
+        archive.query_footprints(269.4485, 4.7394, 10)
+
+
+# --- answers kept on disk for IRSA outages ----------------------------------------------
+
+def _two_collections():
+    dr1 = _votable_bytes(_sia_table([_row("b", 3, 60950.0), _row("a", 6, 60902.0)]))
+    qr3 = _votable_bytes(_sia_table([_row("c", 1, 61300.0, collection="spherex_qr3")]))
+    return FakeResponse(200, dr1), FakeResponse(200, qr3)
+
+
+def test_query_visits_serves_the_kept_answer_while_irsa_fails(session, caplog):
+    session(*_two_collections())
+    fresh = archive.query_visits(269.4485, 4.7394, 10)
+    files = list((archive.settings.cache_dir / "sia").glob("*.json"))
+    assert len(files) == 1 and not list((archive.settings.cache_dir / "sia").glob("*.tmp"))
+    archive._sia_cache.clear()
+    fake = session(*[FakeResponse(502, b"<html>Proxy Error</html>")] * 3)
+    with caplog.at_level("WARNING"):
+        assert archive.query_visits(269.4485, 4.7394, 10) == fresh
+    assert "serving the answer kept" in caplog.text and len(fake.calls) == 3
+    # A kept answer is not put in the memory cache: the next call asks IRSA again.
+    session(*_two_collections())
+    assert archive.query_visits(269.4485, 4.7394, 10) == fresh
+
+
+def test_query_visits_without_a_kept_answer_raises(session):
+    session(*[FakeResponse(503, b"busy")] * 3)
+    with pytest.raises(archive.UpstreamError, match="503"):
+        archive.query_visits(1.0, 2.0, 10)
+
+
+def test_a_4xx_is_never_answered_from_the_kept_file(session):
+    session(*_two_collections())
+    archive.query_visits(1.0, 2.0, 10)
+    archive._sia_cache.clear()
+    session(FakeResponse(400, b"bad request"))
+    with pytest.raises(archive.UpstreamError, match="400"):
+        archive.query_visits(1.0, 2.0, 10)
+
+
+def test_an_unreadable_kept_file_raises_the_query_error(session):
+    session(*_two_collections())
+    archive.query_visits(1.0, 2.0, 10)
+    archive._sia_cache.clear()
+    (path,) = (archive.settings.cache_dir / "sia").glob("*.json")
+    path.write_text("{not json")
+    session(*[FakeResponse(502, b"proxy")] * 3)
+    with pytest.raises(archive.UpstreamError, match="502"):
+        archive.query_visits(1.0, 2.0, 10)
+
+
+def test_query_footprints_serves_the_kept_answer_while_irsa_fails(session):
+    t = _sia_table([_row("a", 1, 60902.0)])
+    t["s_region"] = [LIVE_S_REGION]
+    session(FakeResponse(200, _votable_bytes(t)), FakeResponse(200, _votable_bytes(_sia_table([]))))
+    fresh = archive.query_footprints(269.4485, 4.7394, 10)
+    session(*[FakeResponse(502, b"proxy")] * 3)
+    kept = archive.query_footprints(269.4485, 4.7394, 10)
+    assert [v for v, _ in kept] == [v for v, _ in fresh]
+    assert all(np.array_equal(a, b) for (_, a), (_, b) in zip(kept, fresh, strict=True))
+    # Visits and footprints of the same cone are kept apart.
+    assert len(list((archive.settings.cache_dir / "sia").glob("*.json"))) == 1
+    session(*[FakeResponse(502, b"proxy")] * 3)
+    with pytest.raises(archive.UpstreamError):
+        archive.query_visits(269.4485, 4.7394, 10)

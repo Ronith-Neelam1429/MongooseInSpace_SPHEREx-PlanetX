@@ -88,7 +88,9 @@ describe('fetchVisits', () => {
   it('summarises the visits as a count and the survey passes', async () => {
     const passes = [{ start: '2025-08-15', end: '2025-10-01', n_visits: 118 }, { start: '2026-03-11', end: '2026-05-05', n_visits: 122 }];
     const { services, fetchMock } = await load([ok({ n_visits: 240, passes, visits: [{ date: '2025-08-15' }] })]);
-    expect(await services.fetchVisits(269.4485, 4.7394)).toEqual({ count: 240, passes });
+    expect(await services.fetchVisits(269.4485, 4.7394)).toEqual({
+      count: 240, passes, visits: [{ date: '2025-08-15', detector: null, wavelength_min_um: null, wavelength_max_um: null }],
+    });
     expect(fetchMock.mock.calls[0][0]).toBe('http://api.test/api/visits?ra=269.448500&dec=4.739400');
   });
 
@@ -244,5 +246,16 @@ describe('apiJson errors, in words', () => {
     expect(detailText({ detail: [{ msg: 'bad', loc: ['query', 'ra'] }] })).toBe('ra: bad');
     expect(detailText({})).toBeNull();
     expect(detailText(null)).toBeNull();
+  });
+
+  it('cuts an upstream HTML error page down to its title', async () => {
+    const { plainError, detailText } = await import('./services.js');
+    const page = 'IRSA request failed: SIA query spherex_dr1 failed after 3 attempt(s): HTTP 502: <!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN"> '
+      + '<html><head> <title>502 Proxy Error</title> </head><body> <h1>Proxy Error</h1> <p>The proxy server received an invalid response';
+    expect(plainError(page)).toBe('IRSA request failed: SIA query spherex_dr1 failed after 3 attempt(s): HTTP 502 (Proxy Error)');
+    expect(detailText({ detail: page })).toBe(plainError(page));
+    expect(plainError('<b>bad</b>   gateway')).toBe('bad gateway');
+    expect(plainError('x'.repeat(300))).toHaveLength(160);
+    expect(plainError('timeout')).toBe('timeout');
   });
 });

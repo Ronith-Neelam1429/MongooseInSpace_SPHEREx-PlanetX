@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { API_BASE } from '../lib/services.js';
 import {
   CAUSES, PRECISION, RESULT_NAMES, SPECTRAL_KINDS, causeRows, confusionText, falsePositiveText, fetchResult,
-  fetchResultsIndex, fetchSurveyStats, gaiaPoints, generatedText, injectionText, lightCurve, precisionGain,
+  fetchResultsIndex, fetchSurveyStats, gaiaPoints, generatedText, injectionGrid, injectionText, lightCurve, precisionGain,
   rateText, spectralPoints, spectralText, stdDev, surveySummary,
 } from '../lib/results.js';
 import {
@@ -200,8 +200,9 @@ function SurveyProgress({ survey }) {
 function GaiaAgreement({ file, index }) {
   const doc = file?.status === 'ok' ? file.doc : null;
   const pts = useMemo(() => gaiaPoints(doc), [doc]);
-  const resid = useMemo(() => pts.flatMap((p) => p.resid), [pts]);
-  const pulls = useMemo(() => pts.flatMap((p) => p.pull), [pts]);
+  // Histograms use clean matches only (no blend or chance-match doubt), as summary.pull_std does.
+  const resid = useMemo(() => pts.filter((p) => p.clean).flatMap((p) => p.resid), [pts]);
+  const pulls = useMemo(() => pts.filter((p) => p.clean).flatMap((p) => p.pull), [pts]);
   const words = confusionText(doc?.summary?.confusion);
   const spread = doc?.summary?.pull_std ?? stdDev(pulls);
   const outside = (vals, lo, hi) => vals.filter((v) => v < lo || v >= hi).length;
@@ -257,14 +258,36 @@ function FakeMotions({ file, index }) {
   const doc = file?.status === 'ok' ? file.doc : null;
   const rows = useMemo(() => causeRows(doc), [doc]);
   const s = doc?.summary;
+  // Near-misses: stars Gaia says are still whose apparent motion is significant but under one
+  // pixel, so only the engine's 1 px rule keeps them from being called moving.
+  const near = doc?.near_summary;
+  const nearRows = useMemo(() => (doc?.near_movers
+    ? causeRows({ movers: doc.near_movers.filter((m) => m.truth === 'static'), summary: doc.near_summary })
+    : []), [doc]);
+  const before = doc?.baseline;
   return (
     <Section id="rp-fake" kicker="Check 2 · every false alarm, explained" title="Which motions are fake?"
       lede="Each object our engine called moving that Gaia, or a look at the pixels, shows is not. Knowing why lets the engine learn to throw them out.">
       <FileState name="false_movers" file={file} index={index} />
       {doc && (
         <>
-          {s && <p className="rp-say">{fmt(s.n_fake)} of {fmt(s.n_movers)} motions the engine flagged are not real. Here is why.</p>}
-          {rows.length ? <BarList rows={rows} label="Fake motions by cause" /> : <p className="line dim">No fake motions in this run.</p>}
+          {s && (
+            <p className="rp-say">
+              {fmt(s.n_fake)} of {fmt(s.n_movers)} motions the engine flagged are not real{s.n_fake ? '. Here is why.' : '.'}
+              {before?.summary && ` Before this round's engine fixes it flagged ${fmt(before.summary.n_movers)}; the ones removed were faint tracks joining unrelated specks.`}
+            </p>
+          )}
+          {rows.length ? <BarList rows={rows} label="Fake motions by cause" /> : !s && <p className="line dim">No fake motions in this run.</p>}
+          {near && nearRows.length > 0 && (
+            <>
+              <p className="rp-say">
+                Just under the line: {fmt(near.n_fake)} stars Gaia says are still show a motion at least 5 times their
+                error, but smaller than one SPHEREx pixel, so the engine does not call them moving. This is why
+                we keep that rule{before?.near_summary ? ` (${fmt(before.near_summary.n_fake)} before this round's fixes)` : ''}.
+              </p>
+              <BarList rows={nearRows} label="Near-misses by cause" />
+            </>
+          )}
           {rows.some((r) => r.examples.length) && (
             <details className="more">
               <summary>Examples</summary>
@@ -301,7 +324,7 @@ function Reach({ file, index }) {
                 <li><i className="rp-key rp-key-l90" aria-hidden="true" />nine in ten found</li>
               </ul>
             </Figure>
-            <Figure title="The same, in numbers" caption="Rows: brightness as a magnitude (bigger numbers are fainter stars). Columns: speed in arcseconds a year.">
+            <Figure title="The same, in numbers" caption="Share flagged as moving. Rows: brightness as a magnitude (bigger numbers are fainter stars). Columns: speed in arcseconds a year. The 0″ column is planted still stars: anything above 0% there is a false alarm.">
               <InjectionTable doc={doc} />
             </Figure>
           </div>
@@ -313,10 +336,8 @@ function Reach({ file, index }) {
 }
 
 function InjectionTable({ doc }) {
-  const grid = doc.grid || [];
-  const speeds = [...new Set(grid.map((g) => g.pm_arcsec_yr))].sort((a, b) => a - b);
-  const mags = [...new Set(grid.map((g) => g.mag_bin))].sort((a, b) => a - b);
-  const at = new Map(grid.map((g) => [`${g.pm_arcsec_yr}|${g.mag_bin}`, g]));
+  const { speeds, mags, cells } = injectionGrid(doc);
+  const at = new Map(cells.map((c) => [`${c.pm}|${c.mag}`, c]));
   return (
     // Focusable so a keyboard can scroll it sideways on a phone.
     <div className="rp-scroll" tabIndex={0} role="region" aria-label="Recovery table">
@@ -328,10 +349,9 @@ function InjectionTable({ doc }) {
         <tbody>
           {mags.map((m) => (
             <tr key={m}>
-              <th scope="row">{m}</th>
+              <th scope="row">{cells.find((c) => c.mag === m)?.label ?? m}</th>
               {speeds.map((v) => {
-                const g = at.get(`${v}|${m}`);
-                const f = g ? (Number.isFinite(g.recovered_fraction) ? g.recovered_fraction : g.n_recovered / g.n_injected) : null;
+                const f = at.get(`${v}|${m}`)?.fraction ?? null;
                 return <td key={v} className="tabular">{f == null || !Number.isFinite(f) ? '–' : `${Math.round(100 * f)}%`}</td>;
               })}
             </tr>

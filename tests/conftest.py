@@ -23,11 +23,13 @@ def _no_catalogue_calls(method, url, **kwargs):
 
 
 @pytest.fixture(autouse=True)
-def _offline_archive(request, monkeypatch):
-    """Offline tests: no retry sleeps and no real HTTP (tests install their own fake session)."""
+def _offline_archive(request, monkeypatch, tmp_path_factory):
+    """Offline tests: no retry sleeps, no real HTTP (tests install their own fake session),
+    and SIA answers kept in a fresh temp dir rather than the real cache."""
     if request.node.get_closest_marker("network"):
         yield
         return
+    monkeypatch.setattr(archive, "settings", Settings(cache_dir=tmp_path_factory.mktemp("sia")))
     monkeypatch.setattr(archive, "RETRY_BACKOFF_S", (0.0, 0.0))
     monkeypatch.setattr(archive, "_session", None)
     monkeypatch.setattr(catalogs, "_send", _no_catalogue_calls)

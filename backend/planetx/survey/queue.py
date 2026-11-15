@@ -378,6 +378,23 @@ class PatchQueue:
             )
             return cursor.rowcount
 
+    def requeue_unchecked(self) -> int:
+        """Return to pending every done patch with fields whose catalogue check could not
+        run (Gaia unavailable): its summary's `fields_unchecked` > 0. Summaries from before
+        that count existed have no such key; those are requeued when any of their
+        candidates is unclassified. Attempts are reset. Returns how many."""
+        now = self.clock()
+        with self._write():
+            cursor = self._conn.execute(
+                "UPDATE patches SET status = 'pending', attempts = 0, retry_at = NULL,"
+                " finished_at = NULL, updated_at = ? WHERE status = 'done' AND ("
+                " json_extract(summary, '$.fields_unchecked') > 0 OR"
+                " (json_type(summary, '$.fields_unchecked') IS NULL"
+                "  AND json_extract(summary, '$.by_classification.unchecked') > 0))",
+                (now,),
+            )
+            return cursor.rowcount
+
     # -- reporting -----------------------------------------------------------
 
     def stats(self) -> QueueStats:

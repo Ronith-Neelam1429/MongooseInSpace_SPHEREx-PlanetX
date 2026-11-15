@@ -90,6 +90,14 @@ describe('causeRows', () => {
   });
 });
 
+describe('gaia points clean flag', () => {
+  it('keeps the clean flag, treating rows without it as clean', () => {
+    const row = { spherex_pm_ra: 0, spherex_pm_dec: 0, spherex_pm_err: 1, gaia_pm_ra: 0, gaia_pm_dec: 0 };
+    expect(gaiaPoints({ objects: [row, { ...row, clean: false }, { ...row, clean: true }] }).map((p) => p.clean))
+      .toEqual([true, false, true]);
+  });
+});
+
 describe('injection heatmap', () => {
   const doc = {
     grid: [
@@ -111,6 +119,20 @@ describe('injection heatmap', () => {
     const h = injectionHeatmap(doc);
     expect(h.lines[50]).toEqual([{ mag: 12, pm: 1 }, { mag: 16, pm: null }]);
     expect(h.lines[90][0].pm).toBeCloseTo(2);
+  });
+  it('reads the real file: one mode, pooled field, text bins, flagged share', () => {
+    const row = (mode, field, pm, flagged) => ({
+      mode, field, pm_arcsec_yr: pm, mag_bin: '11.5-12.5', mag_ab: 12, n_injected: 10, n_recovered: 10,
+      n_flagged_mover: flagged, recovered_fraction: 1, flagged_fraction: flagged / 10,
+    });
+    const h = injectionHeatmap({ grid: [
+      row('single', 'all', 4, 0), row('single', 'all', 8, 10), row('stack', 'all', 8, 2), row('single', 'nep', 8, 3),
+    ] });
+    expect(h.speeds).toEqual([4, 8]);
+    expect(h.mags).toEqual([12]);
+    expect(h.cells.map((c) => c.fraction)).toEqual([0, 1]);
+    expect(injectionHeatmap({ grid: [row('stack', 'all', 8, 2)] }, 'stack').cells[0].fraction).toBeCloseTo(0.2);
+    expect(injectionText({ summary: { pm_50: 4.957142857, pm_90: 7, mag_50: 17.2394 } })).toMatch(/4\.96? *″|5″/);
   });
   it('interpolates in log speed', () => {
     expect(crossing([{ pm: 1, fraction: 0 }, { pm: 4, fraction: 1 }], 0.5)).toBeCloseTo(2);

@@ -29,19 +29,21 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import warnings
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 from astropy.io import fits
-from astropy.wcs import WCS
+from astropy.wcs import WCS, FITSFixedWarning, Sip
 
 from planetx import pipeline
-from planetx.engine import Frame, frame_from_hdul, group_into_passes
+from planetx.engine import Frame, group_into_passes
+from planetx.engine import frames as engine_frames
 from planetx.spherex import archive, cutouts
 
 if TYPE_CHECKING:
@@ -214,6 +216,118 @@ def plan_patch(fields: Sequence[FieldRequest], footprints: Sequence[tuple[Visit,
     return PatchPlan(fields=tuple(fields), requests=tuple(requests), by_field=by_field)
 
 
+class OpenCutout:
+    """A downloaded patch cutout, opened once (memory-mapped), that crops field frames.
+
+    `frame(ra, dec, size)` equals `frame_from_hdul(cutouts.crop_cutout(hdul, ra, dec,
+    size))` exactly (test_patch_frames checks it): the same pixel operations on a
+    slice of the planes, and the WCS a cropped header would give, i.e. the cutout's
+    own with CRPIX moved by the crop offset (integers, so exact). Going through
+    FITS headers instead cost ~250 ms per frame, a third of a field's analysis;
+    this is about 2 ms.
+    """
+
+    def __init__(self, path: Path):
+        self._hdul = fits.open(path, memmap=True)
+        try:
+            self._load()
+        except BaseException:
+            self._hdul.close()
+            raise
+
+    def _load(self) -> None:
+        hdul = self._hdul
+        image = hdul["IMAGE"]
+        self.header = image.header
+        self.image = image.data
+        self.wcs = cutouts.cutout_wcs(self.header)
+        # Raised by frame() only when a crop falls on the cutout, as crop_cutout and
+        # frame_from_hdul would raise it (the frame fails; without a crop there is no data).
+        self._error: Exception | None = None
+        try:
+            for name in cutouts.CROP_PLANES:
+                if name in hdul and (hdul[name].data is None or hdul[name].data.shape != self.image.shape):
+                    raise ValueError(f"cutout {name} plane does not match IMAGE")
+            self.variance = hdul["VARIANCE"].data
+            self.flags = hdul["FLAGS"].data
+        except (KeyError, ValueError) as exc:
+            self._error = exc
+            return
+        bits = engine_frames.flag_bits(hdul["FLAGS"].header)
+        self._bad, self._saturated, self._contaminated = (
+            _bits(bits, names) for names in
+            (engine_frames.BAD_FLAG_NAMES, engine_frames.SATURATION_FLAG_NAMES, engine_frames.CONTAMINATION_FLAG_NAMES)
+        )
+        self._wave: WCS | Exception | None = None
+        if "WCS-WAVE" in hdul:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", FITSFixedWarning)
+                    self._wave = cutouts._wavelength_wcs(self.header, hdul)
+            except Exception as exc:  # noqa: BLE001 - as frame_from_hdul: reported per frame, the frame is kept
+                self._wave = exc
+
+    def close(self) -> None:
+        self._hdul.close()
+
+    def frame(self, ra: float, dec: float, size_deg: float, obs_id: str = "") -> Frame | None:
+        """The frame of request (ra, dec, size_deg), or None when (ra, dec) is off this cutout."""
+        box = cutouts.crop_box(self.wcs, self.image.shape, ra, dec, size_deg)
+        if box is None:
+            return None
+        if self._error is not None:
+            raise self._error
+        x0, x1, y0, y1 = box
+        data = np.array(self.image[y0:y1, x0:x1], dtype=np.float64)
+        variance = np.array(self.variance[y0:y1, x0:x1], dtype=np.float64)
+        flags = self.flags[y0:y1, x0:x1].astype(np.int64)
+        mask = (flags & self._bad) != 0
+        data[mask] = np.nan
+        variance[mask] = np.nan
+        variance[~(variance > 0)] = np.nan
+
+        wcs = self.wcs.deepcopy()
+        wcs.wcs.crpix = self.wcs.wcs.crpix - np.array([x0, y0], dtype=float)
+        if wcs.sip is not None:  # SIP is relative to CRPIX, which astropy hands it when reading a header
+            sip = self.wcs.sip
+            wcs.sip = Sip(sip.a, sip.b, sip.ap, sip.bp, wcs.wcs.crpix)
+        wcs.pixel_shape = (x1 - x0, y1 - y0)
+
+        wavelength = float("nan")
+        if self._wave is not None:
+            try:
+                if isinstance(self._wave, Exception):
+                    raise self._wave
+                ny, nx = data.shape
+                # The crop's centre pixel, in this cutout's pixels (the W table is indexed by them).
+                wavelength = float(self._wave.all_pix2world(x0 + (nx - 1) / 2, y0 + (ny - 1) / 2, 0)[0])
+            except Exception as exc:  # noqa: BLE001 - wavelength is metadata, as in frame_from_hdul
+                warnings.warn(f"could not evaluate WCS-WAVE: {exc}")
+
+        header = self.header
+        if "MJD-AVG" not in header:
+            raise ValueError("IMAGE header has no MJD-AVG; cannot time-stamp frame")
+        return Frame(
+            data=data,
+            variance=variance,
+            wcs=wcs,
+            mjd=float(header["MJD-AVG"]),
+            detector=int(header.get("DETECTOR", 0)),
+            obs_id=obs_id,
+            wavelength_um=wavelength,
+            psf_fwhm_arcsec=float(header.get("PSF_FWHM", float("nan"))),
+            saturated=(flags & self._saturated) != 0,
+            contaminated=(flags & self._contaminated) != 0,
+        )
+
+
+def _bits(bits: dict[str, int], names: frozenset[str]) -> int:
+    want = 0
+    for name in names:
+        want |= bits.get(name, 0)
+    return want
+
+
 class PatchFrames:
     """A plan's cutouts, downloaded; `field_frames(i)` crops field i's frames from them."""
 
@@ -222,7 +336,8 @@ class PatchFrames:
         self.paths: list[Path | None] = [None] * len(plan.requests)
         self.errors: list[str | None] = [None] * len(plan.requests)  # None: downloaded or no data here
         self.no_data = [False] * len(plan.requests)
-        self._wcs: dict[int, WCS] = {}  # per request: every field crops the same cutout
+        self.gaia_down: str | None = None  # set when Gaia is known to be down: fields skip the catalogue check
+        self._open: dict[int, OpenCutout] = {}  # per request, opened on first use: every field crops it
 
     def download(self, should_stop: Callable[[], bool]) -> None:
         """Fetch every request, DOWNLOAD_WORKERS at a time.
@@ -298,19 +413,28 @@ class PatchFrames:
 
     def _crop(self, k: int, ra: float, dec: float, size: float) -> Frame | None:
         r = self.plan.requests[k]
-        for attempt in (1, 2):
+        if k not in self._open:
             try:
-                with fits.open(self.paths[k]) as hdul:
-                    if k not in self._wcs:
-                        self._wcs[k] = cutouts.cutout_wcs(hdul["IMAGE"].header)
-                    crop = cutouts.crop_cutout(hdul, ra, dec, size, wcs=self._wcs[k])
-                    return None if crop is None else frame_from_hdul(crop, obs_id=r.visit.obs_id)
+                self._open[k] = OpenCutout(self.paths[k])
             except FileNotFoundError:
                 # Pins hold only within this process: another one sharing the cache evicted it.
-                if attempt == 2:
-                    raise
                 self.paths[k] = cutouts.cached_cutout(r.visit.access_url, r.ra, r.dec, r.size_deg)
-        raise AssertionError("unreachable")
+                self._open[k] = OpenCutout(self.paths[k])
+        return self._open[k].frame(ra, dec, size, obs_id=r.visit.obs_id)
+
+    def paths_to_pin(self) -> list[Path]:
+        """Where the plan's cutouts live in the cache (as `load` pins them)."""
+        return [cutouts.cutout_path(r.visit.access_url, r.ra, r.dec, r.size_deg) for r in self.plan.requests]
+
+    def __getstate__(self) -> dict:
+        # Sent to the field processes (survey.motion), which open the cutouts themselves.
+        return {**self.__dict__, "_open": {}}
+
+    def close(self) -> None:
+        """Close the cutouts opened by `field_frames`."""
+        for cutout in self._open.values():
+            cutout.close()
+        self._open.clear()
 
     def field_run(self, i: int, should_stop: Callable[[], bool]) -> pipeline.FieldRun:
         """The pipeline on field i (`pipeline.analyse_frames`; raises as it does)."""
@@ -318,7 +442,7 @@ class PatchFrames:
         ra, dec, _ = self.plan.fields[i]
         return pipeline.analyse_frames(
             frames, n_visits=len(self.plan.by_field[i]), no_data=no_data, failures=failures,
-            where=f"field ra={ra} dec={dec}", should_stop=should_stop,
+            where=f"field ra={ra} dec={dec}", should_stop=should_stop, gaia_down=self.gaia_down,
         )
 
 
@@ -337,9 +461,8 @@ def load(fields: Sequence[FieldRequest], should_stop: Callable[[], bool]) -> Ite
     listed = time.monotonic()
     log.info("patch: %d visits listed, %d cutouts to download for %d fields (%.0fs)",
              len(footprints), len(plan.requests), len(fields), listed - start)
-    paths = [cutouts.cutout_path(r.visit.access_url, r.ra, r.dec, r.size_deg) for r in plan.requests]
-    with cutouts.pinned(paths):
-        patch = PatchFrames(plan)
+    patch = PatchFrames(plan)
+    with cutouts.pinned(patch.paths_to_pin()), closing(patch):
         patch.download(should_stop)
         size = sum(p.stat().st_size for p in patch.paths if p is not None and p.exists())
         log.info("patch: %d cutouts (%.0f MB) ready, %d without data, %d failed (%.0fs)",

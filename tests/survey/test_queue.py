@@ -211,6 +211,26 @@ def test_requeue_failed(db, clock):
         assert q.claim_next().ipix == p.ipix
 
 
+def test_requeue_unchecked_takes_patches_whose_catalogue_check_did_not_run(db, clock):
+    with open_queue(db, clock) as q:
+        summaries = [
+            {"fields_unchecked": 3, "by_classification": {"unknown_candidate": 1}},  # Gaia was down: redo
+            {"fields_unchecked": 0, "by_classification": {"unchecked": 2}},  # e.g. the SkyBoT limit: keep
+            {"by_classification": {"unchecked": 3}},  # written before the count existed: redo
+            {"by_classification": {"known_star": 1}},  # fine
+        ]
+        done = []
+        for summary in summaries:
+            p = q.claim_next()
+            q.complete(p, summary)
+            done.append(p)
+        assert q.requeue_unchecked() == 2
+        status = [q.patch_row(p.nside, p.ipix)["status"] for p in done]
+        assert status == ["pending", "done", "pending", "done"]
+        assert q.claim_next().ipix == done[0].ipix  # back at the front of the crawl
+        assert q.requeue_unchecked() == 0
+
+
 def test_release_does_not_count_an_attempt(db, clock):
     with open_queue(db, clock) as q:
         p = q.claim_next()

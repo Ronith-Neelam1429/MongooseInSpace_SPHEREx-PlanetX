@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { equatorialToEcliptic, equatorialToGalactic, formatDec, formatFov, formatRa } from '../lib/coords.js';
 import { FAST_ARCSEC_YR, displayName, sameObject } from '../lib/names.js';
-import { dateSpan, monthYear, plainType, shortClaim, shortName, speed, verdict } from '../lib/plain.js';
+import { plainType, shortClaim, shortName, speed, verdict } from '../lib/plain.js';
 import { CLASS, engineClass, knownClass } from '../lib/classes.js';
 import { flaggedKnown, otherKnown, patchVerdict } from '../lib/patch.js';
 import ObjectCard, { CloseIcon } from './ObjectCard.jsx';
 import { ClassMark } from './ClassFilter.jsx';
 import SurveyCandidateNote from './SurveyCandidateNote.jsx';
+import Stats from './Stats.jsx';
+import Coverage from './Coverage.jsx';
+import { baseline } from '../lib/coverage.js';
 
 const signed = (v, d) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`;
 const count = (n) => n.toLocaleString('en-US');
@@ -18,19 +21,6 @@ function cadence(beta) {
   if (b >= 80) return 'Near an ecliptic pole, where SPHEREx passes on most orbits.';
   if (b >= 60) return 'High ecliptic latitude: SPHEREx comes by more often than average.';
   return 'SPHEREx comes by about every six months.';
-}
-
-function State({ state, what, onRetry }) {
-  if (state.status === 'loading') return <p className="state"><span className="ticker" aria-hidden="true" />Loading {what}</p>;
-  if (state.status === 'error') {
-    return (
-      <p className="state err" role="alert">
-        Could not load {what}: {state.error}.{' '}
-        <button type="button" className="textbtn" onClick={onRetry}>Retry</button>
-      </p>
-    );
-  }
-  return null;
 }
 
 /**
@@ -90,11 +80,12 @@ function KnownRow({ row, hover, resume, onPick, onPoint }) {
   const f = { kind: 'known', obj: row };
   const cls = knownClass(row);
   const isFast = cls === 'fast';
+  const type = plainType(row.type);
   return (
     <Row className="known" lit={sameObject(hover, f)} resume={sameObject(resume, f)} onPick={() => onPick(f)} onPoint={(p) => onPoint(p ? f : null)}>
       <span className="row-name" title={`${row.name} · ${CLASS[cls].label}`}><ClassMark cls={CLASS[cls]} size={10} />{shortName(row.name)}</span>
-      <span className="row-type" title={row.type}>{plainType(row.type)}</span>
       <span className={`row-pm ${isFast ? 'signal' : 'dim'}`}>{isFast ? `${speed(row.pm)}″/yr` : ''}</span>
+      {type && <span className="row-type" title={row.type}>{type}</span>}
     </Row>
   );
 }
@@ -140,36 +131,31 @@ function Player({ gaia, fast, playing, onTogglePlay, getYear, moversOnly, onTogg
   );
 }
 
+/** One line for a catalogue or service that failed, with a way to ask again. */
+function Failed({ what, error, onRetry }) {
+  return (
+    <p className="state err" role="alert">
+      Could not load {what}{error ? <span className="dim"> ({error})</span> : null}.{' '}
+      <button type="button" className="textbtn" onClick={onRetry}>Retry</button>
+    </p>
+  );
+}
+
 /**
- * The top of the panel: one line saying what this patch holds, then the way to measure it (or
- * how the measurement is going), and whatever failed to load.
+ * The top of the panel: whether the patch was measured, one line saying what it holds, the way to
+ * measure it (or how that is going), and whatever failed to load.
  */
-function Summary({ motion, results, known, simbad, gaia, visits, onRun, onRetry, runShown }) {
-  const loaded = simbad.status !== 'loading' && gaia.status !== 'loading';
+function Summary({ motion, results, known, simbad, gaia, onRun, onRetry, runShown }) {
+  const loading = simbad.status === 'loading' || gaia.status === 'loading';
   const ran = motion.status === 'ok';
-  const v = patchVerdict({ ran, results, rows: known.rows, loaded });
-  const r = motion.result;
+  const v = patchVerdict({ ran, results, rows: known.rows, loaded: !loading });
   return (
     <section className="summary" aria-labelledby="patch-verdict">
+      <p className="kicker status">
+        <i className={`dot ${ran ? 'measured-bg' : 'plain-bg'}`} />
+        {ran ? 'Measured in SPHEREx images' : 'From the catalogues · not measured yet'}
+      </p>
       <p id="patch-verdict" className={`verdict-line ${v.tone === 'plain' ? '' : v.tone}`} aria-live="polite">{v.text}</p>
-      {ran && (
-        <p className="line dim">
-          SPHEREx: compared {plural(r.n_frames, 'image')} from {plural(r.passes.length, 'pass', 'passes')}
-          {r.passes.length > 0 && ` (${dateSpan(r.passes[0].start, r.passes[r.passes.length - 1].end)})`}.
-        </p>
-      )}
-      {!ran && visits.status === 'ok' && visits.count > 0 && (
-        <p className="line dim">
-          SPHEREx has imaged this spot {plural(visits.count, 'time')} in {plural(visits.passes.length, 'pass', 'passes')} since {monthYear(visits.passes[0].start)}.
-        </p>
-      )}
-      {!ran && visits.status === 'ok' && visits.count === 0 && <p className="line dim">SPHEREx has no images of this spot yet.</p>}
-      {!ran && visits.status === 'error' && (
-        <p className="line dim">
-          Could not check how often SPHEREx imaged this spot.{' '}
-          <button type="button" className="textbtn" onClick={() => onRetry('visits')}>Retry</button>
-        </p>
-      )}
       {motion.status === 'none' && <p className="line dim">Measuring motion needs the PlanetX server, which is not connected.</p>}
       {motion.status === 'idle' && !runShown && (
         <div className="run">
@@ -180,14 +166,43 @@ function Summary({ motion, results, known, simbad, gaia, visits, onRun, onRetry,
       {motion.status === 'loading' && <Progress job={motion.job} />}
       {motion.status === 'error' && (
         <p className="state err" role="alert">
-          The run failed: {motion.error}.{' '}
+          The run failed <span className="dim">({motion.error})</span>.{' '}
           <button type="button" className="textbtn" onClick={onRun}>Try again</button>
         </p>
       )}
-      <State state={simbad} what="named objects (SIMBAD)" onRetry={() => onRetry('simbad')} />
-      <State state={gaia} what="stars (Gaia)" onRetry={() => onRetry('gaia')} />
+      {loading && <p className="state"><span className="ticker" aria-hidden="true" />Looking up {[simbad.status === 'loading' && 'SIMBAD', gaia.status === 'loading' && 'Gaia'].filter(Boolean).join(' and ')}</p>}
+      {simbad.status === 'error' && <Failed what="named objects (SIMBAD)" error={simbad.error} onRetry={() => onRetry('simbad')} />}
+      {gaia.status === 'error' && <Failed what="stars (Gaia)" error={gaia.error} onRetry={() => onRetry('gaia')} />}
     </section>
   );
+}
+
+/**
+ * The patch in four figures. Before a run: how often SPHEREx imaged it, over how long, and how many
+ * stars and named objects the catalogues hold. After: what the engine used, tracked and flagged.
+ */
+function PatchStats({ motion, results, simbad, gaia, visits }) {
+  const r = motion.status === 'ok' ? motion.result : null;
+  // undefined = still loading, null = not available (Stats shows a dash).
+  const of = (state, value) => (state.status === 'loading' || state.status === 'idle' ? undefined : state.status === 'ok' ? value() : null);
+  const passes = r ? r.passes : visits.status === 'ok' ? visits.passes : null;
+  const items = r
+    ? [
+      { label: 'Images used', value: count(r.n_frames), sub: plural(r.passes.length, 'pass', 'passes'), title: 'SPHEREx images the engine compared' },
+      { label: 'Span', value: baseline(r.passes) ?? null, sub: 'baseline', title: 'Time from the first image to the last: longer spans show slower motions' },
+      { label: 'Tracked', value: count(r.objects.length), sub: 'objects', title: 'Objects followed from image to image; most are fixed stars' },
+      { label: 'Flagged', value: count(results.length), sub: 'notable', tone: results.length ? 'measured' : '', title: 'Movers, variables and candidates' },
+    ]
+    : [
+      {
+        label: 'SPHEREx', value: visits.status === 'none' ? null : of(visits, () => count(visits.count)),
+        sub: passes ? plural(passes.length, 'pass', 'passes') : 'images', title: 'SPHEREx images of this spot so far',
+      },
+      { label: 'Span', value: visits.status === 'none' ? null : of(visits, () => baseline(passes) ?? null), sub: 'baseline', title: 'Time from the first image to the last: longer spans show slower motions' },
+      { label: 'Gaia', value: of(gaia, () => `${count(gaia.stars.length)}${gaia.capped ? '+' : ''}`), sub: 'stars', title: 'Stars from Gaia DR3 inside the patch (the dots on the map)' },
+      { label: 'SIMBAD', value: of(simbad, () => count(simbad.objects.length)), sub: 'named', title: 'Objects with a name in SIMBAD inside the patch' },
+    ];
+  return <Stats items={items} label="This patch in numbers" />;
 }
 
 /** Only what deserves a look: the engine's results, then catalogued fast movers and variables. */
@@ -198,28 +213,43 @@ function Flagged({ results: all, known, filter, gaia, hover, resume, onPick, onP
   const hidden = all.length - results.length + flagged.length - rows.length;
   const fast = known.rows.filter((r) => r.pm >= FAST_ARCSEC_YR).length;
   if (!all.length && !flagged.length && gaia.status !== 'ok') return null;
+  const n = results.length + rows.length;
   return (
     <section aria-labelledby="flagged-title">
-      <h3 id="flagged-title"><span>Worth a look</span></h3>
-      {(results.length > 0 || rows.length > 0) && (
+      <h3 id="flagged-title"><span>Worth a look</span>{n > 0 && <span className="count">{count(n)}</span>}</h3>
+      {n > 0 && (
         <ul className="rowlist">
           {results.map(({ o, who }) => <EngineRow key={o.id} o={o} who={who} hover={hover} resume={resume} onPick={onPick} onPoint={onPoint} />)}
           {rows.map((row) => <KnownRow key={row.key} row={row} hover={hover} resume={resume} onPick={onPick} onPoint={onPoint} />)}
         </ul>
       )}
-      {!results.length && !rows.length && !hidden && <p className="line dim">Nothing here is known to move or vary. Pick any star on the map to see its pictures.</p>}
+      {!n && !hidden && <p className="line dim">Nothing here is known to move or vary. Pick any star on the map to see its pictures.</p>}
       {hidden > 0 && <p className="line dim">{plural(hidden, 'more', 'more')} hidden by the map filter.</p>}
       {gaia.status === 'ok' && gaia.years && <Player gaia={gaia} fast={fast} {...player} />}
     </section>
   );
 }
 
-/** What most visitors do not need, behind one control: fixed stars, the engine's notes, coordinates, passes, credits. */
-function More({ sel, visits, motion, known, results, filter, gaia, others, onToggleOthers, hover, resume, onPick, onPoint }) {
+/** When and in which colours SPHEREx imaged the patch. Left out when there is no server to ask. */
+function CoverageSection({ visits, beta, onRetry }) {
+  if (visits.status === 'none' || visits.status === 'idle') return null;
+  return (
+    <section aria-labelledby="coverage-title">
+      <h3 id="coverage-title"><span>SPHEREx coverage</span></h3>
+      {visits.status === 'loading' && <p className="state"><span className="ticker" aria-hidden="true" />Listing SPHEREx images</p>}
+      {visits.status === 'error' && <Failed what="the SPHEREx image list" error={visits.error} onRetry={() => onRetry('visits')} />}
+      {visits.status === 'ok' && visits.count === 0 && <p className="line dim">SPHEREx has no images of this spot yet.</p>}
+      {visits.status === 'ok' && visits.count > 0 && <Coverage visits={visits} />}
+      <p className="line dim cov-note">{cadence(beta)}</p>
+    </section>
+  );
+}
+
+/** Folded sections for what most visitors do not need; each shows only when it has something. */
+function More({ sel, motion, known, results, filter, gaia, others, onToggleOthers, hover, resume, onPick, onPoint }) {
   const rest = useMemo(() => otherKnown(known.rows, results).filter((row) => filter[knownClass(row)]), [known, results, filter]);
-  const inside = Boolean(others) || rest.some((row) => sameObject(resume, { kind: 'known', obj: row }));
-  const [open, setOpen] = useState(inside);
-  const [all, setAll] = useState(() => rest.findIndex((row) => sameObject(resume, { kind: 'known', obj: row })) >= KNOWN_SHOWN);
+  const resumeAt = rest.findIndex((row) => sameObject(resume, { kind: 'known', obj: row }));
+  const [all, setAll] = useState(() => resumeAt >= KNOWN_SHOWN);
   const few = rest.length <= KNOWN_SHOWN + 2;
   const shown = all || few ? rest : rest.slice(0, KNOWN_SHOWN);
   const { g, e } = useMemo(() => ({
@@ -228,16 +258,12 @@ function More({ sel, visits, motion, known, results, filter, gaia, others, onTog
   }), [sel.ra, sel.dec]);
   const r = motion.status === 'ok' ? motion.result : null;
   return (
-    <details className="more" open={open} onToggle={(ev) => setOpen(ev.currentTarget.open)}>
-      <summary>More about this patch</summary>
-      {open && (
-        <>
-          <h4>Other known objects{rest.length ? ` · ${count(rest.length)}` : ''}</h4>
-          {shown.length > 0 && (
-            <ul className="rowlist">
-              {shown.map((row) => <KnownRow key={row.key} row={row} hover={hover} resume={resume} onPick={onPick} onPoint={onPoint} />)}
-            </ul>
-          )}
+    <div className="folds">
+      {rest.length > 0 && (
+        <Fold title="Other objects here" count={rest.length} open={resumeAt >= 0}>
+          <ul className="rowlist">
+            {shown.map((row) => <KnownRow key={row.key} row={row} hover={hover} resume={resume} onPick={onPick} onPoint={onPoint} />)}
+          </ul>
           {!few && (
             <p className="line">
               <button type="button" className="textbtn" aria-expanded={all} onClick={() => setAll(!all)}>
@@ -245,58 +271,53 @@ function More({ sel, visits, motion, known, results, filter, gaia, others, onTog
               </button>
             </p>
           )}
-          {gaia.status === 'ok' && (
-            <p className="line dim">
-              The dots on the map are {count(gaia.stars.length)}{gaia.capped ? '+' : ''} stars from the Gaia catalogue. Click any of them to see its pictures.
+          {gaia.status === 'ok' && <p className="line dim">Every dot on the map is a Gaia star: click one to see its pictures.</p>}
+        </Fold>
+      )}
+
+      {r && (
+        <Fold title="Engine details" count={r.objects.length} open={Boolean(others)}>
+          <p className="line dim">It followed {plural(r.objects.length, 'object')} from image to image; most are fixed stars.</p>
+          {r.objects.length > 0 && (
+            <p className="line">
+              <button type="button" className="textbtn" aria-expanded={Boolean(others)} onClick={onToggleOthers}>
+                {others ? 'Hide the tracked objects' : 'List every tracked object'}
+              </button>
             </p>
           )}
-
-          {r && (
+          {others && (
+            <ul className="rowlist">
+              {others.map(({ o, who }) => <EngineRow key={o.id} o={o} who={who} hover={hover} resume={resume} onPick={onPick} onPoint={onPoint} mark={false} />)}
+            </ul>
+          )}
+          {r.notes.length > 0 && (
             <>
-              <h4>What the engine tracked</h4>
-              <p className="line dim">It followed {plural(r.objects.length, 'object')}; most are fixed stars.</p>
-              {r.objects.length > 0 && (
-                <p className="line">
-                  <button type="button" className="textbtn" aria-expanded={Boolean(others)} onClick={onToggleOthers}>
-                    {others ? 'Hide the tracked objects' : 'List every tracked object'}
-                  </button>
-                </p>
-              )}
-              {others && (
-                <ul className="rowlist">
-                  {others.map(({ o, who }) => <EngineRow key={o.id} o={o} who={who} hover={hover} resume={resume} onPick={onPick} onPoint={onPoint} mark={false} />)}
-                </ul>
-              )}
-              {r.notes.length > 0 && (
-                <>
-                  <h4>Engine notes</h4>
-                  {r.notes.map((note) => <p key={note} className="line dim">{note}</p>)}
-                </>
-              )}
+              <h4>Notes</h4>
+              {r.notes.map((note) => <p key={note} className="line dim">{note}</p>)}
             </>
           )}
-
-          <h4>Coordinates of the centre</h4>
-          <dl className="kv">
-            <dt>Equatorial</dt><dd>RA {sel.ra.toFixed(5)}° · Dec {signed(sel.dec, 5)}°</dd>
-            <dt>Galactic</dt><dd>l {g.l.toFixed(4)}° · b {signed(g.b, 4)}°</dd>
-            <dt>Ecliptic</dt><dd>lon {e.lambda.toFixed(4)}° · lat {signed(e.beta, 4)}°</dd>
-            <dt>Radius</dt><dd>{formatFov(sel.radius)}</dd>
-          </dl>
-          <h4>SPHEREx coverage</h4>
-          <p className="line">{cadence(e.beta)}</p>
-          {visits.status === 'none' && <p className="line dim">Pass dates need the PlanetX server, which is not connected.</p>}
-          {visits.status === 'loading' && <p className="state"><span className="ticker" aria-hidden="true" />Listing SPHEREx passes</p>}
-          {visits.status === 'ok' && visits.passes.length > 0 && (
-            <ol className="passes">
-              {visits.passes.map((p) => (
-                <li key={p.start}><span>{dateSpan(p.start, p.end)}</span><span className="dim">{plural(p.n_visits, 'image')}</span></li>
-              ))}
-            </ol>
-          )}
-          <p className="credits">Data: NASA/SPHEREx DR1 + QR3 (IRSA) · ESA Gaia DR3 (VizieR) · SIMBAD (CDS) · 2MASS, AllWISE, CatWISE (IRSA)</p>
-        </>
+        </Fold>
       )}
+
+      <Fold title="Position">
+        <dl className="kv">
+          <dt>Equatorial</dt><dd>RA {sel.ra.toFixed(5)}° · Dec {signed(sel.dec, 5)}°</dd>
+          <dt>Galactic</dt><dd>l {g.l.toFixed(4)}° · b {signed(g.b, 4)}°</dd>
+          <dt>Ecliptic</dt><dd>lon {e.lambda.toFixed(4)}° · lat {signed(e.beta, 4)}°</dd>
+          <dt>Radius</dt><dd>{formatFov(sel.radius)}</dd>
+        </dl>
+      </Fold>
+    </div>
+  );
+}
+
+/** A folded section; mounts its content only while open. */
+function Fold({ title, count: n, open: initial = false, children }) {
+  const [open, setOpen] = useState(initial);
+  return (
+    <details className="more" open={open} onToggle={(ev) => setOpen(ev.currentTarget.open)}>
+      <summary>{title}{n != null && <span className="fold-count">{count(n)}</span>}</summary>
+      {open && <div className="fold-body">{children}</div>}
     </details>
   );
 }
@@ -332,6 +353,7 @@ export default function InfoPanel({
   }
   const width = sel.radius * 2;
   const pointing = { hover, resume, onPick, onPoint };
+  const beta = equatorialToEcliptic(sel.ra, sel.dec).beta;
   return (
     <aside className="panel" aria-label="Selected patch of sky">
       <header className="panel-head">
@@ -342,26 +364,27 @@ export default function InfoPanel({
             <button type="button" className="iconbtn" onClick={onClose} aria-label="Close panel"><CloseIcon /></button>
           </span>
         </div>
-        {sel.label
-          ? <h2 className="title">{sel.label}</h2>
-          : <h2 className="title title-coords">{formatRa(sel.ra)}<br />{formatDec(sel.dec)}</h2>}
+        <h2 className={`title ${sel.label ? (sel.label.length > 18 ? 'title-long' : '') : 'title-coords'}`}>{sel.label || <>{formatRa(sel.ra)}<br />{formatDec(sel.dec)}</>}</h2>
         {sel.label && <p className="coords">{formatRa(sel.ra)}&ensp;{formatDec(sel.dec)}</p>}
       </header>
 
       <div className="panel-body">
         {candidate && <SurveyCandidateNote candidate={candidate} motion={motion} onRun={() => onRetry('motion')} />}
         <Summary
-          motion={motion} results={results} known={known} simbad={simbad} gaia={gaia} visits={visits}
+          motion={motion} results={results} known={known} simbad={simbad} gaia={gaia}
           onRun={() => onRetry('motion')} onRetry={onRetry} runShown={Boolean(candidate)}
         />
+        <PatchStats motion={motion} results={results} simbad={simbad} gaia={gaia} visits={visits} />
         <Flagged
           results={results} known={known} filter={filter} gaia={gaia} {...pointing}
           player={{ playing, onTogglePlay, getYear, moversOnly, onToggleMovers }}
         />
+        <CoverageSection visits={visits} beta={beta} onRetry={onRetry} />
         <More
-          sel={sel} visits={visits} motion={motion} known={known} results={results} filter={filter} gaia={gaia}
+          sel={sel} motion={motion} known={known} results={results} filter={filter} gaia={gaia}
           others={others} onToggleOthers={onToggleOthers} {...pointing}
         />
+        <p className="credits">Data: NASA/SPHEREx DR1 + QR3 (IRSA) · ESA Gaia DR3 (VizieR) · SIMBAD (CDS) · 2MASS, AllWISE, CatWISE (IRSA)</p>
       </div>
     </aside>
   );

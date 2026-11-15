@@ -18,13 +18,18 @@ those have no timeout and can hang a request forever. Every call here has a
 connect/read timeout, a total deadline, a body size limit, bounded retries
 (transient failures only) and a cap on concurrent requests to IRSA.
 """
+import hashlib
 import io
+import json
 import logging
+import os
 import re
+import tempfile
 import threading
 import time
 import warnings
 from collections.abc import Callable
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import numpy as np
@@ -37,6 +42,7 @@ from astropy.time import Time
 from astropy.wcs import WCS
 
 from planetx.api.schemas import Pass, Visit
+from planetx.config import settings
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +61,9 @@ MAX_CONCURRENT_REQUESTS = 4
 PASS_GAP_DAYS = 30
 SIA_CACHE_TTL_S = 600
 SIA_CACHE_MAX_ENTRIES = 256
+# Words that may follow POLYGON in an STC-S s_region before the vertices (IRSA sends ICRS).
+S_REGION_FRAMES = frozenset({"ICRS", "FK5", "J2000", "UNKNOWNFRAME", "GEOCENTER", "BARYCENTER", "TOPOCENTER",
+                             "UNKNOWNREFPOS", "SPHERICAL2"})
 
 _ALLOWED_NETLOC = "irsa.ipac.caltech.edu"
 # SPHEREx file paths contain only these characters; anything else (%, \, ?, ;) is refused.
@@ -235,7 +244,9 @@ def parse_s_region(text: str) -> np.ndarray:
     words = str(text).split()
     if not words or words[0].upper() != "POLYGON":
         raise UpstreamError(f"SIA s_region is not a POLYGON: {str(text)[:80]!r}")
-    numbers = words[2:] if len(words) > 1 and words[1].upper() == "ICRS" else words[1:]
+    numbers = words[1:]
+    while numbers and numbers[0].upper() in S_REGION_FRAMES:  # STC-S frame, reference position, ...
+        numbers = numbers[1:]
     try:
         values = np.array([float(w) for w in numbers])
     except ValueError:
@@ -266,19 +277,95 @@ def _query_collection(collection: str, ra: float, dec: float, radius_deg: float)
     return visits_from_table(_query_table(collection, ra, dec, radius_deg))
 
 
+def _stale_path(kind: str, key: tuple) -> Path:
+    digest = hashlib.sha1(repr((kind, *key)).encode()).hexdigest()
+    return settings.cache_dir / "sia" / f"{digest}.json"
+
+
+def _save_stale(path: Path, payload: object) -> None:
+    """Keep `payload` for `_or_stale`, written atomically. A failed write is logged, never raised."""
+    tmp = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        with os.fdopen(fd, "w") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("could not keep the SIA answer at %s: %s", path, exc)
+        if tmp is not None:
+            Path(tmp).unlink(missing_ok=True)
+
+
+def _or_stale[T](kind: str, key: tuple, query: Callable[[], T], dump: Callable[[T], object],
+                 load: Callable[[object], T]) -> T:
+    """`query()`, its answer kept on disk; during an IRSA outage, the last answer kept.
+
+    SIA fails for hours at a time (502s), and everything the website and the survey
+    show starts with a listing. A 4xx is never answered from the file: the request
+    itself is wrong. Raises the query's error when there is nothing kept.
+    """
+    path = _stale_path(kind, key)
+    try:
+        result = query()
+    except UpstreamError as exc:
+        if exc.status is not None and 400 <= exc.status < 500:
+            raise
+        try:
+            stale = load(json.loads(path.read_text()))
+        except FileNotFoundError:
+            raise exc from None
+        except (OSError, ValueError, TypeError, KeyError) as bad:
+            log.warning("unreadable kept SIA answer %s (%s)", path, bad)
+            raise exc from None
+        age_h = (time.time() - path.stat().st_mtime) / 3600
+        log.warning("SIA %s at %s failed (%s); serving the answer kept %.1f h ago", kind, key, exc, age_h)
+        return stale
+    _save_stale(path, dump(result))
+    return result
+
+
 def query_footprints(ra: float, dec: float, radius_arcsec: float) -> list[tuple[Visit, np.ndarray]]:
     """Like `query_visits` (same rows, order and errors) with each image's footprint
-    (`parse_s_region` vertices), and not cached."""
+    (`parse_s_region` vertices), and not cached in memory. During an IRSA outage
+    the last answer kept on disk is returned (see `_or_stale`).
+
+    A row whose footprint is missing or unreadable is left out (logged), so one bad
+    row cannot fail a survey patch on every retry; a collection where every row's
+    footprint is unreadable raises (the format must have changed).
+    """
+    return _or_stale(
+        "footprints", (round(ra, 6), round(dec, 6), round(radius_arcsec, 3)),
+        lambda: _query_footprints(ra, dec, radius_arcsec),
+        lambda found: [[v.model_dump(mode="json"), fp.tolist()] for v, fp in found],
+        lambda rows: [(Visit.model_validate(v), np.array(fp, dtype=float)) for v, fp in rows],
+    )
+
+
+def _query_footprints(ra: float, dec: float, radius_arcsec: float) -> list[tuple[Visit, np.ndarray]]:
     found: list[tuple[Visit, np.ndarray]] = []
     seen: set[str] = set()
     for collection in COLLECTIONS:
         table = _query_table(collection, ra, dec, radius_arcsec / 3600)
         if len(table) and "s_region" not in table.colnames:
             raise UpstreamError(f"SIA query {collection} returned no s_region column")
+        bad: list[str] = []
         for visit, region in zip(visits_from_table(table), table["s_region"] if len(table) else [], strict=True):
+            try:
+                if np.ma.is_masked(region):
+                    raise UpstreamError("SIA s_region is empty")
+                footprint = parse_s_region(region)
+            except UpstreamError as exc:
+                bad.append(f"{visit.access_url}: {exc}")
+                continue
             if visit.access_url not in seen:
                 seen.add(visit.access_url)
-                found.append((visit, parse_s_region(region)))
+                found.append((visit, footprint))
+        if bad and len(bad) == len(table):
+            raise UpstreamError(f"SIA query {collection}: no row has a readable s_region, e.g. {bad[0]}")
+        if bad:
+            log.warning("SIA query %s at ra=%s dec=%s: left out %d of %d rows with unreadable footprints, e.g. %s",
+                        collection, ra, dec, len(bad), len(table), bad[0])
     found.sort(key=lambda vf: (vf[0].mjd, vf[0].detector or 0, vf[0].access_url))
     return found
 
@@ -286,8 +373,9 @@ def query_footprints(ra: float, dec: float, radius_arcsec: float) -> list[tuple[
 def query_visits(ra: float, dec: float, radius_arcsec: float) -> list[Visit]:
     """All SPHEREx visits (dr1 + qr3) whose images cover the cone, sorted by mjd.
 
-    Raises UpstreamError if either collection fails (no partial results).
-    Results are cached in memory for SIA_CACHE_TTL_S.
+    Raises UpstreamError if either collection fails (no partial results) and no
+    earlier answer is kept on disk (see `_or_stale`). Fresh results are cached in
+    memory for SIA_CACHE_TTL_S; a kept one is not, so the next call asks IRSA again.
     """
     key = (round(ra, 6), round(dec, 6), round(radius_arcsec, 3))
     now = time.monotonic()
@@ -295,13 +383,23 @@ def query_visits(ra: float, dec: float, radius_arcsec: float) -> list[Visit]:
         hit = _sia_cache.get(key)
         if hit and now - hit[0] < SIA_CACHE_TTL_S:
             return list(hit[1])
-    visits, seen = [], set()
-    for collection in COLLECTIONS:
-        for visit in _query_collection(collection, ra, dec, radius_arcsec / 3600):
-            if visit.access_url not in seen:
-                seen.add(visit.access_url)
-                visits.append(visit)
-    visits.sort(key=lambda v: (v.mjd, v.detector or 0, v.access_url))
+    fresh = []
+
+    def query() -> list[Visit]:
+        visits, seen = [], set()
+        for collection in COLLECTIONS:
+            for visit in _query_collection(collection, ra, dec, radius_arcsec / 3600):
+                if visit.access_url not in seen:
+                    seen.add(visit.access_url)
+                    visits.append(visit)
+        visits.sort(key=lambda v: (v.mjd, v.detector or 0, v.access_url))
+        fresh.append(True)
+        return visits
+
+    visits = _or_stale("visits", key, query, lambda vs: [v.model_dump(mode="json") for v in vs],
+                       lambda rows: [Visit.model_validate(v) for v in rows])
+    if not fresh:
+        return visits
     with _sia_cache_lock:
         if len(_sia_cache) >= SIA_CACHE_MAX_ENTRIES:
             del _sia_cache[min(_sia_cache, key=lambda k: _sia_cache[k][0])]
