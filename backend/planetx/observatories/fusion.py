@@ -126,13 +126,19 @@ class FusionParams:
     # A fit is inconsistent (its positions do not lie on one line within their
     # errors) when its chi2 is this improbable.
     min_fit_probability: float = 1e-3
-    # Absence from a deep catalog (Verdict.ABSENT) is only claimed when no source of that
-    # catalog within max(absent_min_arcsec, gate) of the predicted position (one WISE beam
-    # at least) has a motion consistent with SPHEREx's at absent_pm_p (a source without a
-    # measured motion counts as consistent), the gate is no wider than max_gate_arcsec,
-    # and the catalog has sources in all four quadrants within coverage_arcsec beyond it
-    # (the position is inside the fetched area, not off its edge).
-    absent_min_arcsec: float = 6.0
+    # Absence from a deep catalog (Verdict.ABSENT) is only claimed when:
+    #  * SPHEREx shifts the object by at least min_shift_arcsec (sub-pixel "motions" are noise);
+    #  * the gate (3 sigma of the predicted position) is no wider than max_gate_arcsec;
+    #  * no source of that catalog within max(absent_search_arcsec, gate) of the prediction
+    #    has a motion consistent with SPHEREx's at absent_pm_p (one with no measured motion
+    #    counts as consistent). Unrelated sources almost never move several arcsec a year, so
+    #    the search can be wide: it also catches CatWISE's pieces of a smeared fast mover;
+    #  * no source at all lies within absent_blend_arcsec of the prediction: a static star
+    #    there would swallow the mover in WISE's 6" beam, so the catalog cannot tell;
+    #  * the whole search circle lies inside the fetched cone (`archive_cone`), or, when
+    #    the cone is not known, the catalog has sources in all four quadrants around it.
+    absent_search_arcsec: float = 20.0
+    absent_blend_arcsec: float = 3.0
     absent_pm_p: float = 0.0027  # 3 sigma, two axes
     coverage_arcsec: float = 90.0
 
@@ -277,13 +283,15 @@ def fuse_track(
     params: FusionParams = FusionParams(),
     *,
     frame_offset_arcsec: tuple[float, float] = (0.0, 0.0),
+    archive_cone: tuple[float, float, float] | None = None,
 ) -> FusedMotion:
     """Fit one track's motion using SPHEREx plus whatever `archive` holds.
 
     `epochs` are the track's SPHEREx positions (two or more dates). `archive`
     maps each consulted observatory to its catalog sources around the track; an
     empty mapping means SPHEREx only. `frame_offset_arcsec` (east, north) is
-    subtracted from the SPHEREx positions first.
+    subtracted from the SPHEREx positions first. `archive_cone` (ra, dec, radius
+    arcsec) is the area the catalogs were fetched over, when known.
     """
     if len(epochs) < 2:
         raise ValueError("a track needs at least two SPHEREx epochs")
@@ -562,8 +570,14 @@ def fuse_track(
                 notes.append(
                     "every SPHEREx position coincides with its own stationary archival source"
                 )
-        if verdict is Verdict.UNCONFIRMED and spx_signif >= params.mover_sigma:
-            absent_in = _absent_in(archive, sources, ax, ay, spx, params)
+        spx_shift = math.hypot(spx.pmx, spx.pmy) * float(st.max() - st.min())
+        if (verdict is Verdict.UNCONFIRMED and spx_signif >= params.mover_sigma
+                and spx_shift >= params.min_shift_arcsec):
+            cone = None
+            if archive_cone is not None:
+                cx, cy = _project(archive_cone[0], archive_cone[1], ra0, dec0)
+                cone = (float(cx[0]), float(cy[0]), float(archive_cone[2]))
+            absent_in = _absent_in(archive, sources, ax, ay, spx, params, cone)
             if absent_in:
                 verdict = Verdict.ABSENT
                 names = " and ".join(o.value for o in absent_in)
@@ -595,11 +609,13 @@ def _absent_in(
     ay: np.ndarray,
     spx: _Fit,
     params: FusionParams,
+    cone: tuple[float, float, float] | None,
 ) -> tuple[Observatory, ...]:
     """The deep catalogs with no source moving like the SPHEREx track where it puts the object.
 
     Every source near the prediction is considered, even one already explained as another
     object, and one whose own motion the catalog could not measure counts as a match.
+    `cone` is the fetched area (centre east, north, radius; arcsec in the track's frame).
     """
     # Positions scattering beyond their errors: the prediction is less certain than quoted.
     inflate = math.sqrt(max(1.0, spx.chi2 / spx.dof)) if spx.dof > 0 else 1.0
@@ -613,16 +629,23 @@ def _absent_in(
         epoch = float(np.median([sources[i].mjd for i in idx])) / DAYS_PER_YEAR
         px, py, psig = (float(v) for v in spx.predict(epoch))
         own = float(np.median([math.hypot(sources[i].sigma_arcsec, params.archive_floor_arcsec) for i in idx]))
-        radius = max(params.absent_min_arcsec, params.gate_sigma * math.hypot(psig * inflate, own))
-        if radius > params.max_gate_arcsec:
+        gate = params.gate_sigma * math.hypot(psig * inflate, own)
+        if gate > params.max_gate_arcsec:
             continue  # too uncertain where it was
+        radius = max(params.absent_search_arcsec, gate)
         dx, dy = ax[idx] - px, ay[idx] - py
         d = np.hypot(dx, dy)
+        if (d <= params.absent_blend_arcsec).any():
+            continue  # a source on the spot could hide it
         if any(_moves_alike(sources[i], spx, pm_err, limit) for i in idx[d <= radius]):
             continue
-        around = d <= radius + params.coverage_arcsec
-        if len({(bool(e >= 0), bool(n >= 0)) for e, n in zip(dx[around], dy[around])}) < 4:
-            continue  # near the edge of what was fetched (or an empty patch of sky)
+        if cone is not None:
+            if math.hypot(px - cone[0], py - cone[1]) + radius > cone[2]:
+                continue  # part of the search circle was never fetched
+        else:
+            around = d <= radius + params.coverage_arcsec
+            if len({(bool(e >= 0), bool(n >= 0)) for e, n in zip(dx[around], dy[around])}) < 4:
+                continue  # near the edge of what was fetched (or an empty patch of sky)
         out.append(obs)
     return tuple(out)
 
@@ -783,7 +806,8 @@ def refine_objects(
             per_track = dict(archive)
             if i in extra:
                 per_track[Observatory.NEOWISE] = extra[i]
-            out.append(fuse_track(o.sources, per_track, params, frame_offset_arcsec=offset))
+            out.append(fuse_track(o.sources, per_track, params, frame_offset_arcsec=offset,
+                                  archive_cone=(c_ra, c_dec, radius)))
         return out
 
     fused = run((0.0, 0.0))

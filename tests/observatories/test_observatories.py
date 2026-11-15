@@ -236,12 +236,55 @@ def catwise_field(pm_of=lambda k: (0.0, 0.0), spacing=20.0, extent=200.0):
     return out
 
 
+def at_2015(start, pm, east=0.0, north=0.0):
+    """Sky position of the test mover at the CatWISE epoch, shifted by (east, north) arcsec."""
+    ra, dec = position(start, pm, MJD_CATWISE)
+    x, y = _project(ra, dec, RA0, DEC0)
+    return _deproject(float(x[0]) + east, float(y[0]) + north, RA0, DEC0)
+
+
 def test_a_fast_mover_with_no_catwise_source_moving_like_it_is_absent():
     track = spherex_track((0, 0), (8.0, 6.0), is_mover=True)  # 10"/yr, sharp: 0.4" positions
-    f = fuse_track(track.sources, {Observatory.CATWISE: catwise_field()})
+    field_ = catwise_field()
+    ra, dec = at_2015((0, 0), (8.0, 6.0))
+    assert min(math.hypot(*(np.ravel(_project(s.ra, s.dec, ra, dec)))) for s in field_) > 3.0  # no blend
+    f = fuse_track(track.sources, {Observatory.CATWISE: field_})
     assert f.verdict is Verdict.ABSENT and f.absent_in == (Observatory.CATWISE,)
-    assert f.is_mover is None  # the caller decides (saturation, wavelengths)
+    assert f.is_mover is None  # the caller decides (saturation, wavelengths, brightness)
     assert "catwise" in f.notes[-1]
+
+
+def test_a_static_source_on_the_predicted_spot_leaves_absence_unproven():
+    start, pm = (0.0, 0.0), (8.0, 6.0)
+    field_ = catwise_field() + [ArchivalSource(Observatory.CATWISE, *at_2015(start, pm, 2.0), MJD_CATWISE, 0.3,
+                                               pm_ra_cosdec=0.0, pm_dec=0.0, pm_err=0.01)]
+    f = fuse_track(spherex_track(start, pm, is_mover=True).sources, {Observatory.CATWISE: field_})
+    assert f.verdict is not Verdict.ABSENT
+
+
+def test_a_piece_of_a_smeared_mover_well_off_the_prediction_still_counts_as_present():
+    start, pm = (0.0, 0.0), (8.0, 6.0)
+    field_ = catwise_field() + [ArchivalSource(Observatory.CATWISE, *at_2015(start, pm, 0.0, 15.0), MJD_CATWISE,
+                                               0.3, pm_ra_cosdec=7.5, pm_dec=6.5, pm_err=0.3)]
+    f = fuse_track(spherex_track(start, pm, is_mover=True).sources, {Observatory.CATWISE: field_})
+    assert f.verdict is not Verdict.ABSENT
+
+
+def test_absence_needs_the_whole_search_circle_inside_the_fetched_cone():
+    start, pm = (0.0, 0.0), (8.0, 6.0)
+    track = spherex_track(start, pm, is_mover=True)
+    archive = {Observatory.CATWISE: catwise_field()}
+    ra, dec = at_2015(start, pm)
+    assert fuse_track(track.sources, archive, archive_cone=(ra, dec, 200.0)).verdict is Verdict.ABSENT
+    # The prediction is inside the cone, but 10" from its edge: part of the 20" circle is unfetched.
+    edge_ra, edge_dec = at_2015(start, pm, 190.0)
+    assert fuse_track(track.sources, archive, archive_cone=(edge_ra, edge_dec, 200.0)).verdict is not Verdict.ABSENT
+
+
+def test_a_sub_pixel_track_is_never_absent():
+    # 5"/yr over one year at high significance: under a SPHEREx pixel of total shift.
+    track = spherex_track((0, 0), (3.0, 4.0), is_mover=True)
+    assert fuse_track(track.sources, {Observatory.CATWISE: catwise_field()}).verdict is not Verdict.ABSENT
 
 
 def test_a_catwise_source_moving_like_the_track_is_its_counterpart_not_an_absence():

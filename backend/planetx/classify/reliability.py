@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import math
+import statistics
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
@@ -59,11 +60,16 @@ CONTAMINATED_FRAC = 0.5
 BRIGHT_SAT_AREA_PX = 50
 BRIGHT_HALO_ARCSEC = 150.0
 # Archive verdict "absent" (CatWISE lists nothing moving like the track where it puts the object)
-# settles a motion only when SPHEREx saw the object at WISE's wavelengths (W1 3.4 um, W2 4.6 um),
-# where WISE reaches ~3 mag fainter than SPHEREx: then WISE could not have missed it. Seen only at
-# shorter wavelengths, a very hot (blue) object could be too faint for WISE.
+# settles a motion only when SPHEREx saw the object at WISE's wavelengths (W1 3.4 um, W2 4.6 um)
+# and bright there. CatWISE finds sources on 2010-2018 stacks, where a fast mover's light is
+# spread along its path, so for one it is about as deep as single WISE exposures (5 sigma near
+# W1 15.3 / W2 14.5 Vega, AB ~18; approximate) rather than ~3 mag deeper than SPHEREx. At AB 16.5
+# or brighter every single exposure sees it at ~20 sigma. WISE 0855 (W2 ~14 Vega, AB ~17.3,
+# 8"/yr) is in CatWISE with the right motion, so the bar is cautious. SPHEREx magnitudes use the
+# 3x3 box flux without an aperture correction: slightly too faint, the cautious direction.
 WISE_BAND_MIN_UM = 2.8
 WISE_BAND_MIN_DETECTIONS = 2
+WISE_SURE_AB_MAG = 16.5
 
 
 @dataclass(frozen=True)
@@ -211,12 +217,18 @@ def _weak_passes(obj: TrackedObject) -> int:
     )
 
 
-def _wise_band_detections(obj: TrackedObject) -> int:
-    """Clean detections at WISE's wavelengths (unsaturated, not on flagged light)."""
-    return sum(
-        1 for s in obj.sources for d in s.detections
-        if d.wavelength_um >= WISE_BAND_MIN_UM and not d.saturated and not d.contaminated
-    )
+def _wise_band_mag(obj: TrackedObject, pixel_arcsec: float) -> float | None:
+    """Median AB magnitude of the clean detections at WISE's wavelengths; None if too few."""
+    fluxes = [
+        d.flux for s in obj.sources for d in s.detections
+        if d.wavelength_um >= WISE_BAND_MIN_UM and not d.saturated and not d.contaminated and d.flux > 0
+    ]
+    if len(fluxes) < WISE_BAND_MIN_DETECTIONS:
+        return None
+    # Detection.flux is a 3x3 sum of MJy/sr pixels: times the pixel solid angle it is MJy.
+    pixel_sr = (pixel_arcsec / 206264.806) ** 2
+    jy = statistics.median(fluxes) * 1e6 * pixel_sr
+    return -2.5 * math.log10(jy / 3631.0)
 
 
 def _contaminated_passes(obj: TrackedObject) -> int:
@@ -352,23 +364,30 @@ def object_verdict(
             "nothing there, so its positions belong to different objects.", "spherex", cause="chance_link",
         )
     cause = _engine_cause(obj, bright_star_arcsec)
-    if archive == "absent":
+    if archive == "absent" and known.classification != "known_asteroid":
         names = survey_names(str(o) for o in fm.absent_in)
         nothing = f"{names} lists no source moving like this where its track puts it in 2015"
+        mag = _wise_band_mag(obj, pixel_arcsec)
         if cause == "saturated_halo":
             return MotionVerdict(
                 "unsure", f"{nothing}, but {_CAUSE_TEXT[cause]}, and WISE is confused there too: not enough to "
                 "call the motion real or fake.", "archive", cause=cause,
             )
-        if _wise_band_detections(obj) < WISE_BAND_MIN_DETECTIONS:
+        if mag is None:
             return MotionVerdict(
                 "unsure", f"{nothing}, but SPHEREx saw it only at wavelengths shorter than WISE's, where a very hot "
                 "object could be too faint for WISE.", "archive", cause=cause,
             )
+        if mag > WISE_SURE_AB_MAG:
+            return MotionVerdict(
+                "unsure", f"{nothing}, which points to a fake motion, but at 3-5 µm it is faint (AB {mag:.1f}): "
+                "a real fast mover that faint can be smeared out of CatWISE's stacked images.", "archive",
+                cause=cause,
+            )
         return MotionVerdict(
-            "fake_motion", f"SPHEREx sees it at 3-5 µm, where WISE reaches fainter than SPHEREx, yet {nothing}: "
-            f"the {speed} is not real; most likely {_CAUSE_TEXT[cause or 'chance_link']}.", "archive",
-            cause=cause or "chance_link",
+            "fake_motion", f"It is bright at 3-5 µm (AB {mag:.1f}), where every single WISE exposure would see it, "
+            f"yet {nothing}: the {speed} is not real; most likely {_CAUSE_TEXT[cause or 'chance_link']}.",
+            "archive", cause=cause or "chance_link",
         )
     if archive == "stationary":
         return MotionVerdict(
@@ -570,12 +589,6 @@ def stored_verdict(
             "fake_motion", "Older surveys show a separate, fixed source at each SPHEREx position: neighbouring stars "
             "joined into one track.", "archive", cause="chance_link",
         )
-    if archive_verdict == "absent":
-        # The row keeps no detections, so saturation and wavelength (object_verdict) cannot be checked.
-        return MotionVerdict(
-            "unsure", "CatWISE lists no source moving like this where its track puts it in 2015; whether WISE "
-            "should have seen it cannot be checked from the stored row.", "archive",
-        )
     if kind == "static":
         if archive_verdict == "stationary" and significance >= MOVER_SIGMA:
             return MotionVerdict(
@@ -598,6 +611,12 @@ def stored_verdict(
         what = "star" if classification == "known_star" else "solar-system body"
         return MotionVerdict(
             "moving", f"A catalogued {what} moving the same way.", "catalogue", certainty="confirmed",
+        )
+    if archive_verdict == "absent":
+        # The row keeps no detections, so saturation, wavelength and brightness cannot be checked.
+        return MotionVerdict(
+            "unsure", "CatWISE lists no source moving like this where its track puts it in 2015; whether WISE "
+            "should have seen it cannot be checked from the stored row.", "archive",
         )
     if archive_verdict == "confirmed":
         if classification is None and significance < MOVER_SIGMA:

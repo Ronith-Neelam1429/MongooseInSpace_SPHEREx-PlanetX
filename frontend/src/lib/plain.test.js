@@ -93,6 +93,7 @@ describe('wording', () => {
     expect(archiveSentence({ verdict: 'unconfirmed', candidate: true, observatories: ['spherex', 'allwise', 'catwise'], baseline_yr: 16.2 }))
       .toBe('Candidate: AllWISE, CatWISE positions alone show it moving over 16 years, but a second, independent survey is needed to confirm it.');
     expect(archiveSentence(null)).toBeNull();
+    expect(a('absent')).toBe('Not confirmed: CatWISE lists nothing moving like this where its track puts it in 2015.');
   });
   it('compares our motion with a catalogued one', () => {
     const gaia = { east: -0.80, north: 10.36 };
