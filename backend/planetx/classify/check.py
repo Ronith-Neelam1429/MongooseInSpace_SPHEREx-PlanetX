@@ -12,6 +12,7 @@ with a wider match radius, and says so in a note.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -26,11 +27,13 @@ from . import catalogs, observer
 from .catalogs import DAYS_PER_YEAR, CatalogError, CatalogObject, SolarSystemBody
 from .observer import SPHEREX_MAX_GEOCENTRIC_KM, mean_position, parallax_arcsec
 from .rules import (
+    AGREE_SIGMA,
     BODY_MATCH_ARCSEC,
     BODY_MIN_AU,
     MATCH_RADIUS_ARCSEC,
     MAX_MATCHES,
     NEAREST_BODY_AU,
+    SLOW_FRACTION,
     FieldCatalog,
     Match,
     archive_is_other_stars,
@@ -39,6 +42,7 @@ from .rules import (
     check_track,
     classify,
     identify,
+    lead_star,
 )
 
 log = logging.getLogger(__name__)
@@ -58,6 +62,9 @@ SKYBOT_MAX_POSITION_ERR_ARCSEC = 120.0
 SKYBOT_RADIUS_ARCSEC = (
     parallax_arcsec(SPHEREX_MAX_GEOCENTRIC_KM, NEAREST_BODY_AU) + BODY_MATCH_ARCSEC + SKYBOT_MAX_POSITION_ERR_ARCSEC
 )
+# A track on a slow Gaia star that its claimed motion misses by at least this many
+# sigma (and by more than a pixel over the track) is kept, but named only as "near" the star.
+STAR_DISAGREE_SIGMA = 5.0
 # SkyBoT takes 2-10 s per cone; a run asks at most this many.
 MAX_BODY_QUERIES = 8
 # After Horizons fails, runs skip it for this long (asteroid checks use the
@@ -188,7 +195,9 @@ def check_objects(
     leads: list[int | None] = []
     false_tracks: list[bool] = []
     void_archive: set[int] = set()
+    near_star: dict[int, int] = {}  # object index -> slow Gaia star it is next to but not
     on_slow_stars = 0
+    on_slow_lead = 0
     for i, (obj, fm) in enumerate(zip(objects, fused, strict=True)):
         archive_says = fm.is_mover
         kind = motion_kind(obj, archive_says, pixel_arcsec, fm.archive_candidate)
@@ -213,6 +222,12 @@ def check_objects(
                 kind = "static"
                 false_track = false_track or track.slow_stars == "different"
                 on_slow_stars += 1
+            else:
+                kind, star = _against_lead_star(catalog, obj, fm, kind, claim, pixel_arcsec)
+                if kind == "static":
+                    on_slow_lead += 1
+                elif star is not None:
+                    near_star[i] = star
         kinds.append(kind)
         leads.append(lead)
         false_tracks.append(false_track)
@@ -222,6 +237,16 @@ def check_objects(
         )
     if on_slow_stars:
         notes.append(f"{on_slow_stars} apparent mover(s) set to static: slow Gaia stars lie at every position")
+    if on_slow_lead:
+        notes.append(
+            f"{on_slow_lead} apparent mover(s) set to static: the motion is consistent with the slow Gaia star "
+            f"at the mean position (within {AGREE_SIGMA:g} sigma)"
+        )
+    if near_star:
+        notes.append(
+            f"{len(near_star)} mover(s) or candidate(s) lie next to a slow Gaia star whose motion they do not "
+            "share: named \"near\" that star"
+        )
 
     if stacked:
         asteroids, unchecked_bodies = {}, set()
@@ -249,11 +274,51 @@ def check_objects(
         # A false track joins different objects, so it has no name of its own; the
         # matches still say what lies at its mean position.
         named = bool(matches) and not false_tracks[i]
+        name = matches[0].name if named else None
+        if i in near_star and i not in asteroids:
+            name = f"near {catalog.objects[near_star[i]].name}"
         known.append(Known(
-            kind=kind, classification=classification, name=matches[0].name if named else None, matches=matches,
+            kind=kind, classification=classification, name=name, matches=matches,
             archive_void=i in void_archive,
         ))
     return CheckResult(known=known, notes=notes)
+
+
+def _against_lead_star(
+    catalog: FieldCatalog,
+    obj: TrackedObject,
+    fm: FusedMotion,
+    kind: str,
+    claim: tuple[float, float],
+    pixel_arcsec: float,
+) -> tuple[str, int | None]:
+    """Settle a moving track whose mean position is on a slow Gaia star: (kind, star index or None).
+
+    `identify` names the object after that star, so the motion claim has to be
+    weighed against the star's own: within AGREE_SIGMA (using the larger of the
+    engine's and the refit's errors) it is that star, and static. Beyond
+    STAR_DISAGREE_SIGMA and a pixel of total shift it is something else next to
+    the star and keeps its kind. In between it can be no more than a candidate.
+    Returns the star index when the object keeps moving next to it.
+    """
+    star_i = lead_star(catalog, obj.ra, obj.dec, obj.ref_mjd)
+    if star_i is None:
+        return kind, None
+    star = catalog.objects[star_i]
+    speed = math.hypot(*claim)
+    if not star.pm_total < SLOW_FRACTION * speed:
+        return kind, None
+    errors = [e for e in (obj.pm_err, fm.pm_err) if e is not None and math.isfinite(e) and e > 0]
+    if not errors:
+        return kind, star_i
+    err = max(errors)
+    miss = math.hypot((star.pm_ra_cosdec or 0.0) - claim[0], (star.pm_dec or 0.0) - claim[1])
+    if miss <= AGREE_SIGMA * err:
+        return "static", None
+    span_yr = (obj.sources[-1].mjd - obj.sources[0].mjd) / DAYS_PER_YEAR
+    if miss >= STAR_DISAGREE_SIGMA * err and miss * span_yr > pixel_arcsec:
+        return kind, star_i
+    return "candidate", star_i
 
 
 class _HorizonsBackoff:

@@ -457,3 +457,61 @@ def test_field_cone_holds_every_position_across_ra_zero():
     ra, dec, radius = field_cone([a, b])
     assert min(ra, 360.0 - ra) < 1e-6 and dec == pytest.approx(10.0, abs=1e-3)
     assert radius == pytest.approx(0.05 * 3600 * math.cos(math.radians(10.0)), rel=1e-3)
+
+
+# --- tracks on a faint, slow Gaia star (real case: Barnard field, Gaia DR3 4472833711479372160) ---
+
+FAINT = gaia("Gaia DR3 4472833711479372160", 269.40, 4.70, pm=(-0.002, -0.009), g=19.35)
+YEAR = 365.25
+
+
+def along(star, offsets_arcsec, pa_deg, *, sigma, pm_err, start=60900.0, step_yr=1.1):
+    """A mover track whose passes lie `offsets_arcsec` from `star` along position angle `pa_deg`."""
+    east, north = math.sin(math.radians(pa_deg)), math.cos(math.radians(pa_deg))
+    passes = [(*offset(star.ra, star.dec, o * east, o * north), start + k * step_yr * YEAR)
+              for k, o in enumerate(offsets_arcsec)]
+    speed = (offsets_arcsec[-1] - offsets_arcsec[0]) / (step_yr * (len(offsets_arcsec) - 1))
+    obj = tracked(passes, pm=(speed * east, speed * north), pm_err=pm_err, is_mover=True)
+    return replace(obj, sources=[replace(s, sigma_arcsec=sigma) for s in obj.sources])
+
+
+def test_a_noisy_track_on_a_faint_slow_gaia_star_is_static():
+    # Pass means scatter by ~2" around the star: the last one is 4.8" off, outside the 4.5" match radius.
+    obj = along(FAINT, [-3.5, 0.5, 4.8], 315.0, sigma=2.0, pm_err=0.6)
+    result = Catalogues(gaia=[FAINT]).check([obj], [fused(obj)])
+    (known,) = result.known
+    assert (known.kind, known.classification, known.name) == ("static", "static", FAINT.name)
+    assert any("slow Gaia stars lie at every position" in n for n in result.notes)
+
+
+def test_a_motion_consistent_with_the_slow_lead_star_is_static_using_the_larger_error():
+    # Precise passes, one 5" off: no slow star under every pass, but the claim (3.2"/yr)
+    # is within 3 sigma of the star's motion with the refit's error (1.2), not with the engine's (0.8).
+    obj = along(FAINT, [-2.0, 0.0, 5.0], 315.0, sigma=0.5, pm_err=0.8)
+    result = Catalogues(gaia=[FAINT]).check([obj], [fused(obj, pm_err=1.2)])
+    assert (result.known[0].kind, result.known[0].classification) == ("static", "static")
+    assert any("consistent with the slow Gaia star at the mean position" in n for n in result.notes)
+
+
+def test_a_motion_somewhat_off_the_slow_lead_star_is_at_most_a_candidate_named_near_it():
+    obj = along(FAINT, [-2.0, 0.0, 5.0], 315.0, sigma=0.5, pm_err=0.8)  # 4 sigma off the star
+    (known,) = Catalogues(gaia=[FAINT]).check([obj], [fused(obj, pm_err=0.8)]).known
+    assert (known.kind, known.classification) == ("candidate", "unknown_candidate")
+    assert known.name == f"near {FAINT.name}" and known.matches[0].name == FAINT.name
+
+
+def test_a_fast_mover_passing_a_faint_static_star_stays_a_mover_named_near_it():
+    # 10"/yr north, its middle pass right on the star.
+    obj = along(FAINT, [-11.0, 0.0, 11.0], 0.0, sigma=0.5, pm_err=0.5)
+    result = Catalogues(gaia=[FAINT]).check([obj], [fused(obj)])
+    (known,) = result.known
+    assert (known.kind, known.classification) == ("mover", "unknown_candidate")
+    assert known.name == f"near {FAINT.name}"
+    assert any('named "near" that star' in n for n in result.notes)
+
+
+def test_a_fast_mover_crossing_a_static_star_off_its_mean_position_keeps_no_star_name():
+    # The star lies under the first pass only; the mean position is 11" away: nothing to name it after.
+    obj = along(FAINT, [0.0, 11.0, 22.0], 0.0, sigma=0.5, pm_err=0.5)
+    (known,) = Catalogues(gaia=[FAINT]).check([obj], [fused(obj)]).known
+    assert (known.kind, known.classification, known.name) == ("mover", "unknown_candidate", None)
