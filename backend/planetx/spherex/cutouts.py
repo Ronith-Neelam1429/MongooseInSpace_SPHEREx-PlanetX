@@ -13,18 +13,28 @@ tool ignores a wider set (PHOTOMETRY_BAD_FLAGS) that includes BLOOM and
 SUR_ERROR; those cover the cores of bright stars such as Barnard's Star, so they
 are left for the photometry/detection pipeline to apply.
 
-Disk cache: settings.cache_dir/cutouts, ~4 MB per entry, capped at
-settings.cache_max_mb. A hit refreshes the entry's mtime; after each new download
-the least recently used entries are deleted until the cache fits the cap.
+Disk cache: settings.cache_dir/cutouts, ~4 MB per field cutout (~25 MB for a survey
+patch's), capped at settings.cache_max_mb. A hit refreshes the entry's mtime; after each new download
+the least recently used entries are deleted until the cache fits the cap, except
+entries this process has `pinned` (a survey patch's cutouts while it is processed).
+
+Cropping: an IRSA cutout is an exact sub-array of the file, and only the CRPIX
+cards (CRPIXn, CRPIXnA, CRPIXnW) and NAXISn differ between two cutouts of one
+file (verified live, Nov 2026). `crop_cutout` therefore cuts the frame of a small
+request out of a larger cutout of the same file locally.
 """
 import base64
 import hashlib
 import io
+import math
 import os
 import re
 import tempfile
 import threading
 import warnings
+from collections import Counter
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,9 +74,15 @@ PHOTOMETRY_BAD_FLAGS = (
 )
 
 _SIP_CARD = re.compile(r"(A|B|AP|BP)_(ORDER|\d+_\d+)")
+_CRPIX_CARD = re.compile(r"CRPIX([12])[A-Z]?")
+# The planes `crop_cutout` cuts (ZODI is optional); WCS-WAVE is copied whole. The
+# EPSF table (~3.8 MB of every cutout) is left out: nothing downstream reads it.
+CROP_PLANES = ("IMAGE", "FLAGS", "VARIANCE", "ZODI")
 # Striped locks: concurrent requests for the same cutout download it once.
 _download_locks = [threading.Lock() for _ in range(64)]
 _evict_lock = threading.Lock()
+_pinned: Counter[Path] = Counter()
+_pinned_lock = threading.Lock()
 
 
 def flag_mask(names: tuple[str, ...]) -> int:
@@ -100,12 +116,15 @@ def grid_wcs(ra: float, dec: float, size_deg: float) -> tuple[WCS, tuple[int, in
     return wcs, (n, n)
 
 
+def snap_center(ra: float, dec: float) -> tuple[float, float]:
+    """(ra, dec) snapped to the CUTOUT_CENTER_STEP_DEG grid of cutout centres."""
+    step = CUTOUT_CENTER_STEP_DEG
+    return round(round(ra / step) * step % 360, 7), round(min(90.0, max(-90.0, round(dec / step) * step)), 7)
+
+
 def cutout_request(ra: float, dec: float, size_deg: float) -> tuple[float, float, float]:
     """(ra, dec, size) of the raw cutout to request from IRSA for an output grid."""
-    step = CUTOUT_CENTER_STEP_DEG
-    snapped_ra = round(round(ra / step) * step % 360, 7)
-    snapped_dec = round(min(90.0, max(-90.0, round(dec / step) * step)), 7)
-    return snapped_ra, snapped_dec, round(size_deg * CUTOUT_OVERSIZE + CUTOUT_MARGIN_DEG, 5)
+    return *snap_center(ra, dec), round(size_deg * CUTOUT_OVERSIZE + CUTOUT_MARGIN_DEG, 5)
 
 
 def _atomic_write(path: Path, body: bytes) -> None:
@@ -123,15 +142,42 @@ def _atomic_write(path: Path, body: bytes) -> None:
         raise
 
 
+def cutout_path(url: str, ra: float, dec: float, size_deg: float) -> Path:
+    """Where `cached_cutout` keeps the cutout of this request (whether or not it is there yet)."""
+    archive.validate_spherex_url(url)
+    ra, dec, size_deg = round(ra, 7), round(dec, 7), round(size_deg, 5)
+    digest = hashlib.sha256(f"{url}|{ra:.7f}|{dec:.7f}|{size_deg:.5f}".encode()).hexdigest()
+    return settings.cache_dir / "cutouts" / digest[:2] / f"{digest}.fits"
+
+
+@contextmanager
+def pinned(paths: Iterable[Path]) -> Iterator[None]:
+    """Within the block, eviction by this process skips `paths` (present or still to be downloaded).
+
+    Pins nest and count. The cache can then exceed its cap by the pinned files;
+    other processes sharing the cache directory do not see the pins.
+    """
+    paths = list(paths)
+    with _pinned_lock:
+        _pinned.update(paths)
+    try:
+        yield
+    finally:
+        with _pinned_lock:
+            _pinned.subtract(paths)
+            for path in paths:
+                if _pinned[path] <= 0:
+                    del _pinned[path]
+
+
 def cached_cutout(url: str, ra: float, dec: float, size_deg: float) -> Path:
     """Path of the raw MEF cutout (downloading and caching it if needed).
 
     Keyed by (url, centre, size) as sent to IRSA. Only validated FITS is cached.
     """
-    archive.validate_spherex_url(url)
     ra, dec, size_deg = round(ra, 7), round(dec, 7), round(size_deg, 5)
-    digest = hashlib.sha256(f"{url}|{ra:.7f}|{dec:.7f}|{size_deg:.5f}".encode()).hexdigest()
-    path = settings.cache_dir / "cutouts" / digest[:2] / f"{digest}.fits"
+    path = cutout_path(url, ra, dec, size_deg)
+    digest = path.stem
     lock = _download_locks[int(digest[:8], 16) % len(_download_locks)]
     if not lock.acquire(timeout=archive.TOTAL_DEADLINE_S):
         raise archive.IrsaBusy("cutout downloads are queued up; try again shortly")
@@ -157,11 +203,13 @@ def _touch(path: Path) -> None:
 def _evict(root: Path, max_bytes: int, keep: Path) -> None:
     """Delete least recently used cutouts until the cache is at most max_bytes.
 
-    `keep` (the entry just written) is never deleted, so a single cutout larger
-    than the cap still works. Entries vanishing mid-scan (another thread or
-    process evicting) are skipped.
+    `keep` (the entry just written) and pinned entries are never deleted, so a
+    single cutout larger than the cap still works. Entries vanishing mid-scan
+    (another thread or process evicting) are skipped.
     """
     with _evict_lock:
+        with _pinned_lock:
+            protected = {keep, *_pinned}
         entries = []
         for p in root.rglob("*.fits"):
             try:
@@ -173,7 +221,7 @@ def _evict(root: Path, max_bytes: int, keep: Path) -> None:
         for _, size, p in sorted(entries, key=lambda e: e[0]):
             if total <= max_bytes:
                 break
-            if p == keep:
+            if p in protected:
                 continue
             p.unlink(missing_ok=True)
             total -= size
@@ -189,6 +237,78 @@ def _wavelength_wcs(header: fits.Header, hdul: fits.HDUList) -> WCS:
     for key in [k for k in header if _SIP_CARD.fullmatch(k)]:
         del header[key]
     return WCS(header, fobj=hdul, key="W")
+
+
+def _sip_header(header: fits.Header) -> fits.Header:
+    """`header` with CTYPEs saying '-SIP' when it carries SIP cards (SPHEREx omits the suffix;
+    astropy applies the terms anyway but logs a long message per call)."""
+    header = header.copy()
+    if "A_ORDER" in header:
+        for key in ("CTYPE1", "CTYPE2"):
+            if key in header and not str(header[key]).endswith("-SIP"):
+                header[key] = f"{header[key]}-SIP"
+    return header
+
+
+def crop_box(header: fits.Header, shape: tuple[int, int], ra: float, dec: float, size_deg: float
+             ) -> tuple[int, int, int, int] | None:
+    """Pixel box (x0, x1, y0, y1), end-exclusive and clipped to `shape`, that an IRSA
+    request (ra, dec, size_deg) covers in the cutout with IMAGE `header`; None when
+    (ra, dec) is off the cutout (IRSA answers such a request with 422).
+
+    The box is `size_deg` at the nominal pixel scale, centred on the pixel of
+    (ra, dec): the rule that reproduced IRSA's own field cutouts in live tests.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FITSFixedWarning)
+        x, y = WCS(_sip_header(header)).celestial.world_to_pixel_values(ra, dec)
+    ny, nx = shape
+    if not (np.isfinite(x) and np.isfinite(y) and -0.5 <= x < nx - 0.5 and -0.5 <= y < ny - 0.5):
+        return None
+    side = size_deg * 3600 / PIXEL_SCALE_ARCSEC
+    n = max(1, math.floor(side + 0.5))
+    x0, y0 = math.floor(x - side / 2 + 0.5), math.floor(y - side / 2 + 0.5)
+    return max(x0, 0), min(x0 + n, nx), max(y0, 0), min(y0 + n, ny)
+
+
+def _shifted(header: fits.Header, dx: int, dy: int) -> fits.Header:
+    header = header.copy()
+    for key in list(header):
+        match = _CRPIX_CARD.fullmatch(key)
+        if match:
+            header[key] = header[key] - (dx if match.group(1) == "1" else dy)
+    for key in ("BZERO", "BSCALE"):  # the data are copied already scaled
+        header.remove(key, ignore_missing=True)
+    return header
+
+
+def crop_cutout(hdul: fits.HDUList, ra: float, dec: float, size_deg: float) -> fits.HDUList | None:
+    """The cutout IRSA would return for request (ra, dec, size_deg), cut from `hdul`,
+    a larger cutout of the same file; None when (ra, dec) is off it.
+
+    The planes in CROP_PLANES are sliced and their CRPIX cards shifted, so every
+    WCS (celestial with SIP, and the W wavelength lookup) keeps describing the
+    same sky and detector pixels; the PRIMARY header and WCS-WAVE are copied. The
+    request must lie inside `hdul`'s own request (or the file's edge), otherwise
+    the crop comes out smaller than IRSA's cutout would be.
+    """
+    image = hdul["IMAGE"]
+    box = crop_box(image.header, image.data.shape, ra, dec, size_deg)
+    if box is None:
+        return None
+    x0, x1, y0, y1 = box
+    out = fits.HDUList([fits.PrimaryHDU(header=hdul[0].header.copy())])
+    for name in CROP_PLANES:
+        if name not in hdul:
+            continue
+        hdu = hdul[name]
+        if hdu.data is None or hdu.data.shape != image.data.shape:
+            raise ValueError(f"cutout {name} plane does not match IMAGE")
+        out.append(fits.ImageHDU(np.array(hdu.data[y0:y1, x0:x1]), header=_shifted(hdu.header, x0, y0), name=name))
+    if "WCS-WAVE" in hdul:
+        wave = hdul["WCS-WAVE"]
+        out.append(fits.BinTableHDU(data=wave.data.copy(), header=wave.header.copy(), name="WCS-WAVE"))
+    return out
 
 
 def align(

@@ -282,3 +282,95 @@ def test_png_handles_all_nan_and_flat_images():
     for data in (np.full((3, 3), np.nan), np.ones((3, 3))):
         img = Image.open(io.BytesIO(cutouts.render_png(data)))
         assert img.size == (3, 3)
+
+
+# --- pinning ---------------------------------------------------------------------------
+
+
+def test_pinned_entries_survive_eviction_until_unpinned(tmp_path, monkeypatch):
+    import os
+
+    from planetx.config import Settings
+
+    monkeypatch.setattr(cutouts, "settings", Settings(cache_dir=tmp_path, cache_max_mb=1))
+    monkeypatch.setattr(archive, "fetch_cutout", lambda *a: b"x" * 400_000)
+    old = cutouts.cutout_path(URL, RA, DEC, 0.075)
+    with cutouts.pinned([old]), cutouts.pinned([old]):  # pins nest
+        assert cutouts.cached_cutout(URL, RA, DEC, 0.075) == old
+        os.utime(old, (1_000, 1_000))  # least recently used
+        for i in range(1, 4):  # 1.6 MB > cap: everything unpinned but the newest goes
+            cutouts.cached_cutout(URL, RA, DEC + 0.01 * i, 0.075)
+        assert old.exists()
+    assert not cutouts._pinned
+    cutouts.cached_cutout(URL, RA, DEC + 0.05, 0.075)
+    assert not old.exists()
+
+
+# --- cropping --------------------------------------------------------------------------
+
+
+def _big_cutout(sources=(), flags=None):
+    """A synthetic raw cutout with the live layout: alternate-key A and W cards, ZODI and EPSF."""
+    from astropy.io import fits
+
+    hdul = fits.open(io.BytesIO(make_mef(RA, DEC, sources=sources, flags=flags)))
+    for name in ("IMAGE", "FLAGS", "VARIANCE"):
+        h = hdul[name].header
+        if name != "IMAGE":  # live FLAGS/VARIANCE carry the same WCS cards
+            h.update({k: v for k, v in hdul["IMAGE"].header.items() if k.startswith(("CRPIX", "CRVAL", "CTYPE"))})
+        h["CRPIX1A"], h["CRPIX2A"] = h["CRPIX1W"], h["CRPIX2W"]
+    hdul.append(fits.ImageHDU(np.arange(SHAPE[0] * SHAPE[1], dtype=np.float32).reshape(SHAPE),
+                              header=hdul["IMAGE"].header, name="ZODI"))
+    hdul.append(fits.BinTableHDU.from_columns([fits.Column(name="PSF", format="E", array=np.ones(3))], name="EPSF"))
+    return hdul
+
+
+def test_crop_is_the_sub_array_with_shifted_reference_pixels():
+    big = _big_cutout()
+    ra, dec = _shifted(40, -25)  # 40" north, 25" west of the big cutout's centre
+    x0, x1, y0, y1 = cutouts.crop_box(big["IMAGE"].header, SHAPE, ra, dec, 0.02)
+    assert (x1 - x0, y1 - y0) == (12, 12)  # 0.02 deg at 6.15"/px = 11.7 -> 12 px
+    crop = cutouts.crop_cutout(big, ra, dec, 0.02)
+    assert [h.name for h in crop] == ["PRIMARY", "IMAGE", "FLAGS", "VARIANCE", "ZODI", "WCS-WAVE"]  # no EPSF
+    for name in ("IMAGE", "FLAGS", "VARIANCE", "ZODI"):
+        np.testing.assert_array_equal(crop[name].data, big[name].data[y0:y1, x0:x1])
+        for key in ("CRPIX1", "CRPIX1A", "CRPIX1W"):
+            assert crop[name].header[key] == big[name].header[key] - x0
+        for key in ("CRPIX2", "CRPIX2A", "CRPIX2W"):
+            assert crop[name].header[key] == big[name].header[key] - y0
+    assert crop["IMAGE"].header["A_0_0"] == big["IMAGE"].header["A_0_0"]  # SIP is relative to CRPIX
+    np.testing.assert_array_equal(crop["WCS-WAVE"].data["VALUES"], big["WCS-WAVE"].data["VALUES"])
+
+
+def test_cropped_frame_sees_the_same_sky_wavelength_and_flags():
+    from planetx.engine import frame_from_hdul
+
+    star = _shifted(30, 20)
+    wcs = WCS(synthetic_header(RA, DEC))
+    sx, sy = (int(round(float(c))) for c in wcs.world_to_pixel_values(*star))
+    flags = np.zeros(SHAPE, np.int32)
+    flags[sy, sx] = 1 << 1  # OVERFLOW (saturated) on the star's pixel
+    big = _big_cutout(sources=[(*star, 100.0)], flags=flags)
+    big["FLAGS"].header.update({"MSKN0001": "OVERFLOW", "MSKM0001": 2})
+    centre = _shifted(25, 15)
+    crop = cutouts.crop_cutout(big, *centre, 0.03)
+    x0, _, y0, _ = cutouts.crop_box(big["IMAGE"].header, SHAPE, *centre, 0.03)
+    whole, part = frame_from_hdul(big), frame_from_hdul(crop)
+    # The same sky position maps to the same detector pixel, SIP distortion included.
+    bx, by = (float(c) for c in whole.wcs.world_to_pixel_values(*star))
+    cx, cy = (float(c) for c in part.wcs.world_to_pixel_values(*star))
+    assert (cx + x0, cy + y0) == pytest.approx((bx, by), abs=1e-9)
+    assert part.saturated[sy - y0, sx - x0] and part.saturated.sum() == 1
+    ny, nx = part.data.shape
+    assert part.wavelength_um == pytest.approx(wavelength_at_raw_pixel(x0 + (nx - 1) / 2), abs=1e-6)
+    assert part.mjd == whole.mjd and part.detector == whole.detector
+
+
+def test_crop_at_the_edge_is_clipped_and_off_the_cutout_is_none():
+    big = _big_cutout()
+    wcs = WCS(synthetic_header(RA, DEC))
+    edge = wcs.pixel_to_world_values(1.0, 30.0)  # 1 px from the left edge
+    crop = cutouts.crop_cutout(big, *edge, 0.03)
+    assert crop["IMAGE"].data.shape[0] == 18 and crop["IMAGE"].data.shape[1] < 18
+    assert cutouts.crop_cutout(big, *wcs.pixel_to_world_values(-3.0, 30.0), 0.03) is None
+    assert cutouts.crop_cutout(big, RA + 10, DEC, 0.03) is None
