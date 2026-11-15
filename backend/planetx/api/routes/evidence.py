@@ -42,6 +42,12 @@ def evidence(
     """
     run = runs.finished_run(ra, dec, size_deg)
     if run is None:
+        # Start the run again when its engine data was dropped, so the client's next
+        # /api/motion poll follows a fresh run instead of the kept summary.
+        try:
+            runs.request_job(ra, dec, size_deg, need_engine=True)
+        except runs.MotionBusy:
+            pass  # the client's /api/motion request reports the 503 itself
         raise HTTPException(
             404, "no finished motion run is kept for this field; request /api/motion for it again, then retry"
         )

@@ -370,11 +370,15 @@ def test_repeat_requests_are_served_from_the_cache(served, monkeypatch):
     assert len(proof._cache) == 2
 
 
-def test_no_finished_run_is_a_404_that_says_what_to_do(served):
+def test_no_finished_run_is_a_404_that_says_what_to_do(served, monkeypatch):
+    started = []
+    monkeypatch.setattr(motion, "request_job", lambda *args, **kw: started.append((args, kw)))
     resp = client.get("/api/motion/evidence", params={"ra": RA + 1, "dec": DEC, "object": 0})
     assert resp.status_code == 404
     assert "/api/motion" in resp.json()["detail"] and "retry" in resp.json()["detail"]
     assert "cache-control" not in resp.headers
+    # The field is run (again), so the client's next /api/motion poll follows a run that keeps its engine data.
+    assert started == [((RA + 1, DEC, SIZE_DEG), {"need_engine": True})]
 
 
 def test_unknown_object_is_a_404(served):
