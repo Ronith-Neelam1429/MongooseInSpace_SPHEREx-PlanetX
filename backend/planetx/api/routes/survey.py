@@ -9,9 +9,9 @@ import logging
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from planetx.api.schemas import SurveyCounts, SurveyCoverage, SurveyStatus
 from planetx.config import settings
@@ -68,8 +68,22 @@ def survey_status(db_path: DbPath) -> SurveyStatus:
     return status
 
 
+# What each `status` of /coverage draws: "queued" is the crawl's frontier, the patches
+# being searched now plus those waiting, of which `limit` caps the lowest-ranked.
+COVERAGE_STATUSES = {"done": ("done",), "failed": ("failed",), "queued": ("in_progress", "pending")}
+MAX_COVERAGE_LIMIT = 50_000
+
+
 @router.get("/coverage")
-def survey_coverage(db_path: DbPath) -> SurveyCoverage:
-    data = _read(db_path, lambda q: (q.nside(), q.done_patches()))
-    nside, done = data if data else (None, [])
-    return {str(moc_order(nside or DEFAULT_NSIDE)): done}
+def survey_coverage(
+    db_path: DbPath,
+    status: Annotated[Literal["done", "failed", "queued"], Query(
+        description="done (default) | failed | queued (in progress or waiting, next in crawl order first)",
+    )] = "done",
+    limit: Annotated[int | None, Query(
+        ge=1, le=MAX_COVERAGE_LIMIT, description="At most this many patches, the next the crawl reaches first",
+    )] = None,
+) -> SurveyCoverage:
+    data = _read(db_path, lambda q: (q.nside(), q.patches_with_status(COVERAGE_STATUSES[status], limit)))
+    nside, cells = data if data else (None, [])
+    return {str(moc_order(nside or DEFAULT_NSIDE)): cells}

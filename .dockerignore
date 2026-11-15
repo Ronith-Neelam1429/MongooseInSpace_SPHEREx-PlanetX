@@ -1,0 +1,16 @@
+.git
+.github
+.claude
+.venv
+.cache
+.playwright-mcp
+data
+frontend
+node_modules
+tests
+tools/out
+docs
+**/__pycache__
+.pytest_cache
+.env
+*.fits

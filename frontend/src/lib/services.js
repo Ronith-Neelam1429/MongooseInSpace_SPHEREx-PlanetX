@@ -162,16 +162,58 @@ export async function resolveName(name, { signal } = {}) {
   }, { signal, timeoutMs: 12000 });
 }
 
-/** GET a JSON document from the PlanetX API; rejects with `HTTP <status>` (also set as `err.status`). */
-async function apiJson(path, { signal, timeoutMs = 30000 } = {}) {
+/**
+ * GET a JSON document from the PlanetX API; rejects with `HTTP <status>` (also set as `err.status`),
+ * or "the request timed out" after `timeoutMs`. An abort through `signal` rejects with its reason.
+ */
+export async function apiJson(path, { signal, timeoutMs = 30000 } = {}) {
   const t = withTimeout(signal, timeoutMs);
+  let res;
   try {
-    const res = await fetch(`${API_BASE}${path}`, { signal: t.signal });
-    if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
+    res = await fetch(`${API_BASE}${path}`, { signal: t.signal });
+  } catch (err) {
+    t.done();
+    if (err?.name === 'TimeoutError') throw new Error('the request timed out', { cause: err });
+    if (signal?.aborted || err?.name === 'AbortError') throw err;
+    // fetch() rejects with a bare TypeError ("Failed to fetch") when no answer can be read:
+    // the server is down or restarting, or it does not allow this page's origin (CORS).
+    throw Object.assign(new Error(unreachable(), { cause: err }), { network: true });
+  }
+  try {
+    if (!res.ok) {
+      const detail = await res.json().then(detailText, () => null);
+      const message = res.status === 422
+        ? `the server refused the request (HTTP 422${detail ? `: ${detail}` : ''})`
+        : `HTTP ${res.status}${detail ? `: ${detail}` : ''}`;
+      throw Object.assign(new Error(message), { status: res.status });
+    }
     return await res.json();
+  } catch (err) {
+    if (err?.name === 'TimeoutError') throw new Error('the request timed out', { cause: err });
+    throw err;
   } finally {
     t.done();
   }
+}
+
+/** Why no answer could be read from the API, for people. */
+function unreachable() {
+  let host = API_BASE;
+  try { host = new URL(API_BASE, globalThis.location?.href).host; } catch { /* keep API_BASE as written */ }
+  const origin = globalThis.location?.origin;
+  return `could not reach the PlanetX server at ${host}: it is down or restarting, or it does not allow `
+    + `${origin ? `this page (${origin})` : 'this page'} in PLANETX_CORS_ORIGINS`;
+}
+
+/** The `detail` of a FastAPI error body in words: a string, or the first validation error. */
+export function detailText(body) {
+  const d = body?.detail;
+  if (typeof d === 'string') return d;
+  if (Array.isArray(d) && d[0]?.msg) {
+    const field = Array.isArray(d[0].loc) ? d[0].loc[d[0].loc.length - 1] : null;
+    return field ? `${field}: ${d[0].msg}` : d[0].msg;
+  }
+  return null;
 }
 
 /**
@@ -192,10 +234,11 @@ export async function fetchVisits(ra, dec, { signal } = {}) {
  * `classification` narrows the list to one class. Returns null when the list cannot be had: no
  * backend configured, or a backend that does not serve the route yet (404).
  */
-export async function fetchCandidates({ limit = 100, offset = 0, classification, signal } = {}) {
+export async function fetchCandidates({ limit = 100, offset = 0, classification, sort, signal } = {}) {
   if (!API_BASE) return null;
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (classification) params.set('classification', classification);
+  if (sort && sort !== 'score') params.set('sort', sort);
   let j;
   try {
     j = await apiJson(`/candidates?${params}`, { signal });
@@ -208,19 +251,39 @@ export async function fetchCandidates({ limit = 100, offset = 0, classification,
 }
 
 /**
- * The offline survey so far: { status, coverage }. `status` is the API's SurveyStatus (patch
- * counts and how far the crawl has got). `coverage` is the finished patches as an Aladin MOC JSON
- * ({ "<order>": [ipix, ...] }), or null while no patch is finished. Returns null without a backend.
+ * A small SPHEREx picture of a survey candidate (GET {API_BASE}/candidates/{id}/thumbnail.png),
+ * cut from the frames the survey already downloaded; null without a backend.
+ */
+export function candidateThumbnailUrl(id) {
+  return API_BASE ? `${API_BASE}/candidates/${encodeURIComponent(id)}/thumbnail.png` : null;
+}
+
+/** How many of the patches still to search are drawn: the crawl's next stretch, not the whole sky. */
+export const QUEUED_SHOWN = 300;
+
+/**
+ * The offline survey so far: { status, coverage: { done, failed, queued } }. `status` is the API's
+ * SurveyStatus (patch counts and how far the crawl has got). Each coverage layer is an Aladin MOC
+ * JSON ({ "<order>": [ipix, ...] }), or null when it has no patch: finished, given up on after
+ * retries, and the next QUEUED_SHOWN the crawl will search (the one in progress first).
+ * Returns null without a backend.
  */
 export async function fetchSurvey({ signal } = {}) {
   if (!API_BASE) return null;
-  const [status, coverage] = await Promise.all([
+  const [status, done, failed, queued] = await Promise.all([
     apiJson('/survey/status', { signal }),
     apiJson('/survey/coverage', { signal }),
+    apiJson('/survey/coverage?status=failed', { signal }),
+    apiJson(`/survey/coverage?status=queued&limit=${QUEUED_SHOWN}`, { signal }),
   ]);
-  if (!status?.counts || !coverage || typeof coverage !== 'object') throw new Error('bad response');
-  const empty = Object.values(coverage).every((cells) => !Array.isArray(cells) || cells.length === 0);
-  return { status, coverage: empty ? null : coverage };
+  if (!status?.counts) throw new Error('bad response');
+  return { status, coverage: { done: mocOrNull(done), failed: mocOrNull(failed), queued: mocOrNull(queued) } };
+}
+
+function mocOrNull(moc) {
+  if (!moc || typeof moc !== 'object' || Array.isArray(moc)) throw new Error('bad response');
+  const empty = Object.values(moc).every((cells) => !Array.isArray(cells) || cells.length === 0);
+  return empty ? null : moc;
 }
 
 const MOTION_POLL_MS = 2500;
@@ -251,6 +314,39 @@ export async function runMotion(ra, dec, sizeDeg, { signal, onProgress } = {}) {
       return { ...job.result, field: { ra: job.ra, dec: job.dec, size_deg: job.size_deg } };
     }
     if (job.status === 'failed') throw new Error(job.error || 'the run failed');
+    if (job.status !== 'running') throw new Error('bad response');
+    onProgress?.(job);
+    await sleep(MOTION_POLL_MS, signal);
+  }
+}
+
+/**
+ * Measure a SPHEREx spectrum of one object (GET {API_BASE}/spectrum), polling like runMotion: the
+ * backend fetches tens of exposures on first use. `target` is { ra, dec, pmra, pmdec, epoch } with
+ * motions in mas/yr and `epoch` the decimal year of ra/dec (motion and epoch optional). `onProgress`
+ * gets { stage, frames_done, frames_total }. Resolves to the SpectrumResult
+ * (backend/planetx/api/schemas.py), or null when no backend is configured; rejects with the
+ * backend's reason when the run fails.
+ */
+export async function runSpectrum(target, { signal, onProgress } = {}) {
+  if (!API_BASE) return null;
+  const { ra, dec, pmra = 0, pmdec = 0, epoch } = target;
+  const moving = Number.isFinite(pmra) && Number.isFinite(pmdec) && (pmra !== 0 || pmdec !== 0);
+  let url = `${API_BASE}/spectrum?ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}`;
+  if (moving) url += `&pmra=${pmra.toFixed(1)}&pmdec=${pmdec.toFixed(1)}&epoch=${(epoch ?? decimalYear()).toFixed(3)}`;
+  for (;;) {
+    const t = withTimeout(signal, 30000);
+    let job;
+    try {
+      const res = await fetch(url, { signal: t.signal });
+      if (res.status === 503) throw new Error('the server is busy with other spectra; try again shortly');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      job = await res.json();
+    } finally {
+      t.done();
+    }
+    if (job.status === 'done' && job.result) return job.result;
+    if (job.status === 'failed') throw new Error(job.error || 'the measurement failed');
     if (job.status !== 'running') throw new Error('bad response');
     onProgress?.(job);
     await sleep(MOTION_POLL_MS, signal);

@@ -128,7 +128,9 @@ export function archiveSentence(a) {
     case 'confirmed': return `Confirmed: ${who} saw it somewhere else, so it has kept moving${span}.`;
     case 'stationary': return `Not confirmed: ${who} saw it in the same place${span}, so it is probably not moving.`;
     case 'refuted': return `Not confirmed: ${who} show a separate object at each position, so this is probably two objects, not one moving.`;
-    case 'unconfirmed': return 'Older sky surveys have too little here to confirm or rule out the motion.';
+    case 'unconfirmed': return a.candidate
+      ? `Candidate: ${who} positions alone show it moving${span}, but a second, independent survey is needed to confirm it.`
+      : 'Older sky surveys have too little here to confirm or rule out the motion.';
     case 'spherex_only': return 'Not compared with older sky surveys.';
     default: return a.verdict;
   }

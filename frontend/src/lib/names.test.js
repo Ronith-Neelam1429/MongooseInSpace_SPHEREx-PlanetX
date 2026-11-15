@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { propagate } from './coords.js';
-import { displayName, identify, knownObjects, mapTarget, notableKnown, sameObject } from './names.js';
+import { displayName, identify, identityOf, knownObjects, mapTarget, notableKnown, sameObject } from './names.js';
 
 const NOW = 2026.87;
 const ARCSEC = 1 / 3600;
@@ -142,5 +142,27 @@ describe('selections', () => {
     expect(mapTarget({ kind: 'known', obj: row })).toEqual({ kind: 'gaia', obj: barnardGaia, ra: row.ra, dec: row.dec });
     const simbadOnly = knownObjects([barnardSimbad], [], NOW).rows[0];
     expect(mapTarget({ kind: 'known', obj: simbadOnly })).toMatchObject({ kind: 'simbad', obj: barnardSimbad });
+  });
+});
+
+describe('the identity of an object opened from anywhere', () => {
+  const lists = { simbad: [barnardSimbad, planet], gaia: [barnardGaia] };
+
+  it('uses the identity its list row carries', () => {
+    const who = { name: 'Listed name', matches: [], checked: true };
+    expect(identityOf(barnard, [{ o: barnard, who }], lists, NOW)).toBe(who);
+  });
+
+  it('matches an object in no open list against the catalogues, keeping its name', () => {
+    // A static star opened through "See the measurement" while the tracked list is closed.
+    const still = { ...barnard, kind: 'static' };
+    const who = identityOf(still, [{ o: barnard, who: { name: 'other', matches: [], checked: true } }], lists, NOW);
+    expect(who.name).toBe("Barnard's star");
+    expect(who.matches.map((m) => m.catalog)).toEqual(['simbad', 'gaia']);
+    expect(displayName(who)).toBe("Barnard's star");
+  });
+
+  it('says no catalogue was there when none is loaded', () => {
+    expect(identityOf(barnard, [], { simbad: null, gaia: null }, NOW)).toEqual({ name: null, matches: [], checked: false });
   });
 });

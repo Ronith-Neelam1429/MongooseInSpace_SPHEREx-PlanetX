@@ -149,8 +149,8 @@ def _with_catalogues(monkeypatch, gaia, simbad=()):
 
     monkeypatch.setattr(sources, "settings", Settings(observatories="multi"))
     monkeypatch.setattr(pipeline, "refine_objects", lambda objs, observatories: refine_objects(objs, observatories="spherex"))
-    monkeypatch.setattr(pipeline, "check_objects", lambda objs, fused, pixel: check_objects(
-        objs, fused, pixel, fetch_gaia=fetch(gaia), fetch_simbad=fetch(simbad),
+    monkeypatch.setattr(pipeline, "check_objects", lambda objs, fused, pixel, stacked=False: check_objects(
+        objs, fused, pixel, stacked=stacked, fetch_gaia=fetch(gaia), fetch_simbad=fetch(simbad),
         fetch_skybot=lambda ra, dec, radius, mjd: [],
     ))
 
@@ -190,15 +190,30 @@ def test_a_dropped_archival_confirmation_is_not_reported_as_a_measurement(fakes,
     # The catalogue check found the refit's archival positions to be other stars (Known.archive_void).
     monkeypatch.setattr(sources, "settings", Settings(observatories="multi"))
     monkeypatch.setattr(pipeline, "refine_objects", lambda objs, observatories: refine_objects(objs, observatories="spherex"))
-    monkeypatch.setattr(pipeline, "check_objects", lambda objs, fused, pixel: CheckResult(
+    monkeypatch.setattr(pipeline, "check_objects", lambda objs, fused, pixel, stacked=False: CheckResult(
         known=[Known(kind="static", classification="static", archive_void=True) for _ in objs]
     ))
     objects = client.get("/api/motion", params=PARAMS).json()["result"]["objects"]
     assert all(o["kind"] == "static" for o in objects)
     assert objects[0]["archive"] == {
         "verdict": "unconfirmed", "pm_ra_cosdec": None, "pm_dec": None, "pm_err": None, "baseline_yr": None,
-        "observatories": ["spherex"],
+        "observatories": ["spherex"], "candidate": False, "notes": [],
     }
+
+
+def test_the_archival_refit_explains_its_verdict(fakes, monkeypatch):
+    def refit(objs, observatories):
+        result = refine_objects(objs, observatories="spherex")
+        for f in result.fused:
+            f.notes.append("secure matches from: none; two independent surveys are needed to confirm")
+        return result
+
+    monkeypatch.setattr(pipeline, "refine_objects", refit)
+    objects = client.get("/api/motion", params=PARAMS).json()["result"]["objects"]
+    assert all(
+        o["archive"]["notes"] == ["secure matches from: none; two independent surveys are needed to confirm"]
+        for o in objects
+    )
 
 
 def test_engine_data_is_kept_for_the_newest_runs_only(fakes, monkeypatch):

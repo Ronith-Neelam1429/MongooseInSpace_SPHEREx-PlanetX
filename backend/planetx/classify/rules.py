@@ -31,6 +31,7 @@ from typing import Protocol
 import numpy as np
 
 from .catalogs import DAYS_PER_YEAR, CatalogObject, SolarSystemBody
+from .observer import SPHEREX_MAX_GEOCENTRIC_KM, from_observer, parallax_arcsec
 
 ARCSEC_PER_RAD = 180.0 / math.pi * 3600.0
 # A catalogue object matches a SPHEREx position within this distance (about 0.7 px).
@@ -48,16 +49,25 @@ SLOW_FRACTION = 0.5
 # (or within SLOW_FRACTION of the motion, whichever is looser).
 AGREE_SIGMA = 3.0
 MAX_MATCHES = 4
+# A slow star under a pass is searched for out to this many of the pass's own
+# position errors (when that is wider than MATCH_RADIUS_ARCSEC).
+SLOW_STAR_SIGMA = 3.0
 
 # A solar-system body cannot stay inside one SPHEREx pixel for longer than this, so
 # only pass positions measured within such a window can be a body (a main-belt
 # asteroid crosses a pixel in minutes, a Kuiper-belt object in about two hours).
 MAX_BODY_SPAN_DAYS = 0.1
 # SkyBoT positions are geocentric; SPHEREx orbits about 7,000 km from the Earth's
-# centre, which shifts a body by up to this many arcsec at 1 au (less further away).
-SPHEREX_PARALLAX_ARCSEC_AU = 9.7
-BODY_MATCH_ARCSEC = 10.0  # on top of the parallax and the body's own position error
+# centre (see planetx.classify.observer). A body is matched within this distance of
+# where SPHEREx saw it, on top of its own position error and whatever parallax is
+# left unaccounted for.
+BODY_MATCH_ARCSEC = 10.0
+# Distance assumed for the parallax allowance when SkyBoT gives none.
 BODY_MIN_AU = 0.05
+# The nearest body the asteroid check allows for. Nearer bodies move several pixels
+# during one SPHEREx exposure, so the engine does not see them as point sources;
+# without this floor a 0.005 au body would be matched anywhere within 33'.
+NEAREST_BODY_AU = 0.02
 
 CLASSIFICATIONS = ("known_star", "known_asteroid", "variable_star", "artifact", "unknown_candidate", "static")
 
@@ -68,6 +78,15 @@ class PositionLike(Protocol):
     ra: float
     dec: float
     mjd: float
+
+
+def pass_radius(p: PositionLike) -> float:
+    """How far from a pass position (arcsec) the star it measured can be: the match
+    radius, or SLOW_STAR_SIGMA of the pass's own error (`sigma_arcsec`) when wider."""
+    sigma = getattr(p, "sigma_arcsec", None)
+    if sigma is None or not math.isfinite(sigma):
+        return MATCH_RADIUS_ARCSEC
+    return max(MATCH_RADIUS_ARCSEC, SLOW_STAR_SIGMA * sigma)
 
 
 @dataclass(frozen=True)
@@ -214,18 +233,31 @@ def check_track(
     if explained_by is not None:
         return TrackCheck(explained_by=explained_by)
 
+    # A noisy pass mean can sit a few sigma from the star it measured: search each
+    # pass out to SLOW_STAR_SIGMA of its own position error, never less than the match radius.
     slow = [
         {
-            i for i in found
+            i for i, _ in field.near(p.ra, p.dec, p.mjd, pass_radius(p))
             if field.objects[i].catalog == "gaia"
             and magnitude(i) <= VISIBLE_G_MAG
             and field.objects[i].pm_total < SLOW_FRACTION * speed
         }
-        for found in per_pass
+        for p in passes
     ]
     if not all(slow):
         return TrackCheck()
     return TrackCheck(slow_stars="same" if set.intersection(*slow) else "different")
+
+
+def lead_star(field: FieldCatalog, ra: float, dec: float, mjd: float) -> int | None:
+    """Index of the star `identify` names an object after: the brightest Gaia star bright
+    enough for SPHEREx within the match radius of its mean position, if any."""
+    visible = [
+        (field.objects[i].magnitude, sep, i) for i, sep in field.near(ra, dec, mjd, MATCH_RADIUS_ARCSEC)
+        if field.objects[i].catalog == "gaia"
+        and field.objects[i].magnitude is not None and field.objects[i].magnitude <= VISIBLE_G_MAG
+    ]
+    return min(visible)[2] if visible else None
 
 
 def archive_is_other_stars(
@@ -267,16 +299,56 @@ def body_epochs(passes: Sequence) -> list[PositionLike]:
     return out
 
 
-def asteroid_match(ra: float, dec: float, bodies: Sequence[SolarSystemBody]) -> Match | None:
-    """The known body that a SPHEREx position can be, if any: the nearest one within its tolerance."""
-    best: Match | None = None
+@dataclass(frozen=True)
+class AsteroidMatch:
+    """A known body matched to a SPHEREx position, and how its position was compared."""
+
+    match: Match
+    # True: moved to where SPHEREx saw it. False: compared at its geocentric
+    # position within the largest parallax (no SPHEREx position, or no distance).
+    corrected: bool
+    # SkyBoT gave no distance, so the allowance assumed a body BODY_MIN_AU away.
+    assumed_distance: bool
+
+
+def _largest_parallax(distance_au: float) -> float:
+    return parallax_arcsec(SPHEREX_MAX_GEOCENTRIC_KM, max(distance_au, NEAREST_BODY_AU))
+
+
+def asteroid_match(
+    ra: float,
+    dec: float,
+    bodies: Sequence[SolarSystemBody],
+    observer_km: Sequence[float] | None = None,
+    observer_spread_km: float = 0.0,
+) -> AsteroidMatch | None:
+    """The known body that a SPHEREx position can be, if any: the nearest one within its tolerance.
+
+    `bodies` are geocentric (SkyBoT). With `observer_km`, SPHEREx's geocentric
+    position at the time, each body is first moved to where SPHEREx saw it, and
+    only `observer_spread_km` (how far SPHEREx moved between the frames averaged
+    into this position) is left as parallax allowance. Without it the allowance is
+    the largest parallax SPHEREx's orbit can give at the body's distance: 24" at
+    0.4 au, 8' at NEAREST_BODY_AU and below. The spread allowance never exceeds that.
+    """
+    best: AsteroidMatch | None = None
     for body in bodies:
-        sep = float(_separation_arcsec(body.ra, body.dec, ra, dec))
-        parallax = SPHEREX_PARALLAX_ARCSEC_AU / max(body.geocentric_au or BODY_MIN_AU, BODY_MIN_AU)
-        if sep > BODY_MATCH_ARCSEC + parallax + (body.position_err_arcsec or 0.0):
+        distance = body.geocentric_au if body.geocentric_au and body.geocentric_au > 0 else None
+        if observer_km is not None and distance is not None:
+            body_ra, body_dec = from_observer(body.ra, body.dec, distance, observer_km)
+            allowance = min(parallax_arcsec(observer_spread_km, distance), _largest_parallax(distance))
+        else:
+            body_ra, body_dec = body.ra, body.dec
+            allowance = _largest_parallax(distance or BODY_MIN_AU)
+        sep = float(_separation_arcsec(body_ra, body_dec, ra, dec))
+        if sep > BODY_MATCH_ARCSEC + allowance + (body.position_err_arcsec or 0.0):
             continue
-        if best is None or sep < best.sep_arcsec:
-            best = Match(catalog="skybot", name=body.name, kind=body.kind, sep_arcsec=sep, magnitude=body.v_mag)
+        if best is None or sep < best.match.sep_arcsec:
+            best = AsteroidMatch(
+                match=Match(catalog="skybot", name=body.name, kind=body.kind, sep_arcsec=sep, magnitude=body.v_mag),
+                corrected=observer_km is not None and distance is not None,
+                assumed_distance=distance is None,
+            )
     return best
 
 

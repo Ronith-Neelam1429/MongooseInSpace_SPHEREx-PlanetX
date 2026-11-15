@@ -189,7 +189,7 @@ def _cross_check(result: EngineResult) -> tuple[list[FusedMotion], list[Known], 
     pixel = float(np.median([f.pixel_scale_arcsec for f in result.frames]))
     if observatories == SPHEREX_ONLY:
         return fusion.fused, unchecked(result.objects, fusion.fused, pixel), notes
-    checked = check_objects(result.objects, fusion.fused, pixel)
+    checked = check_objects(result.objects, fusion.fused, pixel, stacked=result.stacked)
     return fusion.fused, checked.known, notes + checked.notes
 
 

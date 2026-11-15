@@ -158,6 +158,40 @@ curl 'http://127.0.0.1:8000/api/motion/evidence/surveys?ra=269.4492&dec=4.7297&s
 # Barnard's Star: 2MASS 2000-05-28 shows it ~4.5' south of its SPHEREx position
 ```
 
+### `GET /api/spectrum?ra=&dec=&pmra=&pmdec=&epoch=`
+A SPHEREx spectrum of one object, measured on the fly (`SpectrumResponse`). A background
+job like `/api/motion`: **poll** the same URL until `status` is `"done"` or `"failed"`
+(`stage`: `queued | listing | measuring`, `frames_done / frames_total`).
+- `pmra`, `pmdec`: proper motion in mas/yr (RA component includes cos dec), default 0,
+  at most 20,000. `epoch`: Julian year of `ra`/`dec` (2016.0 for Gaia DR3), default now;
+  ignored without a motion. The aperture follows the object to each exposure's date.
+- The position is not snapped (the aperture must sit on the object); repeat requests within
+  0.036" share one run. Results are kept for an hour; a run nobody polls for 30 s is dropped.
+- Exposures: every one already in the cutout cache at this position, topped up to 12 per
+  detector with new downloads spread over time (~72 x 4 MB on first use, about a minute;
+  seconds afterwards; asking again later downloads nothing new). Each exposure sees the
+  object at its own wavelength, so ~12 per detector fill about half of its 17 bands.
+- Photometry (`planetx/spherex/spectrum.py`): 1.5-pixel (9.2") aperture, background from a
+  4-8 pixel annulus, aperture correction from the file's EPSF, wavelength from WCS-WAVE,
+  flux density in **mJy** (MJy/sr x pixel solid angle), errors from VARIANCE plus 2% in
+  quadrature. An exposure with any `PHOTOMETRY_BAD_FLAGS` (or OVERFLOW) pixel in the
+  aperture is left out: `counts.saturated` for OVERFLOW/BLOOM/NONLINEAR, else `counts.masked`.
+  `result.saturated` is true when most exposures were saturated (Barnard's Star: all).
+- `result.points`: one per measured exposure; `result.bands`: the 102-band grid (6 detectors x
+  17 log-spaced bands), robustly combined, only bands with data.
+- `result.features`: depth of water (1.4, 1.9, 2.7 um) and methane (1.6-1.7, 2.2-2.4,
+  3.3 um) absorption against a power-law continuum through two windows on the flux peaks
+  (or a Rayleigh-Jeans slope from one window when the other is missing or not significant).
+  `detected` means depth >= 0.15 at >= 3 sigma; `null` when the bands were not measured.
+  `suggestion`/`summary` say what the features *suggest* (`brown_dwarf` for methane plus
+  water), never what the object is. All passes are combined (a variable mixes its states)
+  and a neighbour within ~10" adds its light.
+
+```sh
+curl 'http://127.0.0.1:8000/api/spectrum?ra=331.04415&dec=-56.78284&pmra=3982&pmdec=-2467&epoch=2000'
+# Eps Indi B: T-dwarf shape (J/H/K peaks, deep 3.3 um methane, 4 um peak): "suggests a cool brown dwarf"
+```
+
 ## Errors
 
 | Status | Meaning |
@@ -166,7 +200,7 @@ curl 'http://127.0.0.1:8000/api/motion/evidence/surveys?ra=269.4492&dec=4.7297&s
 | 404 | IRSA has no cutout for this file at this position (e.g. outside the file) |
 | 422 | Parameter missing or out of range (FastAPI validation body) |
 | 502 | IRSA failed after retries (`detail` gives the reason) |
-| 503 | Too many IRSA downloads in flight, or too many motion runs waiting; retry after `Retry-After` seconds |
+| 503 | Too many IRSA downloads in flight, or too many motion or spectrum runs waiting; retry after `Retry-After` seconds |
 
 ## Pixel masking
 
@@ -186,18 +220,25 @@ is nearest. It stores the notable objects (movers, motion candidates and brightn
 variables) in the `candidates` table of the survey database (`PLANETX_DB`).
 Re-processing a patch replaces its rows, so ids are not stable across runs.
 
-### `GET /api/candidates?limit=100&offset=0&classification=`
+### `GET /api/candidates?limit=100&offset=0&classification=&sort=score`
 `SurveyCandidates` in `schemas.py`, best score first (ties by id):
 
 ```json
 { "total": 1,
   "candidates": [{ "id": 1, "ra": 269.45, "dec": 4.74, "name": "Barnard's Star",
-    "classification": "known_star", "is_variable": false,
+    "classification": "known_star", "kind": "mover", "is_variable": false,
     "pm_total": 10.4, "pm_ra_cosdec": -0.5, "pm_dec": 10.4, "significance": 6.1,
     "position_angle_deg": 357.0, "score": 0.13, "nside": 64, "ipix": 23456,
-    "found": "2026-11-14" }] }
+    "found": "2026-11-14", "field_ra": 269.4727, "field_dec": 4.7053 }] }
 ```
 
+- `sort`: `score` (default) or `date` (newest survey run first, then best score).
+- `kind` is the engine's motion class (`mover | candidate | static`, the last for variables).
+- `field_ra`/`field_dec`: centre of the 0.2 deg field the object was measured in.
+  `/api/motion?ra=<field_ra>&dec=<field_dec>&size_deg=0.2` repeats the survey's run there: a
+  full run (about 54 cutouts of ~4 MB unless the server has them cached), so the website starts
+  it only when asked and then opens the candidate's card. `ref_mjd` is when `ra`/`dec` hold;
+  move the position by the motion to compare it with a run whose reference date differs.
 - `limit` 1-500 (default 100), `offset` >= 0. `classification` is one of
   `known_star | known_asteroid | variable_star | artifact | unknown_candidate | static`
   or empty for all (anything else is 422). Stored objects whose catalogue check could
@@ -223,4 +264,35 @@ Re-processing a patch replaces its rows, so ids are not stable across runs.
 
 ```sh
 curl 'http://127.0.0.1:8000/api/candidates?limit=20&classification=unknown_candidate'
+```
+
+### `GET /api/candidates/{id}/thumbnail.png`
+A small SPHEREx picture centred on one candidate (0.03 deg, ~18 px, grey + alpha, north up,
+east left): the newest detector 1-3 exposure of the engine's visit sample for that field, cut
+from the field's raw cutout (the same cutout an `/api/motion` run on the field uses, so either
+fills the cache for the other). A first request costs one ~4 MB download per exposure tried
+(up to 3, skipping exposures IRSA has no cutout of); repeats come from the cutout cache.
+- At most 2 render at once: **503 with `Retry-After: 3`** beyond that (and 503 when IRSA
+  downloads are saturated). 404 for an unknown id (ids change when a patch is re-processed)
+  or when no exposure has data there; 422 for an id outside 1..2^63-1; 502 when IRSA fails.
+- `Cache-Control` one hour. Load these lazily: the website asks only for rows in view, two at once.
+
+## Survey progress and coverage
+
+### `GET /api/survey/status`
+`SurveyStatus`: patch counts by status (`pending | in_progress | done | failed`), `total`,
+`nside`/`moc_order`, and the crawl frontier (`current_rank`, its centre and its distance from
+the north ecliptic pole). All zero before the queue exists.
+
+### `GET /api/survey/coverage?status=done&limit=`
+The patches of one status as an Aladin Lite MOC JSON, `{"<order>": [NESTED ipix, ...]}`
+(order = log2(nside), ipix ascending), for `A.MOCFromJSON`:
+- `status`: `done` (default), `failed` (given up after retries), or `queued` (in progress or
+  waiting). Anything else is 422.
+- `limit` 1-50000 (optional): only that many, the next the crawl reaches first (lowest rank).
+  Use it with `queued`, which is nearly the whole sky early on; the website draws the next 300.
+- An empty list while no patch has that status, or before the queue exists.
+
+```sh
+curl 'http://127.0.0.1:8000/api/survey/coverage?status=queued&limit=300'
 ```

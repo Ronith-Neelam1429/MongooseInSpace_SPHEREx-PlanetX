@@ -120,6 +120,14 @@ class ArchiveCheck(BaseModel):
     pm_err: float | None = None
     baseline_yr: float | None = None
     observatories: list[str] = Field(description="Observatories whose positions entered the fit")
+    candidate: bool = Field(
+        default=False,
+        description="Archive positions from one survey family alone show a significant motion: a candidate, not confirmed",
+    )
+    notes: list[str] = Field(
+        default_factory=list,
+        description="Why the refit reached its verdict (e.g. which archival matches were likely chance alignments)",
+    )
 
 
 class KnownMatch(BaseModel):
@@ -385,9 +393,10 @@ class SurveyStatus(BaseModel):
     )
 
 
-# Done patches as an Aladin Lite MOC JSON: {"<order>": [NESTED ipix, ...]}, with
-# order = log2(nside). Pass straight to `A.MOCFromJSON(coverage)`. The list is
-# empty until the first patch is done (skip drawing then).
+# Survey patches of one status (done by default) as an Aladin Lite MOC JSON:
+# {"<order>": [NESTED ipix, ...]}, with order = log2(nside). Pass straight to
+# `A.MOCFromJSON(coverage)`. The list is empty while no patch has that status
+# (skip drawing then).
 SurveyCoverage = dict[str, list[int]]
 
 
@@ -402,6 +411,7 @@ class SurveyCandidate(BaseModel):
         description="known_star | known_asteroid | variable_star | artifact | unknown_candidate | static;"
         " null when the catalogue check could not run"
     )
+    kind: str = Field(description="Engine motion class: mover | candidate (3-5 sigma) | static (a variable)")
     is_variable: bool
     pm_total: float = Field(description="SPHEREx proper motion, arcsec/yr")
     pm_ra_cosdec: float = Field(description="arcsec/yr, east positive")
@@ -412,8 +422,96 @@ class SurveyCandidate(BaseModel):
     nside: int = Field(description="HEALPix nside of the survey patch it was found in")
     ipix: int = Field(description="NESTED index of that patch")
     found: str = Field(description="UTC date (YYYY-MM-DD) of the run that stored it")
+    field_ra: float = Field(
+        description="Centre of the field it was measured in; `/api/motion` there with size_deg=0.2"
+        " repeats the survey's run (a full run: up to ~54 cutouts of ~4 MB unless cached)"
+    )
+    field_dec: float
+    ref_mjd: float = Field(description="MJD (UTC) at which ra, dec hold (the SPHEREx fit's reference date)")
 
 
 class SurveyCandidates(BaseModel):
     total: int = Field(description="Candidates matching the filter (all pages)")
     candidates: list[SurveyCandidate] = Field(description="This page, best score first")
+
+
+class SpectrumPoint(BaseModel):
+    """Forced photometry of the object in one SPHEREx exposure."""
+
+    detector: int
+    mjd: float
+    date: str
+    wavelength_um: float = Field(description="Band centre at the object's pixel (WCS-WAVE)")
+    bandwidth_um: float | None
+    flux_mjy: float = Field(description="Total flux density F_nu, aperture corrected")
+    flux_err_mjy: float
+    band: int | None = Field(description="Index into the 102-band grid, None if outside its detector's range")
+    outlier: bool = Field(description="Dropped from its band by the robust combination")
+
+
+class SpectrumBand(BaseModel):
+    """One of SPHEREx's 102 bands (6 detectors x 17), combined over exposures."""
+
+    band: int = Field(description="0-101, shortest wavelength first")
+    detector: int
+    wavelength_um: float = Field(description="Band centre (geometric mean of the edges)")
+    lo_um: float
+    hi_um: float
+    flux_mjy: float
+    flux_err_mjy: float
+    n_used: int
+    n_rejected: int
+
+
+class SpectrumFeature(BaseModel):
+    """Depth of one absorption band against a simple continuum (see planetx.spherex.spectrum)."""
+
+    key: str = Field(description="h2o_1.4 | ch4_1.6 | h2o_1.9 | ch4_2.2 | h2o_2.7 | ch4_3.3")
+    molecule: str = Field(description="CH4 | H2O")
+    label: str
+    lo_um: float
+    hi_um: float
+    depth: float | None = Field(description="1 - F(window)/F(continuum): 0 none, 1 fully absorbed")
+    depth_err: float | None
+    significance: float | None = Field(description="depth / depth_err")
+    continuum: str | None = Field(description='"two windows" or "Rayleigh-Jeans from one window"')
+    detected: bool | None = Field(description="depth >= 0.15 at >= 3 sigma; None when not measurable")
+
+
+class SpectrumCounts(BaseModel):
+    """What happened to the exposures tried, by outcome."""
+
+    ok: int = 0
+    saturated: int = 0
+    masked: int = 0
+    off_image: int = 0
+    no_data: int = 0
+    failed: int = 0
+
+
+class SpectrumResult(BaseModel):
+    points: list[SpectrumPoint] = Field(description="One per measured exposure, by wavelength")
+    bands: list[SpectrumBand] = Field(description="Bands with data, by wavelength")
+    features: list[SpectrumFeature]
+    suggestion: str = Field(description="brown_dwarf | cool_object | methane_only | none | unknown | saturated")
+    summary: str = Field(description='Plain sentence; says "suggests", never "is"')
+    saturated: bool = Field(description="Most exposures were rejected as saturated at the object")
+    counts: SpectrumCounts
+    aperture_arcsec: float
+    notes: list[str]
+
+
+class SpectrumResponse(BaseModel):
+    """State of a spectrum run. Poll until `status` is no longer "running"."""
+
+    ra: float
+    dec: float
+    pmra: float = Field(description="mas/yr (includes cos dec)")
+    pmdec: float
+    epoch: float = Field(description="Julian year of ra, dec")
+    status: str = Field(description="running | done | failed")
+    stage: str = Field(description="queued | listing | measuring")
+    frames_done: int
+    frames_total: int
+    error: str | None = None
+    result: SpectrumResult | None = None

@@ -12,7 +12,8 @@ module:
    others, and epochs that could not be matched yet are then tried again.
 2. Refits the motion over all accepted epochs: the error shrinks roughly in
    proportion to the baseline (about 20x for a 2MASS match).
-3. Gives a verdict: motion confirmed, object stationary, track refuted (each
+3. Gives a verdict: motion confirmed (when SPHEREx alone does not see it, only
+   with secure epochs from two independent surveys), object stationary, track refuted (each
    SPHEREx position has its own stationary archival source, so the "mover" was
    two objects), or unconfirmed (nothing found: too faint, blended or new).
 
@@ -38,14 +39,15 @@ from enum import StrEnum
 from typing import Protocol
 
 import numpy as np
+from scipy.stats import chi2 as chi2_dist
 
 from . import catalogs
 from .sources import (
     SPHEREX_ONLY,
     ArchivalSource,
     Observatory,
+    family,
     parse_observatories,
-    same_family,
 )
 
 log = logging.getLogger(__name__)
@@ -107,6 +109,9 @@ class FusionParams:
     # A match counts as secure when fewer than this many unrelated sources, at
     # least as bright, are expected that close to the predicted position.
     max_chance: float = 0.05
+    # A fit is inconsistent (its positions do not lie on one line within their
+    # errors) when its chi2 is this improbable.
+    min_fit_probability: float = 1e-3
 
 
 @dataclass
@@ -128,6 +133,10 @@ class FusedMotion:
     # SPHEREx position minus the most recent matched archival position
     # (east, north), used to tie the patch to the archival reference frame.
     spherex_minus_archive_arcsec: tuple[float, float] | None = None
+    # Verdict UNCONFIRMED, but the secure archival epochs alone show significant
+    # motion consistent with the track; they come from one survey family (AllWISE
+    # and CatWISE share exposures), so it is a candidate, never a confirmation.
+    archive_candidate: bool = False
 
     @property
     def pm_total(self) -> float:
@@ -229,6 +238,11 @@ def _fit(x: np.ndarray, y: np.ndarray, t: np.ndarray, sig: np.ndarray) -> _Fit:
     return _Fit(tbar, x0, y0, pmx, pmy, wsum, sxx, chi2, len(t))
 
 
+def _consistent(fit: _Fit, params: FusionParams) -> bool:
+    """True unless the positions scatter about the fitted line far beyond their errors."""
+    return fit.dof <= 0 or float(chi2_dist.sf(fit.chi2, fit.dof)) >= params.min_fit_probability
+
+
 # --- one track ----------------------------------------------------------------
 
 
@@ -259,10 +273,15 @@ def fuse_track(
         raise ValueError("track has non-finite positions, dates or errors")
 
     spx = _fit(sx, sy, st, ssig)
+    # Like pm_err below: positions scattering beyond their errors deflate it.
     spx_signif = math.hypot(spx.pmx, spx.pmy) * math.sqrt(spx.sxx)
+    if spx.dof > 0:
+        spx_signif /= math.sqrt(max(1.0, spx.chi2 / spx.dof))
     t_ref = float(st.mean())
     notes: list[str] = []
     matched: list[ArchivalSource] = []
+    # Per matched source: would chance alone rarely put a source like it there?
+    unlikely: list[bool] = []
     x, y, t, sig = sx, sy, st, ssig
 
     sources = [s for group in archive.values() for s in group]
@@ -280,11 +299,14 @@ def fuse_track(
             If an independent survey shows a source at almost the same place
             many years apart, those two detections define a slow track. Unless
             that track leads to our SPHEREx position, source i is not ours.
+            AllWISE and CatWISE do not anchor each other: they share images,
+            and CatWISE lists WISE 0855 (8"/yr) not only at 2015.4 but also
+            with entries 2-3" from its 2010 AllWISE position.
             """
             near = np.flatnonzero(np.hypot(ax - ax[i], ay - ay[i]) <= params.anchor_arcsec)
             partners = [
                 j for j in near
-                if not same_family(sources[i].observatory, sources[j].observatory)
+                if family(sources[i].observatory) != family(sources[j].observatory)
                 and abs(at[j] - at[i]) >= 1.0
             ]
             for j in partners:
@@ -346,6 +368,32 @@ def fuse_track(
             if rivals:
                 second = rivals[0]
                 if dist[second] / total[second] - dist[best] / total[best] < 1.0:
+                    # Equally close, but one may be so bright that chance would
+                    # rarely put a source like it anywhere in the search area
+                    # (Barnard's Star among faint 2MASS field stars, 40" from a
+                    # loose SPHEREx-only prediction): take that one. Only when
+                    # SPHEREx itself sees the motion in three or more epochs:
+                    # otherwise a static star, or two unrelated sources linked
+                    # into a "mover" (two points always make a line), would
+                    # adopt a bright neighbour such as another track's star.
+                    if spx_signif >= params.spherex_support_sigma and len(epochs) >= 3:
+                        close = [best] + [
+                            k for k in rivals if dist[k] / total[k] - dist[best] / total[best] < 1.0
+                        ]
+                        rare = [
+                            k for k in close
+                            if chance(int(idx[k]), float(gate[k])) < params.max_chance
+                        ]
+                        # ...unless the line through it misses the other epochs
+                        # (a bright star beside a fainter mover WISE did see).
+                        if len(rare) == 1:
+                            i = int(idx[rare[0]])
+                            refit = _fit(
+                                np.append(x, ax[i]), np.append(y, ay[i]),
+                                np.append(t, at[i]), np.append(sig, asig[i]),
+                            )
+                            if _consistent(refit, params):
+                                return i, "", float(dist[rare[0]])
                     return None, (
                         f"{obs.value}: {1 + len(rivals)} possible counterparts, "
                         "none preferred; epoch skipped"
@@ -363,7 +411,7 @@ def fuse_track(
         # epochs, those are its counterparts, and a noisy SPHEREx-only motion
         # cannot lead the search to a neighbour instead.
         if spx_signif < params.spherex_support_sigma:
-            home: list[tuple[tuple[Observatory, int], int]] = []
+            home: list[tuple[tuple[Observatory, int], int, float]] = []
             for key, members in pending:
                 idx = np.array(members)
                 d = np.hypot(ax[idx] - rx, ay[idx] - ry)
@@ -376,14 +424,15 @@ def fuse_track(
                     <= params.duplicate_arcsec
                     for k in near[1:]
                 ):
-                    home.append((key, int(idx[near[0]])))
+                    home.append((key, int(idx[near[0]]), float(d[near[0]])))
             if len(home) >= 2:
                 secure = True
-                for _, i in home:
+                for _, i, miss in home:
                     matched.append(sources[i])
+                    unlikely.append(chance(i, miss) < params.max_chance)
                     x, y = np.append(x, ax[i]), np.append(y, ay[i])
                     t, sig = np.append(t, at[i]), np.append(sig, asig[i])
-                found = {key for key, _ in home}
+                found = {key for key, _, _ in home}
                 pending = [(key, members) for key, members in pending if key not in found]
         while pending:
             failed, reasons = [], []
@@ -394,7 +443,8 @@ def fuse_track(
                     if reason:
                         reasons.append(reason)
                     continue
-                secure = secure or chance(i, miss) < params.max_chance
+                unlikely.append(chance(i, miss) < params.max_chance)
+                secure = secure or unlikely[-1]
                 matched.append(sources[i])
                 x, y = np.append(x, ax[i]), np.append(y, ay[i])
                 t, sig = np.append(t, at[i]), np.append(sig, asig[i])
@@ -410,7 +460,7 @@ def fuse_track(
                 f"{len(matched)} possible archival counterpart(s) too likely to be "
                 "chance alignments; not used"
             )
-            matched = []
+            matched, unlikely = [], []
             x, y, t, sig = sx, sy, st, ssig
 
     final = _fit(x, y, t, sig)
@@ -423,6 +473,7 @@ def fuse_track(
     pm_total = math.hypot(final.pmx, final.pmy)
 
     offset = None
+    archive_candidate = False
     if not archive:
         verdict = Verdict.SPHEREX_ONLY
     elif matched:
@@ -432,15 +483,33 @@ def fuse_track(
             # Below about one SPHEREx pixel, two surveys' centroids of the same
             # blended source differ by as much as this "motion".
             verdict = Verdict.STATIONARY
-        elif len(matched) >= 2 or spx_signif >= params.spherex_support_sigma:
+        elif spx_signif >= params.spherex_support_sigma:
             verdict = Verdict.CONFIRMED
         else:
-            # One displaced archival position and no motion seen by SPHEREx
-            # itself: two points always make a line, so nothing checks it.
-            verdict = Verdict.UNCONFIRMED
-            notes.append(
-                "motion rests on a single archival position; needs a second epoch to confirm"
-            )
+            # SPHEREx itself does not see the motion, so the archive alone has
+            # to establish it: with epochs from two independent surveys (WISE
+            # catalogs share exposures, so a WISE artifact or blend is in all
+            # of them), each one a source that chance would rarely put there.
+            # Otherwise a chain that started on a chance neighbour - in a
+            # crowded field or a bright star's halo there are dozens within
+            # the first, loose search area - can be extended by one more
+            # neighbour and "confirm" itself.
+            independent = {family(s.observatory) for s, ok in zip(matched, unlikely) if ok}
+            if len(independent) >= 2:
+                verdict = Verdict.CONFIRMED
+            else:
+                verdict = Verdict.UNCONFIRMED
+                if len(matched) == 1:
+                    notes.append(
+                        "motion rests on a single archival position; needs a second epoch to confirm"
+                    )
+                else:
+                    archive_candidate = _consistent(final, params) and _archive_alone_moves(
+                        matched, unlikely, ra0, dec0, params
+                    )
+                    notes.append(
+                        _weak_note(spx_signif, archive, matched, unlikely, archive_candidate, params)
+                    )
         latest = max(matched, key=lambda s: s.mjd)
         lx, ly = _project(latest.ra, latest.dec, ra0, dec0)
         offset = (float(spx.x0 - lx[0]), float(spx.y0 - ly[0]))
@@ -482,7 +551,61 @@ def fuse_track(
         matched=matched,
         notes=notes,
         spherex_minus_archive_arcsec=offset,
+        archive_candidate=archive_candidate,
     )
+
+
+def _archive_alone_moves(
+    matched: Sequence[ArchivalSource],
+    unlikely: Sequence[bool],
+    ra0: float,
+    dec0: float,
+    params: FusionParams,
+) -> bool:
+    """Do the secure archival positions by themselves show significant motion (> 1 pixel)?"""
+    secure = [s for s, ok in zip(matched, unlikely) if ok]
+    if len(secure) < 2:
+        return False
+    t = np.array([s.mjd for s in secure], dtype=float) / DAYS_PER_YEAR
+    if float(t.max() - t.min()) < 1.0:
+        return False
+    x, y = _project([s.ra for s in secure], [s.dec for s in secure], ra0, dec0)
+    fit = _fit(x, y, t, np.hypot([s.sigma_arcsec for s in secure], params.archive_floor_arcsec))
+    pm = math.hypot(fit.pmx, fit.pmy)
+    return (
+        pm * math.sqrt(fit.sxx) >= params.mover_sigma
+        and pm >= params.min_pm_arcsec_yr
+        and pm * float(t.max() - t.min()) >= params.min_shift_arcsec
+    )
+
+
+def _weak_note(
+    spx_signif: float,
+    archive: Mapping[Observatory, Sequence[ArchivalSource]],
+    matched: Sequence[ArchivalSource],
+    unlikely: Sequence[bool],
+    candidate: bool,
+    params: FusionParams,
+) -> str:
+    """Why a track SPHEREx alone barely sees was not confirmed, naming the evidence."""
+    consulted = sorted({family(o) for o in archive})
+    named = [f"{s.observatory.value} {s.name or '(unnamed)'}" for s in matched]
+    chancy = [n for n, ok in zip(named, unlikely) if not ok]
+    secure = sorted({family(s.observatory) for s, ok in zip(matched, unlikely) if ok})
+    text = (
+        f"SPHEREx alone sees the motion at {spx_signif:.1f} sigma "
+        f"(under {params.spherex_support_sigma:g}); survey families consulted: {', '.join(consulted)}; "
+        f"matched: {', '.join(named)}"
+    )
+    if chancy:
+        text += f"; likely chance alignments: {', '.join(chancy)}"
+    if candidate:
+        return text + (
+            f"; the secure {secure[0]} positions alone show the motion, but one survey "
+            "family's catalogs share exposures: a candidate, not confirmed"
+        )
+    families = ", ".join(secure) if secure else "none"
+    return text + f"; secure matches from: {families}; two independent surveys are needed to confirm"
 
 
 # --- a whole patch ------------------------------------------------------------

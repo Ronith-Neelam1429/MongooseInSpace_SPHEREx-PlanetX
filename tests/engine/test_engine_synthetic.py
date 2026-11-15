@@ -5,6 +5,7 @@ motions and fluxes, so the engine's answers can be checked precisely.
 """
 from __future__ import annotations
 
+import dataclasses
 import io
 
 import astropy.units as u
@@ -449,3 +450,166 @@ def test_variable_seen_across_visits_cut_into_time_windows():
     assert v.variability["ratio"] == pytest.approx(2.0, rel=0.15)
     assert v.variability["n_pairs"] >= 8
     assert [o for o in r.variables] == [v]
+
+
+def test_mover_hidden_by_a_field_star_in_one_pass_is_still_a_mover():
+    # Half way through, the mover passes over a field star: in that pass the two
+    # make one source (the star's), so the track has nothing there. That is a
+    # blend, not evidence against the track.
+    # Passes are ~6 months apart and two sources merge within ~1.5 PSF FWHM
+    # (~13"), so a mover blends in one pass only if it moves > ~25"/yr: slower,
+    # it would blend with the star in every pass.
+    rng = np.random.default_rng(16)
+    stars = field_stars(rng)
+    pm_n = 28.0
+    mid_yr = (PASS_MJDS[1] - PASS_MJDS[0]) / 365.25
+    e0, n0 = clear_spot(stars, drift=(0.0, pm_n))
+    blocker = (e0, n0 + pm_n * mid_yr, 0.0, 0.0, 1500.0)
+    frames = survey(stars + [(e0, n0, 0.0, pm_n, 1500.0), blocker], rng)
+    r = find_motion(frames, max_pm_arcsec_yr=30.0)
+    (m,) = r.movers
+    assert [s.pass_index for s in m.sources] == [0, 2]
+    assert m.blended_passes == [1] and m.missing_passes == []
+    # The star's wings pull the mover's centroids towards it in the other passes.
+    assert m.pm_dec == pytest.approx(pm_n, abs=4.0)
+    # The star itself (the mover's mean position is the same spot) is static.
+    star = nearest(dataclasses.replace(r, objects=[o for o in r.objects if o is not m]), *blocker[:2])
+    assert len(star.sources) == 3 and not star.is_mover
+
+
+def test_variability_pairs_use_each_detection_once():
+    # One pass saw the star at 5 wavelengths, the other 5 times at each of them.
+    # Pairing every detection with every same-wavelength partner would reuse the
+    # first pass's 5 measurements 5 times each and overstate the significance:
+    # a constant star would then often look variable.
+    from planetx.engine.detect import Detection
+    from planetx.engine.motion import _variability
+
+    def source(pass_index, waves, fluxes):
+        dets = [
+            Detection(0, 0.0, 0.0, 150.0, 20.0, 0.1, f, 5.0, f / 5.0, 60900.0 + 180 * pass_index, 1, wavelength_um=w)
+            for w, f in zip(waves, fluxes)
+        ]
+        return PassSource(pass_index, 150.0, 20.0, 0.1, dets[0].mjd, len(dets), len(dets), 20.0, {}, dets)
+
+    rng = np.random.default_rng(17)
+    waves = [1.0, 1.1, 1.2, 1.3, 1.4]
+    signif = []
+    for _ in range(300):
+        a = source(0, waves, rng.normal(100.0, 5.0, 5))
+        b = source(1, waves * 5, rng.normal(100.0, 5.0, 25))
+        v = _variability([a, b], calib_frac=0.0)
+        assert v["n_pairs"] == 5
+        signif.append(v["significance"])
+    # Gaussian noise: |z| > 3 in ~0.3% of cases; allow for the median's heavier tails.
+    assert np.mean(np.array(signif) > 3) < 0.03
+
+
+def test_stacks_per_detector_keep_a_faint_red_object():
+    # A faint Y-dwarf-like mover, visible only to detector 3 (~2.3 sigma per
+    # frame). Co-adding all three detectors' frames would add twice as many
+    # frames of pure noise and bury it; per-detector stacks find it.
+    rng = np.random.default_rng(18)
+    stars = field_stars(rng, flux=(400, 2000))
+    e0, n0 = clear_spot(stars, drift=(-8.0, 0.7))
+    red = (e0, n0, -8.0, 0.7, 13.0)
+    waves = {1: 1.0, 2: 1.6, 3: 4.5}
+    frames = []
+    for m0 in PASS_MJDS:
+        for k in range(36):
+            det = 1 + k % 3
+            frames.append(
+                make_frame(
+                    stars + ([red] if det == 3 else []), m0 + 0.5 * k, waves[det] + 0.01 * (k // 3), rng,
+                    rot_deg=rng.uniform(0, 360), wcs_error=tuple(rng.normal(0, 0.7, 2)), detector=det,
+                )
+            )
+    r = find_motion(frames, stack=True)
+    assert [len(p) for p in r.passes] == [3, 3, 3]
+    assert [[r.frames[i].detector for i in p] for p in r.passes] == [[1, 2, 3]] * 3
+    # Each stack carries its frames' mean wavelength.
+    assert [r.frames[i].wavelength_um for i in r.passes[0]] == pytest.approx([1.055, 1.655, 4.555])
+    (m,) = r.movers
+    assert m is nearest(r, e0 - 4.0, n0)
+    assert m.pm_ra_cosdec == pytest.approx(-8.0, abs=3.0)
+    assert all({d.detector for d in s.detections} == {3} for s in m.sources)
+
+
+def test_position_errors_are_calibrated_on_the_fields_static_stars():
+    # 200 static stars whose pass positions scatter by 0.5" while their errors
+    # say 0.25": the field's own stars say errors are twice too small. One
+    # star sits far off its line (a blend) and must not drag the factor.
+    from planetx.engine.motion import _error_scale
+
+    rng = np.random.default_rng(19)
+    plane = SkyPlane(150.0, 20.0)
+    groups = []
+    for k in range(200):
+        e0, n0 = rng.uniform(-150, 150, 2)
+        g = []
+        for p, mjd in enumerate(PASS_MJDS):
+            de, dn = rng.normal(0, 0.5, 2) + (30.0 if k == 0 and p == 1 else 0.0)
+            ra, dec = plane.sky(e0 + de, n0 + dn)
+            g.append(PassSource(p, float(ra), float(dec), 0.25, mjd, 8, 8, 50.0, {}, []))
+        groups.append(g)
+    scale, used = _error_scale(groups, plane)
+    assert used == 200
+    assert scale == pytest.approx(2.0, rel=0.1)
+    # Too few static stars: keep the global error model.
+    assert _error_scale(groups[1:4], plane) == (1.0, 0)
+
+
+
+def test_errors_stated_far_too_small_are_scaled_up_not_ignored():
+    # Errors 15x too small make every track an outlier at the global model's
+    # word; the robust start must still find the factor.
+    from planetx.engine.motion import _error_scale
+
+    rng = np.random.default_rng(20)
+    plane = SkyPlane(150.0, 20.0)
+    groups = []
+    for _ in range(50):
+        e0, n0 = rng.uniform(-150, 150, 2)
+        g = []
+        for p, mjd in enumerate(PASS_MJDS):
+            ra, dec = plane.sky(e0 + rng.normal(0, 1.5), n0 + rng.normal(0, 1.5))
+            g.append(PassSource(p, float(ra), float(dec), 0.1, mjd, 8, 8, 50.0, {}, []))
+        groups.append(g)
+    scale, used = _error_scale(groups, plane)
+    assert used == 50
+    assert scale == pytest.approx(15.0, rel=0.25)
+
+
+def test_star_next_to_two_unrelated_sources_does_not_make_a_mover():
+    # One source only in pass 0, another only in pass 2, 14" apart, and a field
+    # star of ordinary, constant brightness near the midpoint in every pass.
+    # Lined up, they look like a 2-pass mover hidden by the star in pass 1, but
+    # the star isn't brighter in pass 1, so there is no blend.
+    for seed in range(3):
+        rng = np.random.default_rng(seed)
+        stars = field_stars(rng)
+        mx, my = clear_spot(stars)
+        star = (mx, my + 10.0, 0.0, 0.0, 2000.0)
+        t0, t2 = (mx - 7.0, my, 0.0, 0.0, 1500.0), (mx + 7.0, my, 0.0, 0.0, 1500.0)
+        frames = []
+        for p, m0 in enumerate(PASS_MJDS):
+            extra = [star] + ([t0] if p == 0 else []) + ([t2] if p == 2 else [])
+            for k in range(8):
+                frames.append(make_frame(
+                    stars + extra, m0 + 3 * k, WAVES[k % len(WAVES)], rng,
+                    rot_deg=rng.uniform(0, 360), wcs_error=tuple(rng.normal(0, 0.7, 2)),
+                ))
+        r = find_motion(frames)
+        assert r.movers == [], [(m.pm_total, m.pm_significance, m.blended_passes) for m in r.movers]
+
+
+def test_marginal_detections_cannot_make_a_two_pass_mover():
+    from planetx.engine.motion import _weak
+
+    def src(n_det, n_cover, snr):
+        return PassSource(0, 150.0, 20.0, 0.3, 60900.0, n_det, n_cover, snr, {}, [])
+
+    # A star at the detection limit: caught in 5 of 17 frames at SNR 5-9.
+    assert _weak(src(5, 17, 9.0))
+    assert not _weak(src(5, 17, 30.0))  # bright, just partly covered by detectors
+    assert not _weak(src(12, 17, 9.0))  # faint but solidly detected

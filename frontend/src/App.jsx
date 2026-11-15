@@ -2,6 +2,8 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffec
 import SkyMap from './components/SkyMap.jsx';
 import InfoPanel from './components/InfoPanel.jsx';
 import CandidatesPanel from './components/CandidatesPanel.jsx';
+import SurveyLegend from './components/SurveyLegend.jsx';
+import { candidateField, matchCandidate } from './lib/crawl.js';
 import Search from './components/Search.jsx';
 import ClassFilter from './components/ClassFilter.jsx';
 import { SHOW_ALL, SHOW_MOVING, countClasses, engineClass, isMovingOnly, knownClass } from './lib/classes.js';
@@ -52,15 +54,11 @@ function objectFov(sel) {
 /** Short name of an engine object for the map. */
 const resultLabel = ({ o, who }) => (who.name ? shortName(who.name) : who.checked ? 'Uncatalogued' : verdict(o));
 
-function surveyLine(crawl) {
-  if (crawl.status === 'loading') return 'Loading the survey';
-  if (crawl.status === 'none') return 'The survey needs the PlanetX server, which is not connected.';
-  if (crawl.status === 'error') return `Survey unavailable: ${crawl.error}.`;
-  const s = crawl.info.status;
-  if (!s.total) return 'Our automatic survey has not started yet.';
-  const where = s.current_radius_deg != null ? `, now ${s.current_radius_deg.toFixed(1)}° from the north ecliptic pole` : '';
-  return `Our automatic survey has checked ${s.counts.done.toLocaleString('en-US')} of ${s.total.toLocaleString('en-US')} patches${where}.`;
-}
+/**
+ * The view that opens a survey candidate's field: its patch is then the survey's 0.2° field
+ * (motionSize reaches its cap), so the engine run repeats the survey's on the frames it downloaded.
+ */
+const CANDIDATE_FOV = 0.6;
 
 /** Cursor / centre readout, updated imperatively so mouse moves don't re-render the app. */
 const Readout = forwardRef(function Readout(_, ref) {
@@ -99,6 +97,7 @@ export default function App() {
   const aborts = useRef({}); // in-flight requests of the open patch, by kind
   const crawlAbort = useRef(null);
   const latest = useRef({}); // current state for the map's long-lived callbacks
+  const wanted = useRef(null); // the survey candidate whose card opens once its field's run is done
 
   const [ready, setReady] = useState(false);
   const [tilesLoading, setTilesLoading] = useState(false);
@@ -115,10 +114,12 @@ export default function App() {
   const [motion, setMotion] = useState({ status: 'idle' });
   const [crawl, setCrawl] = useState({ status: 'idle' }); // the offline survey's progress and coverage
   const [focus, setFocus] = useState(null); // the selected object: { kind: 'engine' | 'known', obj }
+  const [trail, setTrail] = useState([]); // cards that opened the current one (a card's own links), oldest first
   const [hover, setHover] = useState(null); // the map marker under the pointer: { kind, obj }
   const [pointed, setPointed] = useState(null); // the list row under the pointer, as a selection
   const [resume, setResume] = useState(null); // the object just left: its list row takes the keyboard focus back
   const [listOpen, setListOpen] = useState(false); // the survey's candidates list
+  const [candidate, setCandidate] = useState(null); // the survey candidate the open patch was opened for
   const [playing, setPlaying] = useState(false);
   const [filter, setFilter] = useState(SHOW_ALL); // which kinds of object are shown (lib/classes.js)
   const [query, setQuery] = useState('');
@@ -130,19 +131,22 @@ export default function App() {
     () => knownObjects(simbad.status === 'ok' ? simbad.objects : [], gaia.status === 'ok' ? gaia.stars : []),
     [simbad, gaia],
   );
+  // The field's catalogue lists, to name engine objects (null for a list not loaded).
+  const lists = useMemo(
+    () => ({ simbad: simbad.status === 'ok' ? simbad.all : null, gaia: gaia.status === 'ok' ? gaia.all : null }),
+    [simbad, gaia],
+  );
   const results = useMemo(() => {
     if (motion.status !== 'ok') return [];
-    const lists = { simbad: simbad.status === 'ok' ? simbad.all : null, gaia: gaia.status === 'ok' ? gaia.all : null };
     return notable(motion.result).map((o) => ({ o, who: identify(o, lists) }));
-  }, [motion, simbad, gaia]);
+  }, [motion, lists]);
   // The run whose other (static) objects are listed and pickable on the map; a new run closes the list.
   const [othersFor, setOthersFor] = useState(null);
   const othersOpen = motion.status === 'ok' && othersFor === motion.result;
   const others = useMemo(() => {
     if (!othersOpen) return null;
-    const lists = { simbad: simbad.status === 'ok' ? simbad.all : null, gaia: gaia.status === 'ok' ? gaia.all : null };
     return otherObjects(motion.result.objects, results.map((r) => r.o)).map((o) => ({ o, who: identify(o, lists) }));
-  }, [othersOpen, motion, results, simbad, gaia]);
+  }, [othersOpen, motion, results, lists]);
   // Objects that keep a name on the map: the engine's results, then the notable known ones.
   const labels = useMemo(() => {
     // Only results the filter shows carry a name; a hidden one leaves the label to its known row.
@@ -231,8 +235,11 @@ export default function App() {
     const targetFov = fov ?? nextFov(m.aladin.getFov()[0]);
     camera.current.flyTo({ ra, dec, fov: targetFov });
     const s = { ra, dec, radius: radiusFor(targetFov), label };
+    wanted.current = null;
+    setCandidate(null);
     setSel(s);
     setFocus(null);
+    setTrail([]);
     setPointed(null);
     setResume(null);
     setListOpen(false);
@@ -243,12 +250,16 @@ export default function App() {
     load('simbad', s);
     load('gaia', s);
     load('visits', s);
+    return s;
   }, [load]);
 
   const closePanel = useCallback(() => {
     Object.values(aborts.current).forEach((c) => c.abort());
+    wanted.current = null;
+    setCandidate(null);
     setSel(null);
     setFocus(null);
+    setTrail([]);
     setPointed(null);
     setSimbad({ status: 'idle' });
     setGaia({ status: 'idle' });
@@ -258,20 +269,35 @@ export default function App() {
 
   /** Select one object: its card opens and the camera goes to it. */
   const pick = useCallback((s) => {
+    // Picking anything settles which card is open: a candidate's run must not take it over later.
+    wanted.current = null;
     setFocus(s);
+    setTrail([]);
     setPointed(null);
     const c = camera.current;
     const t = mapTarget(s);
     if (c) c.flyTo({ ra: t.ra, dec: t.dec, fov: Math.min(c.view().fov, objectFov(s)) });
   }, []);
 
-  /** Leave the selected object and frame the whole patch again. */
+  /** Open an object from another object's card: "Back" then returns to that card. */
+  const pickFromCard = useCallback((s) => {
+    const from = focus;
+    pick(s);
+    if (from) setTrail((t) => [...t, from]);
+  }, [focus, pick]);
+
+  /** Leave the selected object: back to the card it was opened from, else frame the whole patch again. */
   const backToPatch = useCallback(() => {
+    if (trail.length) {
+      setFocus(trail[trail.length - 1]);
+      setTrail(trail.slice(0, -1));
+      return;
+    }
     setResume(focus);
     setFocus(null);
     const s = latest.current.sel;
     if (s) camera.current?.flyTo({ ra: s.ra, dec: s.dec, fov: fovFor(s.radius) });
-  }, [focus]);
+  }, [focus, trail]);
 
   const goTarget = useCallback((t) => {
     const p = propagate(t.ra, t.dec, t.pmra, t.pmdec, decimalYear() - 2000);
@@ -424,18 +450,36 @@ export default function App() {
     });
   };
 
+  /**
+   * Open a survey candidate: its field as the patch, with the candidate shown on top of it. The
+   * engine run that gives its pictures and proof costs tens of SPHEREx downloads, so it starts only
+   * when asked; the candidate's card then opens once the run has found it again.
+   */
   const goCandidate = useCallback((c) => {
-    select(c.ra, c.dec, { fov: TARGET_FOV, label: c.name || `Candidate ${c.id}` });
+    const f = candidateField(c);
+    const s = select(f.ra, f.dec, { fov: CANDIDATE_FOV, label: c.name || 'Survey candidate' });
+    if (!s) return;
+    setCandidate(c);
+    if (API_BASE) wanted.current = c;
   }, [select]);
+
+  // The candidate's card opens when a run on its field is done. A failed run keeps it waiting for
+  // the retry; a run that no longer finds it leaves the patch open with what it found.
+  useEffect(() => {
+    const c = wanted.current;
+    if (!c || motion.status !== 'ok') return;
+    wanted.current = null;
+    const o = matchCandidate(motion.result.objects, c);
+    if (o) pick({ kind: 'engine', obj: o });
+  }, [motion, pick]);
 
   const pickSurvey = (id) => { setSurveyError(null); setSurvey(id); };
   const frameIdx = Math.max(0, SPHEREX_FRAMES.findIndex((x) => x.frame === frame));
   const fr = SPHEREX_FRAMES[frameIdx];
   const isCube = surveyById(survey).cube;
   const panel = listOpen ? 'list' : sel ? 'patch' : null;
-  // An engine object's card carries its evidence images, so it gets half the window.
-  // A catalogued object's card plays its real images when the PlanetX server is there.
-  const wide = panel === 'patch' && (focus?.kind === 'engine' || (focus?.kind === 'known' && Boolean(API_BASE)));
+  // Every object's card opens with its telescope pictures (they need the backend), so it gets half the window.
+  const wide = panel === 'patch' && Boolean(focus) && Boolean(API_BASE);
 
   return (
     <div className={`app ${panel ? 'with-panel' : ''} ${wide ? 'wide' : ''}`}>
@@ -509,7 +553,7 @@ export default function App() {
             </label>
           )}
           {surveyError && <span className="hud-note" role="alert">{surveyError}</span>}
-          {show.crawl && <span className="hud-note" role="status">{surveyLine(crawl)}</span>}
+          {show.crawl && <SurveyLegend crawl={crawl} />}
           <div className="zoom">
             <button type="button" className="iconbtn" aria-label="Zoom in" disabled={!ready} onClick={() => map.current?.aladin.increaseZoom()}>
               <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true"><path d="M5.5 0v11M0 5.5h11" stroke="currentColor" strokeWidth="1.25" /></svg>
@@ -532,7 +576,6 @@ export default function App() {
           visits={visits}
           motion={motion}
           known={known}
-          target={target}
           results={results}
           others={others}
           onToggleOthers={() => setOthersFor(othersOpen ? null : motion.result)}
@@ -540,6 +583,10 @@ export default function App() {
           hover={hovered}
           resume={resume}
           onPick={pick}
+          onOpen={pickFromCard}
+          backLabel={trail.length && trail[trail.length - 1].kind === 'known' ? `Back to ${shortName(trail[trail.length - 1].obj.name)}` : null}
+          lists={lists}
+          candidate={candidate}
           onPoint={setPointed}
           onBack={backToPatch}
           onClose={closePanel}

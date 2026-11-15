@@ -1,5 +1,5 @@
 import { separation } from './coords.js';
-import { API_BASE, runMotion } from './services.js';
+import { API_BASE, apiJson, runMotion } from './services.js';
 
 // The evidence behind one engine object (GET {API_BASE}/motion/evidence, see docs/API.md):
 // fetching it, and the pure logic that turns it into a verdict in plain words and a chart.
@@ -61,27 +61,17 @@ const isSame = (evidence, object) => separation(evidence.ra, evidence.dec, objec
 
 /** One evidence request: the parsed body, or null when the backend no longer keeps the run (404). */
 async function requestEvidence(field, id, signal) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(new DOMException('Request timed out', 'TimeoutError')), EVIDENCE_TIMEOUT_MS);
-  const onAbort = () => ctrl.abort(signal.reason);
-  if (signal?.aborted) ctrl.abort(signal.reason);
-  else signal?.addEventListener('abort', onAbort, { once: true });
+  const path = `/motion/evidence?ra=${field.ra.toFixed(6)}&dec=${field.dec.toFixed(6)}`
+    + `&size_deg=${field.size_deg.toFixed(4)}&object=${id}`;
+  let body;
   try {
-    const url = `${API_BASE}/motion/evidence?ra=${field.ra.toFixed(6)}&dec=${field.dec.toFixed(6)}`
-      + `&size_deg=${field.size_deg.toFixed(4)}&object=${id}`;
-    const res = await fetch(url, { signal: ctrl.signal });
-    if (res.status === 404) return null;
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const body = await res.json();
-    if (!body || !Array.isArray(body.passes) || !body.passes.some((p) => p.point)) throw new Error('bad response');
-    return body;
+    body = await apiJson(path, { signal, timeoutMs: EVIDENCE_TIMEOUT_MS });
   } catch (err) {
-    if (err?.name === 'TimeoutError') throw new Error('the request timed out', { cause: err });
+    if (err?.status === 404) return null;
     throw err;
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener('abort', onAbort);
   }
+  if (!body || !Array.isArray(body.passes) || !body.passes.some((p) => p.point)) throw new Error('bad response');
+  return body;
 }
 
 /**
@@ -503,33 +493,44 @@ export function surveyPatch(motion, evidence) {
   return { ...fromOffsets(evidence.patch_ra, evidence.patch_dec, east, north), side: Math.round(side), east, north };
 }
 
+const SURVEY_MIN_ARCSEC = 30; // the backend's limits on side_arcsec
+
 /**
- * 2MASS and WISE images around the object moving by `motion` (as surveyPatch; SurveyImages, backend/planetx/api/schemas.py) with the
- * requested patch added, or null without a backend. Throws on a failed request: the images are an
- * extra, so callers keep showing the SPHEREx evidence.
+ * Throws a clear error, before any request, for a patch the backend would refuse: a position or
+ * side that is not a number (an object without a usable position), or a side out of range.
+ */
+export function checkPatch(patch, minSide, maxSide) {
+  const { ra, dec, side } = patch || {};
+  if (![ra, dec, side].every(Number.isFinite) || Math.abs(dec) > 90) {
+    throw new Error(`this object has no usable position (ra ${ra}, dec ${dec}, side ${side})`);
+  }
+  if (side < minSide || side > maxSide) throw new Error(`the patch is ${side}″ wide; the server takes ${minSide}–${maxSide}″`);
+}
+
+/**
+ * 2MASS and WISE images of a square patch ({ ra, dec, side } with `side` in arcsec): a
+ * SurveyImages body (backend/planetx/api/schemas.py), or null without a backend.
+ */
+export async function fetchPatchSurveys(patch, { signal } = {}) {
+  if (!API_BASE) return null;
+  checkPatch(patch, SURVEY_MIN_ARCSEC, SURVEY_MAX_ARCSEC);
+  const body = await apiJson(
+    `/motion/evidence/surveys?ra=${patch.ra.toFixed(6)}&dec=${patch.dec.toFixed(6)}&side_arcsec=${patch.side}`,
+    { signal, timeoutMs: SURVEY_TIMEOUT_MS },
+  );
+  if (!body || !Array.isArray(body.images) || !Array.isArray(body.unavailable)) throw new Error('bad response');
+  return body;
+}
+
+/**
+ * 2MASS and WISE images around the object moving by `motion` (as surveyPatch) with the requested
+ * patch added, or null without a backend. Throws on a failed request: the images are an extra, so
+ * callers keep showing the SPHEREx evidence.
  */
 export async function fetchSurveyImages(motion, evidence, { signal } = {}) {
-  if (!API_BASE) return null;
   const patch = surveyPatch(motion, evidence);
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(new DOMException('Request timed out', 'TimeoutError')), SURVEY_TIMEOUT_MS);
-  const onAbort = () => ctrl.abort(signal.reason);
-  if (signal?.aborted) ctrl.abort(signal.reason);
-  else signal?.addEventListener('abort', onAbort, { once: true });
-  try {
-    const url = `${API_BASE}/motion/evidence/surveys?ra=${patch.ra.toFixed(6)}&dec=${patch.dec.toFixed(6)}&side_arcsec=${patch.side}`;
-    const res = await fetch(url, { signal: ctrl.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const body = await res.json();
-    if (!body || !Array.isArray(body.images) || !Array.isArray(body.unavailable)) throw new Error('bad response');
-    return { ...body, patch };
-  } catch (err) {
-    if (err?.name === 'TimeoutError') throw new Error('the request timed out', { cause: err });
-    throw err;
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener('abort', onAbort);
-  }
+  const body = await fetchPatchSurveys(patch, { signal });
+  return body && { ...body, patch };
 }
 
 /**

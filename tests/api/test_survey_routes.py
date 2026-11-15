@@ -84,6 +84,37 @@ def test_status_and_coverage_after_progress(db_path):
     assert coverage == {"1": sorted([int(order[0]), int(order[2])])}
 
 
+def test_coverage_by_status(db_path):
+    order = [int(i) for i in crawl_order(2)]
+    with PatchQueue(db_path, create=True, max_attempts=1) as q:
+        q.init(2)
+        done, failed, running = q.claim_next(), q.claim_next(), q.claim_next()
+        q.complete(done, {})
+        q.fail(failed, "IRSA 503")  # max_attempts=1: failed for good
+
+    def coverage(query):
+        return client.get(f"/api/survey/coverage?{query}").json()
+
+    assert coverage("") == coverage("status=done") == {"1": [order[0]]}
+    assert coverage("status=failed") == {"1": [order[1]]}
+    # Queued: the patch being searched and all those waiting, i.e. everything else.
+    assert coverage("status=queued") == {"1": sorted(order[2:])}
+    # With a limit, the next ones the crawl reaches (the one in progress comes first).
+    assert coverage("status=queued&limit=3") == {"1": sorted(order[2:5])}
+    assert running.ipix == order[2]
+
+
+@pytest.mark.parametrize("query", ["status=pending", "status=", "limit=0", "status=queued&limit=50001"])
+def test_coverage_rejects_bad_parameters(db_path, query):
+    assert client.get(f"/api/survey/coverage?{query}").status_code == 422
+
+
+def test_coverage_by_status_without_database(db_path):
+    assert client.get("/api/survey/coverage?status=failed").json() == {"6": []}
+    assert client.get("/api/survey/coverage?status=queued&limit=10").json() == {"6": []}
+    assert not db_path.exists()
+
+
 def test_status_when_finished(db_path):
     with PatchQueue(db_path, create=True) as q:
         q.init(1)

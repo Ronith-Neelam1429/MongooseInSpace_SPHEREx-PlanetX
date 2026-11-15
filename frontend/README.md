@@ -1,27 +1,37 @@
 # PlanetX: SPHEREx sky explorer (frontend)
 
 The SPHEREx sky as a slowly turning globe. Click anywhere (or search) and the camera flies in and
-opens that patch of sky. The side panel then lists, in this order:
+opens that patch of sky. The side panel then shows, in this order:
 
-- **What moves here**: "Find what moves" asks the PlanetX API to measure motion and brightness
-  changes between SPHEREx passes. Each result is listed by name with what it does in words
-  ("9.91″/yr north") and drawn in cyan on the map (a line through the per-pass positions, ending in
-  a ring; variables get a diamond). Needs `VITE_API_BASE`.
-- **Already known here**: SIMBAD and Gaia DR3 merged into one list, one row per place on the sky
-  (a star and its planets share a row). Fast movers (over 0.1″/yr) come first, in red, which stays
-  the colour of Gaia's catalogued motion. A play button runs the stars' catalogued motion forward
-  from 2016.0; otherwise they rest where they are today, so they line up with the image and are
-  easy to click.
-- **Details** (folded): coordinates in three systems, SPHEREx pass dates, data credits.
+- **A one-line verdict** (`lib/patch.js`): after an engine run what it flagged ("1 candidate · 1
+  known mover · 1 variable", or "Nothing moved here"); before, what the catalogues list ("1
+  catalogued fast mover · not measured yet"). Under it, "Find what moves", which asks the PlanetX
+  API to measure motion and brightness changes between SPHEREx passes (needs `VITE_API_BASE`), or
+  its progress.
+- **Worth a look**: only the flagged objects. The engine's results by name with what they do in
+  words ("9.91″/yr north", drawn in cyan on the map), then catalogued fast movers (over 0.1″/yr,
+  in red, the colour of Gaia's catalogued motion) and variable stars from SIMBAD and Gaia DR3,
+  each listed once. A play button runs the stars' catalogued motion forward from 2016.0, with a
+  "Moving only" switch.
+- **More about this patch** (folded): every other known object, every object the engine tracked,
+  the engine's notes, coordinates in three systems, SPHEREx pass dates, data credits.
 
-Picking an object, in the list or on the map, opens its card: name, what it does, how sure the
-measurement is, what the catalogues say next to what we measured, and for engine results an
-**Evidence** area that holds `MotionEvidence`. A catalogued object's card plays real images of
-its patch as a time-lapse (`StarTimelapse`, logic in `lib/timelapse.js`): 2MASS (~2000), AllWISE
-(~2010) and one SPHEREx detector-3 exposure per pass, with the catalogue's position for each date
-ringed, so a fast star like Barnard's is seen crossing the field. It needs only the backend, not an
-engine run. Searching a name opens that object's card straight away; "Back to the patch" (or `Esc`)
-returns to the list, which then leads with the searched object and lists the rest as "Also in this patch".
+Picking an object, in the list or on the map, opens its card. It starts with the **telescope
+pictures** (`SkyPictures`): 2MASS (~2000), WISE (~2010) and SPHEREx (2025 on), oldest first, each
+labelled with telescope and date, with a play control that steps through them and a ring where the
+object is on that date. Click a picture for a large view (`Esc` closes it).
+- A catalogued object, before any run, gets its own viewer (`StarTimelapse`, logic in
+  `lib/timelapse.js`): the archive images from `/motion/evidence/surveys` and one SPHEREx exposure
+  per pass (detector 3) from `/frames`, all of one patch centred between its 1999 and today
+  positions, so they blink in register; the ring is its catalogued (Gaia) motion moved to each
+  date. Searching a name opens that object's card straight away.
+- An engine result: the per-pass SPHEREx medians and the archive images from the evidence
+  endpoints, with the measured positions; a difference image beside them.
+
+Then a one-line verdict in plain words, and for engine results the proof checklist, the position
+chart and the single exposures; numbers sit in a folded **Details**. "Back to the patch" (or `Esc`)
+returns to the list. The panel and the large view follow the system's light or dark theme; the
+sky map and the pictures stay dark.
 
 **Names.** An engine object uses the API's `name` and `matches` when the backend ran its catalogue
 check. Otherwise `lib/names.js` matches its track against the SIMBAD and Gaia lists already loaded
@@ -35,9 +45,14 @@ list row, and hovering or focusing a row rings its marker. A click that misses i
 patch does nothing; a click outside the dashed circle opens a new patch there.
 
 Also: a wavelength control over the SPHEREx DR1 all-sky cube (AllWISE, 2MASS and DSS2 for
-comparison); a **Survey** layer shading the patches the offline crawler has finished, with a
-one-line status; and a **Candidates** list of what that survey has flagged, which flies to the
-one you pick. Search accepts names or coordinates. The URL (`?ra=&dec=&fov=` or `?target=`) is the
+comparison); a **Survey** layer drawing the offline crawler's patches (searched in cyan, failed
+in red, the next 300 to search outlined) with a legend and a progress line ("312 of 49,152
+patches searched"); and a **Candidates** list of what that survey has flagged, ranked by score or
+newest first, filterable by class, each row with a small SPHEREx picture (loaded only for rows in
+view, two at a time). Picking one opens its survey field as the patch with the candidate on top
+(picture, stored motion, score). Its own pictures and proof need an engine run on that field
+(tens of SPHEREx downloads), so the run starts only when asked; the candidate's card then opens
+once the run finds it again (matched within one pixel after moving it by its stored motion). Search accepts names or coordinates. The URL (`?ra=&dec=&fov=` or `?target=`) is the
 open patch, so a copied link reopens the same one. Shortcuts: `/` focuses search, `Esc` steps back.
 With reduced motion turned on in the OS, the globe stays still and the camera jumps instead of flying.
 
@@ -58,7 +73,8 @@ Set `VITE_API_BASE` (see `.env.example`) to the PlanetX API (`docs/API.md` in th
 - `GET /visits` for how often SPHEREx imaged the patch (IRSA's SIA service sends no CORS headers,
   so a browser can't ask it directly),
 - `GET /motion` for the engine (polled),
-- `GET /survey/status`, `GET /survey/coverage` and `GET /candidates` for the survey layer and list.
+- `GET /survey/status`, `GET /survey/coverage?status=` and `GET /candidates` (plus
+  `/candidates/{id}/thumbnail.png`) for the survey layer and list.
 
 Without it the panel says the server is not connected. A server without `/candidates` (404) shows
 the list as not available.
@@ -72,8 +88,18 @@ for this cube), and the renderer's grey clear colour is replaced with black. Re-
 - `src/App.jsx`: app state, search, layers, selection flow, HUD
 - `src/components/SkyMap.jsx`: Aladin setup, survey/cube handling, coverage overlay, events
 - `src/components/InfoPanel.jsx`: panel for the open patch (stacks under the map on phones)
-- `src/components/ObjectCard.jsx`: card for one selected object; mounts `MotionEvidence`
-- `src/components/CandidatesPanel.jsx`: the survey's candidates list
+- `src/components/ObjectCard.jsx`: card for one selected object: pictures, verdict, proof, details
+- `src/components/SkyPictures.jsx`: the telescope pictures viewer (play, step, large view) and
+  `KnownPictures` for catalogued objects
+- `src/components/MotionEvidence.jsx`, `useEvidence.js`: an engine object's evidence (pictures,
+  proof checklist, chart, single exposures) and the hooks that fetch it
+- `src/lib/pictures.js`: which SPHEREx exposures to show, catalogue positions per date, picture views
+- `src/lib/patch.js`: the patch's one-line verdict and which objects are listed first
+- `src/components/CandidatesPanel.jsx`: the survey's candidates list; `CandidateThumb.jsx`: its
+  lazy pictures; `SurveyCandidateNote.jsx`: the candidate on top of its patch; `SurveyLegend.jsx`: the
+  coverage layer's legend and progress line
+- `src/lib/crawl.js`: the offline survey's coverage layers, progress and candidate wording, and
+  finding a candidate again in an engine run
 - `src/components/Search.jsx`: name/coordinate combobox with target suggestions
 - `src/lib/starfield.js`: canvas layer for stars, markers, name labels and hit-testing
 - `src/lib/names.js`: known-object list and name matching for engine objects

@@ -4,6 +4,7 @@
   --dim: #8f8f8c;
   --faint: #55554f;
   --line: #262624;
+  --rule: #141413; /* between rows of a list */
   --hover: #121211;
   --veil: rgba(0, 0, 0, 0.72);
   --signal: #ff4d2e; /* Gaia's catalogued motion */
@@ -21,6 +22,26 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-feature-settings: 'zero' 0;
+}
+
+/* Light theme for the side panel and the large picture view. The sky map stays night-dark in
+   both themes (it is a picture of the night sky), and so do the telescope pictures. */
+@media (prefers-color-scheme: light) {
+  .panel, .pic-dialog {
+    --bg: #fbfbf9;
+    --fg: #141413;
+    --dim: #5c5c57;
+    --faint: #73736d;
+    --line: #d9d9d3;
+    --rule: #ebebe6;
+    --hover: #efefea;
+    --veil: rgba(251, 251, 249, 0.85);
+    --signal: #c42d14;
+    --measured: #08708a;
+    --variable: #8f5c00;
+    --galaxy: #6243c4;
+    color-scheme: light;
+  }
 }
 
 * { box-sizing: border-box; }

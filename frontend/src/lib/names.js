@@ -87,6 +87,15 @@ export function identify(o, lists, nowYear = decimalYear()) {
   return { name: only?.name ?? null, matches: only ? [only] : [], checked: true };
 }
 
+/**
+ * Who an engine object is, wherever it was opened from: the identity its list row already carries
+ * (`listed`, rows of { o, who }), else matched now against the field's lists (as identify). A
+ * static object opened from a catalogued star's card is in no open list, but keeps its name.
+ */
+export function identityOf(o, listed, lists, nowYear = decimalYear()) {
+  return listed.find((r) => r.o === o)?.who || identify(o, lists, nowYear);
+}
+
 /** Name to show for an identified engine object. */
 export function displayName(identity) {
   return identity.name || (identity.checked ? 'Uncatalogued object' : 'Unnamed object');
