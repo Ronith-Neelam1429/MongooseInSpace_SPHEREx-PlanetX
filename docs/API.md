@@ -216,7 +216,9 @@ The offline crawler (`uv run python -m planetx.survey run --processor motion`) r
 same pipeline as `/api/motion` over every survey patch (HEALPix nside 64, ~0.92 deg).
 A patch is tiled into 64 fields of 0.2 deg centred on its nside-512 sub-pixels; an
 object seen by several overlapping fields is kept once, from the field whose centre
-is nearest. It stores the notable objects (movers, motion candidates and brightness
+is nearest. The fields' frames come from one raw cutout per SPHEREx visit for the whole
+patch (~25 MB each, about 50 per patch near the NEP), cropped locally; each field still
+gets the per-field sample (`pick_visits`) and the same engine run. It stores the notable objects (movers, motion candidates and brightness
 variables) in the `candidates` table of the survey database (`PLANETX_DB`).
 Re-processing a patch replaces its rows, so ids are not stable across runs.
 

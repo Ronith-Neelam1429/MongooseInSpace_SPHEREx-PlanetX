@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -115,18 +115,32 @@ def _check(should_stop: Callable[[], bool]) -> None:
         raise Stopped()
 
 
-def _list_visits(ra: float, dec: float, should_stop: Callable[[], bool]) -> list[Visit]:
-    """The visits at a position, waiting out short IRSA outages."""
-    for wait in (*LIST_RETRY_WAITS_S, None):
+def retry_upstream[T](
+    call: Callable[[], T], what: str, should_stop: Callable[[], bool], waits: Sequence[float] | None = None
+) -> T:
+    """`call()`, called again after each of `waits` (default LIST_RETRY_WAITS_S) while it
+    fails with a transient `archive.UpstreamError`.
+
+    Raises `Stopped` when `should_stop()` turns true during a wait, and the last error when the waits run out.
+    """
+    for wait in (*(LIST_RETRY_WAITS_S if waits is None else waits), None):
         try:
-            return archive.query_visits(ra, dec, VISIT_RADIUS_ARCSEC)
+            return call()
         except archive.UpstreamError as exc:
             if wait is None or not exc.transient:
                 raise
-            log.warning("field ra=%s dec=%s: visit listing failed (%s); retrying in %gs", ra, dec, exc, wait)
+            log.warning("%s failed (%s); retrying in %gs", what, exc, wait)
         time.sleep(wait)
         _check(should_stop)
     raise AssertionError("unreachable")
+
+
+def _list_visits(ra: float, dec: float, should_stop: Callable[[], bool]) -> list[Visit]:
+    """The visits at a position, waiting out short IRSA outages."""
+    return retry_upstream(
+        lambda: archive.query_visits(ra, dec, VISIT_RADIUS_ARCSEC), f"field ra={ra} dec={dec}: visit listing",
+        should_stop,
+    )
 
 
 def _load_frame(visit: Visit, request: tuple[float, float, float]) -> Frame:
@@ -215,23 +229,49 @@ def analyse_field(
         raise FieldFailed("SPHEREx has too few exposures of this position in detectors 1-3")
     on_progress("downloading", 0, len(visits))
     frames, no_data, failures = _load_frames(visits, cutouts.cutout_request(ra, dec, size_deg), should_stop, on_progress)
+    return analyse_frames(
+        frames, n_visits=len(visits), no_data=no_data, failures=failures, where=f"field ra={ra} dec={dec}",
+        should_stop=should_stop, on_progress=on_progress,
+    )
+
+
+def analyse_frames(
+    frames: list[Frame],
+    *,
+    n_visits: int,
+    no_data: int = 0,
+    failures: Sequence[str] = (),
+    where: str = "field",
+    should_stop: Callable[[], bool] = lambda: False,
+    on_progress: Progress = lambda stage, done, total: None,
+) -> FieldRun:
+    """The engine, the archival refit and the catalogue check on one field's frames.
+
+    `n_visits` is the number of exposures picked for the field, of which `no_data`
+    had no data at the position and `failures` (messages) could not be loaded;
+    they only shape the error and the notes. `analyse_field` downloads the frames
+    itself; the survey crops them from cutouts shared by a whole patch. Raises as
+    `analyse_field` does.
+    """
     _check(should_stop)
+    if n_visits < MIN_FRAMES:
+        raise FieldFailed("SPHEREx has too few exposures of this position in detectors 1-3")
     if failures:
-        log.warning("field ra=%s dec=%s: %d frames failed, e.g. %s", ra, dec, len(failures), failures[0])
+        log.warning("%s: %d frames failed, e.g. %s", where, len(failures), failures[0])
     if len(frames) < MIN_FRAMES:
         reason = failures[0] if failures else "no exposure has data at this position"
-        raise FieldFailed(f"only {len(frames)} of {len(visits)} frames could be loaded ({reason})")
+        raise FieldFailed(f"only {len(frames)} of {n_visits} frames could be loaded ({reason})")
 
-    on_progress("analysing", len(visits), len(visits))
+    on_progress("analysing", n_visits, n_visits)
     # The engine's result depends on input order; a fixed order makes runs repeatable.
-    frames.sort(key=lambda f: (f.mjd, f.detector, f.obs_id))
+    frames = sorted(frames, key=lambda f: (f.mjd, f.detector, f.obs_id))
     try:
         result = find_motion(frames)
     except ValueError as exc:
         raise FieldFailed(str(exc)) from exc
 
     _check(should_stop)
-    on_progress("checking", len(visits), len(visits))
+    on_progress("checking", n_visits, n_visits)
     fused, known, notes = _cross_check(result)
     notes = [*result.notes, *notes]
     if no_data:
