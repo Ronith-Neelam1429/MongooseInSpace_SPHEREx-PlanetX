@@ -12,6 +12,7 @@ import { shortClaim, shortName, speed, verdict } from './lib/plain.js';
 import { DEFAULT_FRAME, SPHEREX_FRAMES, SURVEYS, surveyById } from './lib/surveys.js';
 import { TARGET_FOV, findTarget } from './lib/targets.js';
 import { readViewFromUrl, writeViewToUrl } from './lib/url.js';
+import { otherObjects } from './lib/evidence.js';
 import './App.css';
 
 const GAIA_LIMIT = 3000;
@@ -132,6 +133,14 @@ export default function App() {
     const lists = { simbad: simbad.status === 'ok' ? simbad.all : null, gaia: gaia.status === 'ok' ? gaia.all : null };
     return notable(motion.result).map((o) => ({ o, who: identify(o, lists) }));
   }, [motion, simbad, gaia]);
+  // The run whose other (static) objects are listed and pickable on the map; a new run closes the list.
+  const [othersFor, setOthersFor] = useState(null);
+  const othersOpen = motion.status === 'ok' && othersFor === motion.result;
+  const others = useMemo(() => {
+    if (!othersOpen) return null;
+    const lists = { simbad: simbad.status === 'ok' ? simbad.all : null, gaia: gaia.status === 'ok' ? gaia.all : null };
+    return otherObjects(motion.result.objects, results.map((r) => r.o)).map((o) => ({ o, who: identify(o, lists) }));
+  }, [othersOpen, motion, results, simbad, gaia]);
   // Objects that keep a name on the map: the engine's results, then the notable known ones.
   const labels = useMemo(() => {
     const named = new Set(results.flatMap(({ who }) => who.matches.map((m) => m.name)));
@@ -154,8 +163,9 @@ export default function App() {
       known,
       describe(kind, obj) {
         if (kind === 'engine') {
-          const r = results.find((x) => x.o === obj);
-          return r ? `${resultLabel(r)} · ${shortClaim(obj)}` : shortClaim(obj);
+          const r = results.find((x) => x.o === obj) || others?.find((x) => x.o === obj);
+          const what = shortClaim(obj) || verdict(obj);
+          return r ? `${resultLabel(r)} · ${what}` : what;
         }
         const row = known.of(kind, obj);
         const pm = row.pm >= FAST_ARCSEC_YR ? ` · ${speed(row.pm)}″/yr` : '';
@@ -302,7 +312,8 @@ export default function App() {
     if (gaia.status === 'ok') field.current?.setGaia(gaia.stars, gaia.years);
     else field.current?.setGaia([], null);
   }, [gaia, ready]);
-  useEffect(() => { field.current?.setMotion(results.map((r) => r.o)); }, [results, ready]);
+  // The ~hundreds of static objects are drawn (and pickable) only while their list is open.
+  useEffect(() => { field.current?.setMotion([...results, ...(others || [])].map((r) => r.o)); }, [results, others, ready]);
   useEffect(() => { field.current?.setNotable(labels); }, [labels, ready]);
   useEffect(() => {
     const name = focus && (focus.kind === 'engine' ? labels.find((l) => l.obj === focus.obj)?.text : shortName(focus.obj.name));
@@ -403,8 +414,9 @@ export default function App() {
   const fr = SPHEREX_FRAMES[frameIdx];
   const isCube = surveyById(survey).cube;
   const panel = listOpen ? 'list' : sel ? 'patch' : null;
-  // An engine result's card carries its evidence images, so it gets half the window.
-  const wide = panel === 'patch' && focus?.kind === 'engine';
+  // An engine object's card carries its evidence images, so it gets half the window; so does a
+  // catalogued object's card once a run is done (it shows the images of the tracked object there).
+  const wide = panel === 'patch' && (focus?.kind === 'engine' || (focus?.kind === 'known' && motion.status === 'ok'));
 
   return (
     <div className={`app ${panel ? 'with-panel' : ''} ${wide ? 'wide' : ''}`}>
@@ -500,6 +512,8 @@ export default function App() {
           motion={motion}
           known={known}
           results={results}
+          others={others}
+          onToggleOthers={() => setOthersFor(othersOpen ? null : motion.result)}
           focus={focus}
           hover={hovered}
           resume={resume}

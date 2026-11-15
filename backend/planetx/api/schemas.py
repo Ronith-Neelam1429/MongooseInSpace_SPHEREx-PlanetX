@@ -280,6 +280,42 @@ class MotionEvidence(BaseModel):
     difference_passes: tuple[int, int] = Field(description="Pass indices (first, last) of the difference image")
     fit: EvidenceFit
     pm_floor_arcsec_yr: float = Field(description="As MotionResult.pm_floor_arcsec_yr")
+    missing_passes: list[int] = Field(
+        default_factory=list,
+        description="Passes whose frames covered the fitted track but found nothing there: the engine then "
+        "takes the positions for different objects, so the object is not a mover whatever its fitted motion",
+    )
+
+
+class SurveyImage(BaseModel):
+    """An older survey's image of a square patch: same orientation and centre as MotionEvidence's.
+
+    North up, east left; the image's centre pixel is the patch centre, and an offset
+    (east, north) in arcsec lies at column `(patch_px - 1) / 2 - east / pixel_arcsec`,
+    row `(patch_px - 1) / 2 - north / pixel_arcsec`.
+    """
+
+    survey: str = Field(description='"2mass" | "wise"')
+    label: str = Field(description='e.g. "2MASS Ks"')
+    mjd: float = Field(description="When the image was taken (AllWISE: the mean of its exposures)")
+    date: str
+    patch_px: int
+    pixel_arcsec: float
+    image_png_b64: str = Field(description="Grey + alpha PNG; transparent where the survey has no data")
+
+
+class SurveyGap(BaseModel):
+    survey: str
+    label: str
+    reason: str = Field(description="Why there is no image, for people")
+
+
+class SurveyImages(BaseModel):
+    ra: float = Field(description="Patch centre")
+    dec: float
+    patch_arcsec: float
+    images: list[SurveyImage] = Field(description="Oldest first")
+    unavailable: list[SurveyGap]
 
 
 class SurveyCounts(BaseModel):

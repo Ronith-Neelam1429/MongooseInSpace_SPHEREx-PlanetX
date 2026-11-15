@@ -295,6 +295,9 @@ def test_pass_without_a_measurement_keeps_its_image_but_has_no_point(served):
     ev = _get(_object_at(served, *BLINKER))
     assert [p["point"] is not None for p in ev["passes"]] == [True, False, True]
     assert ev["difference_passes"] == [0, 2]
+    # The middle pass covered it and saw nothing: said, so the verdict can give that reason.
+    assert ev["missing_passes"] == [1]
+    assert _get(_object_at(served, *MOVER_START))["missing_passes"] == []
     centre = (ev["patch_px"] - 1) // 2
     images = [_grey(p["image_png_b64"])[0] for p in ev["passes"]]
     sky = float(np.median(images[1]))
@@ -370,11 +373,15 @@ def test_repeat_requests_are_served_from_the_cache(served, monkeypatch):
     assert len(proof._cache) == 2
 
 
-def test_no_finished_run_is_a_404_that_says_what_to_do(served):
+def test_no_finished_run_is_a_404_that_says_what_to_do(served, monkeypatch):
+    started = []
+    monkeypatch.setattr(motion, "request_job", lambda *args, **kw: started.append((args, kw)))
     resp = client.get("/api/motion/evidence", params={"ra": RA + 1, "dec": DEC, "object": 0})
     assert resp.status_code == 404
     assert "/api/motion" in resp.json()["detail"] and "retry" in resp.json()["detail"]
     assert "cache-control" not in resp.headers
+    # The field is run (again), so the client's next /api/motion poll follows a run that keeps its engine data.
+    assert started == [((RA + 1, DEC, SIZE_DEG), {"need_engine": True})]
 
 
 def test_unknown_object_is_a_404(served):

@@ -120,8 +120,30 @@ last-minus-first difference image, its measured position per pass with errors, t
 straight-line fit, and how far the field's fixed stars appear to shift (the noise).
 - `ra`, `dec`, `size_deg`: the same values as the finished `/api/motion` run.
 - `object`: `MotionObject.id` from that run.
-- 404 when the run's engine data is no longer kept (only the newest 4 runs keep it):
-  request `/api/motion` again until done, then retry. The frontend does this itself.
+- 404 when the run's engine data is no longer kept (only the newest 4 runs keep it). The
+  404 also starts the field again, so request `/api/motion` until done, then retry. The
+  frontend does this itself.
+- `missing_passes`: passes whose frames covered the fitted track but found nothing there.
+  The engine then takes the positions for different objects, so such an object is never a
+  mover, however large and significant its fitted slope.
+
+### `GET /api/motion/evidence/surveys?ra=&dec=&side_arcsec=`
+The same sky in older surveys (`SurveyImages`): 2MASS Ks (1997-2001) and AllWISE W1 (mean
+date ~2010), from IRSA (SIA2 `twomass_allsky` / `wise_allwise`, IBE cutouts), north up,
+east left, centred on `ra`, `dec`. Independent of any run: the frontend centres it between
+the object's SPHEREx position and where its motion puts it in 1999, and marks both.
+- `side_arcsec`: 30-900. Native pixels (2MASS 1", WISE 1.375"), coarser beyond 601 px.
+- Where one survey image does not cover the patch, images of the same night are pieced
+  together (each on a common zero sky level); pixels none covers are transparent.
+- Always 200: a survey that cannot give an image (no coverage, IRSA down) is listed in
+  `unavailable` with a reason, and asked again only after 2 minutes. Cached on disk under
+  `PLANETX_CACHE_DIR/surveys` (200 MB, least recently used out); `Cache-Control` one day
+  when both images are there.
+
+```sh
+curl 'http://127.0.0.1:8000/api/motion/evidence/surveys?ra=269.4492&dec=4.7297&side_arcsec=432'
+# Barnard's Star: 2MASS 2000-05-28 shows it ~4.5' south of its SPHEREx position
+```
 
 ## Errors
 

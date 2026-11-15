@@ -1,7 +1,95 @@
 import { afterEach, describe as suite, expect, it, vi } from 'vitest';
 import {
-  brightnessSeries, compass, dayMonthYear, describe, measure, monthYear, motionChart, sameObject, ticks,
+  brightnessSeries, compass, dayMonthYear, describe, measure, monthYear, motionChart, otherObjects, sameObject, ticks,
+  trackedAt, fromOffsets, toOffsets, predictAt, predictionMotion, surveyPatch, surveyMarks, scaleBar, SURVEY_MAX_ARCSEC,
 } from './evidence.js';
+
+suite('older survey images', () => {
+  const ev = () => barnardEvidence();
+  const barnard = (over = {}) => object({
+    matches: [{ catalog: 'gaia', name: 'Barnard’s Star', sep_arcsec: 0.4, pm_ra_cosdec: -0.8, pm_dec: 10.36 }], ...over,
+  });
+
+  it('turns sky offsets into positions and back on the tangent plane', () => {
+    for (const [ra0, dec0] of [[269.4459, 4.7673], [0.01, -60], [180, 89.9]]) {
+      const p = fromOffsets(ra0, dec0, 250, -130);
+      const back = toOffsets(ra0, dec0, p.ra, p.dec);
+      expect(back.east).toBeCloseTo(250, 6);
+      expect(back.north).toBeCloseTo(-130, 6);
+    }
+    expect(fromOffsets(359.999, 0, 36, 0).ra).toBeLessThan(1); // across RA 0
+  });
+
+  it('predicts with the best motion available, and keeps a static object in place', () => {
+    expect(predictionMotion(barnard()).source).toBe('the Gaia DR3 proper motion');
+    const refit = barnard({ archive: { verdict: 'confirmed', pm_ra_cosdec: -0.82, pm_dec: 10.362, pm_err: 0.029, baseline_yr: 26.6, observatories: ['spherex', '2mass'] } });
+    expect(predictionMotion(refit)).toEqual({ pmEast: -0.82, pmNorth: 10.362, err: 0.029, source: 'the motion measured with 2MASS' });
+    expect(predictionMotion(object()).source).toBe('the SPHEREx motion');
+    expect(predictionMotion(still({ pm_total: 15, significance: 20 }))).toEqual({ pmEast: 0, pmNorth: 0, err: 0, source: null });
+    // 26.2 years before the fit's reference date, 10.36″/yr north: 271″ further south.
+    const p = predictAt(barnard(), ev(), 61102.1 - 26.2 * 365.25);
+    expect(p.north).toBeCloseTo(5.2477 - 10.36 * 26.2, 6);
+    expect(p.east).toBeCloseTo(0.8868 + 0.8 * 26.2, 6);
+    expect(p.err).toBe(0);
+    expect(predictAt(object(), ev(), 61102.1 - 10 * 365.25).err).toBeCloseTo(19.507, 3);
+  });
+
+  it('requests one square holding both the SPHEREx and the 1999 position', () => {
+    const e = ev();
+    const patch = surveyPatch(barnard(), e);
+    const then = predictAt(barnard(), e, 51179);
+    expect(patch.north).toBeCloseTo((e.fit.north_arcsec + then.north) / 2, 6);
+    expect(patch.side).toBe(Math.round(Math.hypot(then.east - e.fit.east_arcsec, then.north - e.fit.north_arcsec) + 150));
+    const centre = toOffsets(e.patch_ra, e.patch_dec, patch.ra, patch.dec);
+    expect(centre.north).toBeCloseTo(patch.north, 6);
+    // A static object: the SPHEREx patch itself; a very fast one: capped.
+    expect(surveyPatch(still(), stillEvidence()).side).toBe(Math.round(e.patch_arcsec));
+    expect(surveyPatch(barnard({ matches: [{ catalog: 'gaia', name: 'x', sep_arcsec: 0, pm_ra_cosdec: 0, pm_dec: 60 }] }), e).side).toBe(SURVEY_MAX_ARCSEC);
+  });
+
+  it('marks the predicted and the SPHEREx position on the image, from its centre', () => {
+    const e = ev();
+    const patch = surveyPatch(barnard(), e);
+    const surveys = { ra: patch.ra, dec: patch.dec, patch_arcsec: patch.side, patch, images: [], unavailable: [] };
+    const image = { survey: '2mass', mjd: 51692.43, date: '2000-05-28' };
+    const m = surveyMarks(barnard(), e, surveys, image);
+    const then = predictAt(barnard(), e, image.mjd);
+    expect(m.then.north).toBeCloseTo(then.north - patch.north, 3);
+    expect(m.now.north).toBeCloseTo(e.fit.north_arcsec - patch.north, 3);
+    expect(m.years).toBeCloseTo((61102.1 - 51692.43) / 365.25, 6);
+    expect(m.inside).toBe(true);
+    expect(surveyMarks(barnard(), e, { ...surveys, patch_arcsec: 60 }, image).inside).toBe(false);
+  });
+
+  it('picks a round scale bar', () => {
+    expect(scaleBar(150)).toBe(30);
+    expect(scaleBar(432)).toBe(60);
+    expect(scaleBar(900)).toBe(180);
+  });
+});
+
+suite('objects to open the evidence of', () => {
+  const objs = [
+    { id: 0, kind: 'mover', ra: 10, dec: 20 },
+    { id: 1, kind: 'static', ra: 10.001, dec: 20 },
+    { id: 2, kind: 'static', ra: 10.003, dec: 20.001, is_variable: true },
+    { id: 3, kind: 'static', ra: 10.01, dec: 20 },
+  ];
+
+  it('lists the tracked objects the results leave out, in the engine order', () => {
+    expect(otherObjects(objs, [objs[0], objs[2]]).map((o) => o.id)).toEqual([1, 3]);
+    expect(otherObjects(objs, objs)).toEqual([]);
+    expect(otherObjects(objs, [])).toHaveLength(4);
+  });
+
+  it('finds the tracked object at a catalogued position: the nearest within 9″', () => {
+    // 0.001 deg of RA at dec 20 is 3.4″; 10.0005 lies between objects 0 and 1, nearer neither by much.
+    expect(trackedAt(objs, 10.0009, 20)?.id).toBe(1);
+    expect(trackedAt(objs, 10.0001, 20)?.id).toBe(0);
+    expect(trackedAt(objs, 10.006, 20)).toBeNull(); // 10″ from object 2 (and farther from the rest)
+    expect(trackedAt([], 10, 20)).toBeNull();
+  });
+});
 
 // Barnard's Star as the backend reported it (cached field 269.448 +4.739), images left out.
 const pass = (index, start, end, point, scatter) => ({
@@ -96,7 +184,7 @@ suite('describe', () => {
 
   it('adds the archival track when older surveys confirm a visible mover', () => {
     const v = describe(object({
-      archive: { verdict: 'confirmed', pm_ra_cosdec: -0.82, pm_dec: 10.362, pm_err: 0.029, baseline_yr: 26.6, observatories: ['spherex', 'twomass'] },
+      archive: { verdict: 'confirmed', pm_ra_cosdec: -0.82, pm_dec: 10.362, pm_err: 0.029, baseline_yr: 26.6, observatories: ['spherex', '2mass'] },
     }), barnardEvidence());
     expect(v.headline).toBe('It moved.');
     expect(v.lines[3]).toBe('Positions from 2MASS, going back 27 years, lie on the same track: 10.39″ per year.');
@@ -169,7 +257,27 @@ suite('describe', () => {
     expect(v.headline).toBe('Not a moving object.');
     expect(v.lines).toEqual([
       'The SPHEREx positions differ by 14.0″ (2.3 SPHEREx pixels) between Aug 2025 and Aug 2026, but older catalogues show a separate, fixed source at each position. The engine linked two neighbours; nothing moved.',
+      'The 13.6″ per year is only the slope of a line through those positions, not a speed: the engine does not count it as motion.',
     ]);
+  });
+
+  // RW Aurigae's object 0: 15″/yr at 20σ, "static", because the middle pass covered the track and saw nothing.
+  it('says which pass saw nothing on the track, and that the fitted slope is not a speed', () => {
+    const ev = stillEvidence(6.3, -13.9);
+    ev.passes[1].point = null;
+    ev.missing_passes = [1];
+    const o = still({ pm_ra_cosdec: 6.36, pm_dec: -14.06, pm_total: 15.44, pm_err: 0.75, significance: 20.6 });
+    const v = describe(o, ev);
+    expect(v.headline).toBe('No reliable motion.');
+    expect(v.lines.slice(2)).toEqual([
+      'Pass 2 (Mar – May 2026) saw nothing on the track. That pass’s images cover the line between the other positions, where one moving object would have been seen, so these positions belong to different objects.',
+      'The 15.4″ per year is only the slope of a line through those positions, not a speed: the engine does not count it as motion.',
+    ]);
+    expect(motionChart(o, ev).lines[0].label).toBe('SPHEREx straight-line fit (not accepted as motion)');
+    // With the archive's refutation too, both reasons are given.
+    const refuted = describe({ ...o, archive: { ...o.archive, verdict: 'refuted' } }, ev);
+    expect(refuted.headline).toBe('Not a moving object.');
+    expect(refuted.lines[1]).toMatch(/^Pass 2 \(Mar – May 2026\) saw nothing on the track\./);
   });
 
   it('compares with a catalogued proper motion', () => {
@@ -234,7 +342,7 @@ suite('motionChart', () => {
   it('adds the catalogue prediction and the archival refit through the same point', () => {
     const c = motionChart(object({
       matches: [{ catalog: 'gaia', name: 'Barnard’s Star', sep_arcsec: 0.4, pm_ra_cosdec: -0.8, pm_dec: 10.36 }],
-      archive: { verdict: 'confirmed', pm_ra_cosdec: -0.82, pm_dec: 10.362, pm_err: 0.029, baseline_yr: 26.6, observatories: ['spherex', 'twomass', 'allwise'] },
+      archive: { verdict: 'confirmed', pm_ra_cosdec: -0.82, pm_dec: 10.362, pm_err: 0.029, baseline_yr: 26.6, observatories: ['spherex', '2mass', 'allwise'] },
     }), barnardEvidence());
     expect(c.lines.map((l) => [l.kind, l.label])).toEqual([
       ['fit', 'SPHEREx fit'], ['archive', 'with 2MASS and AllWISE'], ['catalog', 'Gaia DR3 catalogue'],
