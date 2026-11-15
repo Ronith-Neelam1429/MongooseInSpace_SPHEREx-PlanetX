@@ -34,7 +34,7 @@ from PIL import Image
 from reproject import reproject_interp
 
 from planetx.api.evidence_checks import run_checks, saturated_core_px
-from planetx.api.motion import EngineRun
+from planetx.api.motion import EngineRun, motion_verdict
 from planetx.api.schemas import (
     EvidenceExposure,
     EvidenceFit,
@@ -44,6 +44,7 @@ from planetx.api.schemas import (
     FieldScatter,
     MotionEvidence,
 )
+from planetx.classify import reliability
 from planetx.engine import EngineResult, Frame, TrackedObject
 from planetx.spherex import archive, cutouts
 
@@ -421,4 +422,8 @@ def build_evidence(run: EngineRun, object_id: int) -> MotionEvidence:
         pm_floor_arcsec_yr=result.pm_floor_arcsec_yr,
         exposure_arcsec=m * PATCH_PIXEL_ARCSEC, exposure_px=m, checks=checks,
         missing_passes=sorted(obj.missing_passes),
+        motion_verdict=(
+            motion_verdict(reliability.refine(run.verdicts[object_id], checks))
+            if object_id < len(run.verdicts) else None
+        ),
     )

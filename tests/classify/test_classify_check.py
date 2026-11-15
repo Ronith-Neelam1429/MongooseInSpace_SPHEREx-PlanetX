@@ -150,6 +150,8 @@ def test_barnard_field_keeps_barnard_and_drops_both_false_movers():
     # Positions on two different slow stars: a false track, so it carries no name of its own.
     assert (hop.kind, hop.classification, hop.name) == ("static", "artifact", None)
     assert hop.matches[0].name == "Gaia DR3 4472837834648241024"
+    # Why: the void archive took STILL's only claim away; HOP lands on two different slow stars.
+    assert (barnard.demoted, still.demoted, hop.demoted) == (None, None, "slow_stars")
 
     assert any("archival confirmation" in n for n in result.notes)
     assert any("set to static" in n for n in result.notes)
@@ -481,6 +483,7 @@ def test_a_noisy_track_on_a_faint_slow_gaia_star_is_static():
     result = Catalogues(gaia=[FAINT]).check([obj], [fused(obj)])
     (known,) = result.known
     assert (known.kind, known.classification, known.name) == ("static", "static", FAINT.name)
+    assert known.demoted == "slow_star"
     assert any("slow Gaia stars lie at every position" in n for n in result.notes)
 
 
@@ -490,6 +493,7 @@ def test_a_motion_consistent_with_the_slow_lead_star_is_static_using_the_larger_
     obj = along(FAINT, [-2.0, 0.0, 5.0], 315.0, sigma=0.5, pm_err=0.8)
     result = Catalogues(gaia=[FAINT]).check([obj], [fused(obj, pm_err=1.2)])
     assert (result.known[0].kind, result.known[0].classification) == ("static", "static")
+    assert result.known[0].demoted == "lead_star"
     assert any("consistent with the slow Gaia star at the mean position" in n for n in result.notes)
 
 
@@ -498,6 +502,7 @@ def test_a_motion_somewhat_off_the_slow_lead_star_is_at_most_a_candidate_named_n
     (known,) = Catalogues(gaia=[FAINT]).check([obj], [fused(obj, pm_err=0.8)]).known
     assert (known.kind, known.classification) == ("candidate", "unknown_candidate")
     assert known.name == f"near {FAINT.name}" and known.matches[0].name == FAINT.name
+    assert known.demoted == "near_star"  # a mover cut down to a candidate
 
 
 def test_a_fast_mover_passing_a_faint_static_star_stays_a_mover_named_near_it():
@@ -507,6 +512,7 @@ def test_a_fast_mover_passing_a_faint_static_star_stays_a_mover_named_near_it():
     (known,) = result.known
     assert (known.kind, known.classification) == ("mover", "unknown_candidate")
     assert known.name == f"near {FAINT.name}"
+    assert known.demoted is None  # named near the star, but its motion stands
     assert any('named "near" that star' in n for n in result.notes)
 
 

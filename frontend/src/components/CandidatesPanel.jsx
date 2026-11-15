@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { candidateLine, foundDate } from '../lib/crawl.js';
-import { classLabel, shortName } from '../lib/plain.js';
+import { classLabel, fakeMotionLine, motionVerdict, shortName } from '../lib/plain.js';
 import { fetchCandidates } from '../lib/services.js';
 import { failPage, mergePage } from './candidatesList.js';
 import CandidateThumb from './CandidateThumb.jsx';
 import { CloseIcon } from './ObjectCard.jsx';
+import { VerdictTag } from './MotionEvidence.jsx';
 import './CandidatesPanel.css';
 
 const PAGE = 50;
@@ -26,23 +27,25 @@ const SORTS = [['score', 'Best first'], ['date', 'Newest first']];
 export default function CandidatesPanel({ onGo, onClose }) {
   const [filter, setFilter] = useState('');
   const [sort, setSort] = useState('score');
+  // Leave out what the evidence says is fake motion (the server filters, so totals and pages agree).
+  const [hideFake, setHideFake] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [list, setList] = useState({ status: 'loading' });
   const body = useRef(null);
   // The in-flight "Show more" request, aborted when the filter changes or the panel closes.
   const moreCtrl = useRef(null);
   // The list a page belongs to: filter and sort (mergePage drops a page asked for another one).
-  const view = `${filter}|${sort}`;
+  const view = `${filter}|${sort}|${hideFake}`;
 
   useEffect(() => {
     const ctrl = new AbortController();
-    fetchCandidates({ limit: PAGE, classification: filter || undefined, sort, signal: ctrl.signal }).then((r) => {
+    fetchCandidates({ limit: PAGE, classification: filter || undefined, sort, hideFake, signal: ctrl.signal }).then((r) => {
       if (!ctrl.signal.aborted) setList(r ? { status: 'ok', filter: view, ...r } : { status: 'none' });
     }, (err) => {
       if (!ctrl.signal.aborted) setList({ status: 'error', error: err?.message || String(err) });
     });
     return () => { ctrl.abort(); moreCtrl.current?.abort(); };
-  }, [filter, sort, attempt, view]);
+  }, [filter, sort, hideFake, attempt, view]);
 
   const reload = (next) => { setList({ status: 'loading' }); next(); };
 
@@ -54,7 +57,7 @@ export default function CandidatesPanel({ onGo, onClose }) {
     setList((l) => ({ ...l, loadingMore: true }));
     try {
       const r = await fetchCandidates({
-        limit: PAGE, offset: list.candidates.length, classification: filter || undefined, sort, signal: ctrl.signal,
+        limit: PAGE, offset: list.candidates.length, classification: filter || undefined, sort, hideFake, signal: ctrl.signal,
       });
       if (!ctrl.signal.aborted) setList((l) => mergePage(l, r, requested));
     } catch (err) {
@@ -103,6 +106,17 @@ export default function CandidatesPanel({ onGo, onClose }) {
               </button>
             ))}
           </div>
+          <div className="filters cand-sort" role="group" aria-label="Motion">
+            <button
+              type="button"
+              className={`opt ${hideFake ? 'on' : ''}`}
+              aria-pressed={hideFake}
+              title="Leave out objects whose apparent motion the evidence shows is not real"
+              onClick={() => reload(() => setHideFake(!hideFake))}
+            >
+              Hide fake motion
+            </button>
+          </div>
           {list.status === 'loading' && <p className="state"><span className="ticker" aria-hidden="true" />Loading candidates</p>}
           {list.status === 'none' && <p className="line dim">The candidates list needs the PlanetX server, which is not connected (or does not offer it yet).</p>}
           {list.status === 'error' && (
@@ -113,7 +127,7 @@ export default function CandidatesPanel({ onGo, onClose }) {
           )}
           {list.status === 'ok' && list.candidates.length === 0 && (
             <p className="line dim">
-              {filter ? 'No candidates of this kind yet.' : 'No candidates yet. The survey adds what it finds as it works outward from the north ecliptic pole.'}
+              {filter || hideFake ? 'No candidates of this kind yet.' : 'No candidates yet. The survey adds what it finds as it works outward from the north ecliptic pole.'}
             </p>
           )}
           {list.status === 'ok' && list.candidates.length > 0 && (
@@ -122,7 +136,9 @@ export default function CandidatesPanel({ onGo, onClose }) {
                 {list.total.toLocaleString('en-US')} so far, {sort === 'date' ? 'newest first' : 'most interesting first'}. Pick one to open it on the map.
               </p>
               <ol className="rowlist cand-list">
-                {list.candidates.map((c, i) => (
+                {list.candidates.map((c, i) => {
+                  const mv = motionVerdict(c);
+                  return (
                   <li key={c.id}>
                     <button type="button" className="row cand-row" onClick={() => onGo(c)}>
                       <CandidateThumb id={c.id} root={body} />
@@ -130,9 +146,12 @@ export default function CandidatesPanel({ onGo, onClose }) {
                         <span className="cand-top">
                           {sort === 'score' && <span className="cand-rank tabular">{i + 1}</span>}
                           <span className="row-name" title={c.name || undefined}>{c.name ? shortName(c.name) : 'Uncatalogued object'}</span>
-                          <span className="badge">{classLabel(c.classification)}</span>
+                          {mv && <VerdictTag mv={mv} />}
+                          {/* Without a catalogue check the class says nothing the verdict does not. */}
+                          {(c.classification || !mv) && <span className="badge cand-class">{classLabel(c.classification)}</span>}
                         </span>
-                        <span className="row-sub">{candidateLine(c)}</span>
+                        <span className="row-sub">{fakeMotionLine(c) || candidateLine(c)}</span>
+                        {mv && mv.verdict !== 'moving' && <span className="cand-why">{mv.reason}</span>}
                         <span className="cand-meta">
                           patch {c.ipix.toLocaleString('en-US')} · found {foundDate(c.found)}
                         </span>
@@ -145,7 +164,8 @@ export default function CandidatesPanel({ onGo, onClose }) {
                       )}
                     </button>
                   </li>
-                ))}
+                  );
+                })}
               </ol>
               {list.candidates.length < list.total && (
                 <p className="line">

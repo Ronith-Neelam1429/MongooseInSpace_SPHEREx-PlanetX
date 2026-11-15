@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  archiveSentence, claim, classLabel, compass, confidence, dateSpan, distanceText, lightYears, measuredMotion, moonCrossing,
-  motionsAgree, positionAngle, shortClaim, shortName, speed, verdict,
+  archiveSentence, claim, classLabel, compass, confidence, dateSpan, distanceText, fakeMotionLine, lightYears, measuredMotion, moonCrossing,
+  motionsAgree, motionVerdict, positionAngle, shortClaim, shortName, speed, VERDICT_HINT, verdict,
 } from './plain.js';
 
 const object = (over = {}) => ({
@@ -110,5 +110,57 @@ describe('wording', () => {
     expect(shortName('Gaia DR3 4472832130942575872')).toBe('Gaia DR3 …575872');
     expect(shortName("Barnard's star")).toBe("Barnard's star");
     expect(shortName(null)).toBeNull();
+  });
+});
+
+describe('motion verdict', () => {
+  const mv = (verdict, extra = {}) => ({ verdict, certainty: null, cause: null, reason: 'Because.', decided_by: 'archive', ...extra });
+
+  it('says whether the motion is real, how sure, and why', () => {
+    expect(motionVerdict(object({ motion_verdict: mv('moving', { certainty: 'confirmed' }) }))).toMatchObject({
+      verdict: 'moving', label: 'Moving: confirmed', tone: 'moving', reason: 'Because.', decidedBy: 'older sky surveys',
+    });
+    expect(motionVerdict(object({ motion_verdict: mv('moving', { certainty: 'candidate' }) })).label).toBe('Moving: candidate');
+    const fake = motionVerdict(object({ motion_verdict: mv('fake_motion', { cause: 'chance_link', decided_by: 'catalogue' }) }));
+    expect(fake).toMatchObject({ label: 'Fake motion', tone: 'fake', cause: 'chance_link', causeText: 'different objects joined into one track' });
+    expect(motionVerdict(object({ motion_verdict: mv('unsure', { cause: 'blend' }) }))).toMatchObject({ tone: 'unsure', causeText: 'two sources blended into one blur' });
+    expect(motionVerdict(object({ motion_verdict: mv('not_moving') })).tone).toBe('still');
+  });
+
+  it('is null for older servers and unknown verdicts', () => {
+    expect(motionVerdict(object())).toBeNull();
+    expect(motionVerdict(object({ motion_verdict: mv('teleported') }))).toBeNull();
+    expect(motionVerdict(null)).toBeNull();
+  });
+
+  it('replaces the yes/no label, keeping catalogue names and brightness changes', () => {
+    expect(verdict(object({ motion_verdict: mv('fake_motion', { cause: 'blend' }) }))).toBe('Fake motion');
+    expect(verdict(object({ motion_verdict: mv('unsure') }))).toBe('Unsure');
+    expect(verdict(object({ classification: 'known_star', motion_verdict: mv('moving', { certainty: 'confirmed' }) }))).toBe('Known star, moving');
+    expect(verdict(object({ classification: 'known_asteroid', motion_verdict: mv('moving', { certainty: 'confirmed' }) }))).toBe('Known asteroid');
+    expect(verdict({ ...variable, motion_verdict: mv('not_moving') })).toBe('Changes brightness');
+    expect(verdict(object({ kind: 'static', classification: 'variable_star', motion_verdict: mv('not_moving') }))).toBe('Variable star');
+  });
+
+  it('does not quote a fake motion as a speed', () => {
+    const fake = object({ motion_verdict: mv('fake_motion', { cause: 'saturated_halo' }) });
+    expect(claim(fake)).toBe('Seems to move 9.91″ per year, but the motion is not real');
+    expect(shortClaim(fake)).toBe('9.91″/yr north (fake)');
+  });
+
+  it('does not quote a survey candidate’s fake motion as a detection', () => {
+    const row = { pm_total: 4.03, significance: 6.2, is_variable: false };
+    expect(fakeMotionLine({ ...row, motion_verdict: mv('fake_motion', { cause: 'blend' }) })).toBe('Apparent 4.03″ a year, not real motion');
+    expect(fakeMotionLine({ ...row, motion_verdict: mv('unsure') })).toBeNull();
+    expect(fakeMotionLine(row)).toBeNull();
+  });
+
+  it('never calls anything a discovery', () => {
+    for (const v of ['moving', 'not_moving', 'fake_motion', 'unsure']) {
+      for (const certainty of ['confirmed', 'candidate', null]) {
+        expect(motionVerdict(object({ motion_verdict: mv(v, { certainty }) })).label).not.toMatch(/discover/i);
+      }
+    }
+    expect(Object.values(VERDICT_HINT).join(' ')).not.toMatch(/discover/i);
   });
 });

@@ -194,3 +194,19 @@
   .panel .ev { --ev-measured: var(--measured); }
   .panel .ev-exp-img { --ev-measured: rgb(92, 225, 255); }
 }
+
+/* ---------- the motion verdict (motionVerdict in lib/plain.js): colours by tone ----------
+   Shared by the object card, the evidence view and the candidates list (this file loads with
+   ObjectCard). Cyan: real motion. Red: fake motion. Amber: unsure. Grey: not moving. */
+.mv-badge.mv-moving { color: var(--measured); border-color: color-mix(in srgb, var(--measured) 45%, transparent); }
+.mv-badge.mv-fake { color: var(--signal); border-color: color-mix(in srgb, var(--signal) 55%, transparent); }
+.mv-badge.mv-unsure { color: var(--variable); border-color: color-mix(in srgb, var(--variable) 55%, transparent); }
+.mv-badge.mv-still { color: var(--dim); border-color: var(--line); }
+.mv-text-moving { color: var(--measured); }
+.mv-text-fake { color: var(--signal); }
+.mv-text-unsure { color: var(--variable); }
+.mv-reason { overflow-wrap: anywhere; }
+.mv-cause { color: var(--fg); }
+.mv-decided { color: var(--dim); }
+.mv-after { margin-top: 10px; display: grid; gap: 4px; }
+.mv-after .badge { margin-left: 4px; }
