@@ -16,6 +16,8 @@ from PIL import Image
 from planetx.api import evidence as proof
 from planetx.api import motion
 from planetx.api.app import app
+from planetx.api.schemas import EvidenceCheck
+from planetx.classify import reliability
 from planetx.engine import find_motion, frame_from_hdul
 from planetx.spherex import cutouts
 from synthetic import make_mef
@@ -374,6 +376,22 @@ def test_repeat_requests_are_served_from_the_cache(served, monkeypatch):
     for i in (2, 3, 4):
         _get(i)
     assert len(proof._cache) == 2
+
+
+def test_the_evidence_carries_the_verdict_after_its_image_tests(served, monkeypatch):
+    mover_id = _object_at(served, *MOVER_START)
+    assert _get(mover_id)["motion_verdict"] is None  # a run whose verdicts are not known
+    spherex_only = reliability.MotionVerdict("moving", "SPHEREx alone.", "spherex", certainty="candidate")
+    judged = dataclasses.replace(served, verdicts=[spherex_only] * len(served.tracked))
+    monkeypatch.setattr(motion, "finished_run", lambda ra, dec, size_deg: judged)
+    ev = _get(mover_id)
+    expected = reliability.refine(spherex_only, [EvidenceCheck(**c) for c in ev["checks"]])
+    assert ev["motion_verdict"] == {
+        "verdict": expected.verdict, "certainty": expected.certainty, "cause": expected.cause,
+        "reason": expected.reason, "decided_by": expected.decided_by,
+    }
+    # The planted mover is real: its image tests do not take the motion away.
+    assert ev["motion_verdict"]["verdict"] == "moving" and "image tests" in ev["motion_verdict"]["reason"]
 
 
 def test_no_finished_run_is_a_404_that_says_what_to_do(served, monkeypatch):

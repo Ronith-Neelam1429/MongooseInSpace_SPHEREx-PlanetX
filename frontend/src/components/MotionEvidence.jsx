@@ -4,6 +4,7 @@ import {
 } from '../lib/evidence.js';
 import { useChecks, useEvidence, useVerdict } from './useEvidence.js';
 import { engineViews } from '../lib/pictures.js';
+import { VERDICT_HINT, motionVerdict } from '../lib/plain.js';
 import SkyPictures from './SkyPictures.jsx';
 import './MotionEvidence.css';
 
@@ -39,8 +40,30 @@ const STATUS = {
   unknown: { mark: '–', label: 'Cannot tell' },
 };
 
-/** Independent tests that the motion is real and belongs to one object, each with its numbers. */
-export function Proof({ checks }) {
+/** The verdict on whether the motion is real, as a short tag (see motionVerdict in lib/plain.js). */
+export function VerdictTag({ mv, label }) {
+  return <span className={`badge mv-badge mv-${mv.tone}`} title={VERDICT_HINT[mv.tone]}>{label || mv.label}</span>;
+}
+
+/** Why: the backend's reason, the likely cause of a fake (or the suspected one), and what decided it. */
+export function VerdictReason({ mv, className = 'line' }) {
+  const cause = mv.causeText && mv.verdict !== 'moving'
+    ? `${mv.verdict === 'fake_motion' ? 'Most likely cause' : 'Suspected problem'}: ${mv.causeText}.`
+    : null;
+  return (
+    <p className={`${className} mv-reason`}>
+      {mv.reason}
+      {cause && <> <span className="mv-cause">{cause}</span></>}
+      {mv.decidedBy && <span className="mv-decided"> Decided by {mv.decidedBy}.</span>}
+    </p>
+  );
+}
+
+/**
+ * Independent tests that the motion is real and belongs to one object, each with its numbers.
+ * `verdict` (motionVerdict of the evidence) is the backend's verdict after these tests.
+ */
+export function Proof({ checks, verdict }) {
   const tally = proofTally(checks);
   const parts = [`${tally.pass} of ${tally.decided} tests passed`];
   if (tally.weak) parts.push(`${tally.weak} partly`);
@@ -55,6 +78,12 @@ export function Proof({ checks }) {
         Each test looks at a different part of the data, so a fake mover (noise, a glitch, two stars joined into
         one track) fails some of them.
       </p>
+      {verdict && (
+        <div className="mv-after">
+          <p className="ev-note">With these tests and the other telescopes: <VerdictTag mv={verdict} /></p>
+          <VerdictReason mv={verdict} className="ev-note" />
+        </div>
+      )}
       <ol className="ev-checks">
         {checks.map((c) => (
           <li key={c.key} className={`ev-check ev-check-${c.status in STATUS ? c.status : 'unknown'}`}>
@@ -326,17 +355,24 @@ export default function MotionEvidence({ object, field }) {
   const ev = useEvidence(object, field);
   const verdict = useVerdict(object, ev);
   const checks = useChecks(object, ev);
+  const mv = (ev.status === 'ok' && motionVerdict(ev.evidence)) || motionVerdict(object);
   if (!ev.key) return null;
   return (
     <section className="ev" aria-label="Evidence for this object">
       <EnginePictures object={object} ev={ev} />
+      {mv && (
+        <>
+          <h4 className={`ev-headline mv-text-${mv.tone}`}>{mv.label}</h4>
+          <VerdictReason mv={mv} className="ev-line" />
+        </>
+      )}
       {verdict && (
         <>
-          <h4 className={`ev-headline ev-tone-${verdict.tone}`}>{verdict.headline}</h4>
+          {!mv && <h4 className={`ev-headline ev-tone-${verdict.tone}`}>{verdict.headline}</h4>}
           {verdict.lines.map((line) => <p key={line} className="ev-line">{line}</p>)}
         </>
       )}
-      {checks && <Proof checks={checks} />}
+      {checks && <Proof checks={checks} verdict={ev.status === 'ok' ? motionVerdict(ev.evidence) : null} />}
       {ev.status === 'ok' && <Chart object={object} evidence={ev.evidence} />}
       {ev.status === 'ok' && <Exposures evidence={ev.evidence} />}
     </section>

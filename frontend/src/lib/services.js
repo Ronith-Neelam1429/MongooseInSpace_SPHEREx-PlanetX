@@ -231,14 +231,16 @@ export async function fetchVisits(ra, dec, { signal } = {}) {
 /**
  * Candidates found by the offline survey (GET {API_BASE}/candidates), most interesting first:
  * { total, candidates: [{ id, ra, dec, name, classification, pm_total, position_angle_deg, score, found, ... }] }.
- * `classification` narrows the list to one class. Returns null when the list cannot be had: no
+ * `classification` narrows the list to one class; `hideFake` leaves out those whose motion
+ * verdict is fake motion (`motion_verdict.verdict`). Returns null when the list cannot be had: no
  * backend configured, or a backend that does not serve the route yet (404).
  */
-export async function fetchCandidates({ limit = 100, offset = 0, classification, sort, signal } = {}) {
+export async function fetchCandidates({ limit = 100, offset = 0, classification, sort, hideFake, signal } = {}) {
   if (!API_BASE) return null;
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (classification) params.set('classification', classification);
   if (sort && sort !== 'score') params.set('sort', sort);
+  if (hideFake) params.set('hide_fake', 'true');
   let j;
   try {
     j = await apiJson(`/candidates?${params}`, { signal });

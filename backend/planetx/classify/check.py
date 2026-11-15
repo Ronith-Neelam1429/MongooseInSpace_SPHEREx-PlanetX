@@ -88,6 +88,16 @@ class Known:
     # The archival refit "confirmed" a motion from positions that belong to other
     # Gaia stars: its verdict and motion say nothing about this object.
     archive_void: bool = False
+    # Why the catalogues took a claimed motion away (see DEMOTIONS), None when they did not.
+    demoted: str | None = None
+
+
+# Why the catalogue check set a moving track to static (or a mover to a candidate):
+#   slow_star    one slow Gaia star lies under every pass position: the object is that star
+#   slow_stars   different slow Gaia stars lie under the pass positions: the track hops between them
+#   lead_star    the motion agrees with the slow Gaia star at its mean position (within AGREE_SIGMA)
+#   near_star    the motion is too close to that star's to be sure it is something else: a candidate at most
+DEMOTIONS = ("slow_star", "slow_stars", "lead_star", "near_star")
 
 
 @dataclass
@@ -194,6 +204,7 @@ def check_objects(
     kinds: list[str] = []
     leads: list[int | None] = []
     false_tracks: list[bool] = []
+    demotions: dict[int, str] = {}
     void_archive: set[int] = set()
     near_star: dict[int, int] = {}  # object index -> slow Gaia star it is next to but not
     on_slow_stars = 0
@@ -222,12 +233,17 @@ def check_objects(
                 kind = "static"
                 false_track = false_track or track.slow_stars == "different"
                 on_slow_stars += 1
+                demotions[i] = "slow_star" if track.slow_stars == "same" else "slow_stars"
             else:
+                before = kind
                 kind, star = _against_lead_star(catalog, obj, fm, kind, claim, pixel_arcsec)
                 if kind == "static":
                     on_slow_lead += 1
+                    demotions[i] = "lead_star"
                 elif star is not None:
                     near_star[i] = star
+                    if kind != before:
+                        demotions[i] = "near_star"
         kinds.append(kind)
         leads.append(lead)
         false_tracks.append(false_track)
@@ -279,7 +295,7 @@ def check_objects(
             name = f"near {catalog.objects[near_star[i]].name}"
         known.append(Known(
             kind=kind, classification=classification, name=name, matches=matches,
-            archive_void=i in void_archive,
+            archive_void=i in void_archive, demoted=demotions.get(i),
         ))
     return CheckResult(known=known, notes=notes)
 

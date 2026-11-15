@@ -74,11 +74,85 @@ export function classLabel(classification) {
   return CLASS_LABEL[classification] || 'Candidate';
 }
 
+// The backend's motion verdict (MotionVerdict in the API: is the motion real?), in words.
+const MOTION_LABEL = {
+  moving: 'Moving',
+  not_moving: 'Not moving',
+  fake_motion: 'Fake motion',
+  unsure: 'Unsure',
+};
+// What most likely made a fake mover (the API's MotionVerdict.cause), as a phrase that ends
+// "Most likely: …".
+const CAUSE_TEXT = {
+  blend: 'two sources blended into one blur',
+  saturated_halo: 'a star too bright for the detector, or its glare',
+  edge: 'the edge of the images',
+  flagged_pixels: 'pixels SPHEREx flags as stray light (ghosts, halos, crosstalk)',
+  low_snr: 'too faint to measure well',
+  wavelength_centroid: 'its colour shifting where it appears in each detector',
+  parallax_misfit: 'a yearly wobble that so few passes cannot pin down',
+  chance_link: 'different objects joined into one track',
+  other: 'no single cause stands out',
+};
+const DECIDED_BY = {
+  spherex: 'SPHEREx alone',
+  archive: 'older sky surveys',
+  catalogue: 'the Gaia and SIMBAD catalogues',
+  evidence_checks: 'the image tests',
+};
+
 /**
- * One- or two-word verdict for an engine object. Uses the backend's catalogue classification when
- * that check ran; otherwise the engine's own motion class. Never "discovery": at best "candidate".
+ * The backend's verdict on whether an object's motion is real, ready to show:
+ * { verdict, label, tone, certainty, cause, causeText, reason, decidedBy }, or null when the
+ * backend sent none (older servers). `tone` is 'moving' | 'still' | 'fake' | 'unsure'.
+ * Takes a MotionObject, a SurveyCandidate or a MotionEvidence (anything with `motion_verdict`).
+ */
+export function motionVerdict(o) {
+  const v = o?.motion_verdict;
+  if (!v || !MOTION_LABEL[v.verdict]) return null;
+  const label = v.verdict === 'moving'
+    ? (v.certainty === 'confirmed' ? 'Moving: confirmed' : 'Moving: candidate')
+    : MOTION_LABEL[v.verdict];
+  const tone = { moving: 'moving', not_moving: 'still', fake_motion: 'fake', unsure: 'unsure' }[v.verdict];
+  return {
+    verdict: v.verdict, label, tone, certainty: v.certainty ?? null, cause: v.cause ?? null,
+    causeText: v.cause ? CAUSE_TEXT[v.cause] || v.cause : null,
+    reason: v.reason || '', decidedBy: DECIDED_BY[v.decided_by] || v.decided_by || '',
+  };
+}
+
+/**
+ * A survey candidate's motion in one line once its verdict is in: a fake motion is not quoted
+ * as a detection ("Apparent 4.03″ a year, not real"); otherwise null (use candidateLine).
+ */
+export function fakeMotionLine(c) {
+  if (motionVerdict(c)?.verdict !== 'fake_motion' || !(c.pm_total > 0)) return null;
+  return `Apparent ${speed(c.pm_total)}″ a year, not real motion${c.is_variable ? ' · changes brightness' : ''}`;
+}
+
+/** What a verdict means, in one sentence, for a tooltip or a legend. */
+export const VERDICT_HINT = {
+  moving: 'The motion is real: confirmed by a catalogue or older surveys, or a candidate SPHEREx alone measures clearly.',
+  still: 'No motion beyond what measurement noise does.',
+  fake: 'SPHEREx shows motion, but other evidence says it is not real.',
+  unsure: 'Motion is claimed, but the evidence cannot settle it yet.',
+};
+
+/**
+ * One- or two-word verdict for an engine object. Uses the backend's motion verdict when it sent
+ * one (a catalogued star or asteroid keeps its name, a variable that stays put says so), else
+ * the catalogue classification, else the engine's own motion class. Never "discovery": at best
+ * "candidate".
  */
 export function verdict(o) {
+  const mv = motionVerdict(o);
+  if (mv) {
+    if (mv.verdict === 'moving' && o.classification === 'known_asteroid') return CLASS_LABEL.known_asteroid;
+    if (mv.verdict === 'moving' && o.classification === 'known_star') return 'Known star, moving';
+    if (mv.verdict === 'not_moving' && o.classification === 'variable_star') return CLASS_LABEL.variable_star;
+    if (mv.verdict === 'not_moving' && o.is_variable) return 'Changes brightness';
+    return mv.label;
+  }
   if (o.classification && CLASS_LABEL[o.classification]) return CLASS_LABEL[o.classification];
   if (o.kind === 'mover') return 'Moving';
   if (o.kind === 'candidate') return 'Candidate';
@@ -97,7 +171,9 @@ export function claim(o) {
   const parts = [];
   if (o.kind !== 'static') {
     const m = measuredMotion(o);
-    parts.push(`Moves ${speed(m.pm)}″ per year, toward ${compass(m.pa)}`);
+    parts.push(motionVerdict(o)?.verdict === 'fake_motion'
+      ? `Seems to move ${speed(m.pm)}″ per year, but the motion is not real`
+      : `Moves ${speed(m.pm)}″ per year, toward ${compass(m.pa)}`);
   }
   if (o.is_variable && o.variability) {
     parts.push(`${parts.length ? 'brightness' : 'Brightness'} changed ${o.variability.ratio.toFixed(2)}× between passes`);
@@ -110,7 +186,7 @@ export function shortClaim(o) {
   const parts = [];
   if (o.kind !== 'static') {
     const m = measuredMotion(o);
-    parts.push(`${speed(m.pm)}″/yr ${compass(m.pa)}`);
+    parts.push(`${speed(m.pm)}″/yr ${compass(m.pa)}${motionVerdict(o)?.verdict === 'fake_motion' ? ' (fake)' : ''}`);
   }
   if (o.is_variable && o.variability) parts.push(`brightness ×${o.variability.ratio.toFixed(2)}`);
   return parts.join(', ');
