@@ -493,12 +493,27 @@ export function surveyPatch(motion, evidence) {
   return { ...fromOffsets(evidence.patch_ra, evidence.patch_dec, east, north), side: Math.round(side), east, north };
 }
 
+const SURVEY_MIN_ARCSEC = 30; // the backend's limits on side_arcsec
+
+/**
+ * Throws a clear error, before any request, for a patch the backend would refuse: a position or
+ * side that is not a number (an object without a usable position), or a side out of range.
+ */
+export function checkPatch(patch, minSide, maxSide) {
+  const { ra, dec, side } = patch || {};
+  if (![ra, dec, side].every(Number.isFinite) || Math.abs(dec) > 90) {
+    throw new Error(`this object has no usable position (ra ${ra}, dec ${dec}, side ${side})`);
+  }
+  if (side < minSide || side > maxSide) throw new Error(`the patch is ${side}″ wide; the server takes ${minSide}–${maxSide}″`);
+}
+
 /**
  * 2MASS and WISE images of a square patch ({ ra, dec, side } with `side` in arcsec): a
  * SurveyImages body (backend/planetx/api/schemas.py), or null without a backend.
  */
 export async function fetchPatchSurveys(patch, { signal } = {}) {
   if (!API_BASE) return null;
+  checkPatch(patch, SURVEY_MIN_ARCSEC, SURVEY_MAX_ARCSEC);
   const body = await apiJson(
     `/motion/evidence/surveys?ra=${patch.ra.toFixed(6)}&dec=${patch.dec.toFixed(6)}&side_arcsec=${patch.side}`,
     { signal, timeoutMs: SURVEY_TIMEOUT_MS },

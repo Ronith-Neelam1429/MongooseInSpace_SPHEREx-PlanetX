@@ -197,3 +197,42 @@ describe('fetchSurvey', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('apiJson errors, in words', () => {
+  it('says the server could not be reached (not "Failed to fetch") when no answer can be read', async () => {
+    vi.stubEnv('VITE_API_BASE', 'http://127.0.0.1:8031/api');
+    vi.resetModules();
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
+    const { apiJson } = await import('./services.js');
+    const err = await apiJson('/frames?ra=1&dec=2&size_deg=0.1').catch((e) => e);
+    expect(err.message).toMatch(/could not reach the PlanetX server at 127\.0\.0\.1:8031/);
+    expect(err.message).toMatch(/PLANETX_CORS_ORIGINS/);
+    expect(err.network).toBe(true);
+  });
+
+  it('names the parameter the server refused (422)', async () => {
+    const body = { detail: [{ type: 'less_than_equal', loc: ['query', 'side_arcsec'], msg: 'Input should be less than or equal to 900' }] };
+    const { services } = await load([{ status: 422, body }]);
+    const err = await services.apiJson('/motion/evidence/surveys?ra=1&dec=2&side_arcsec=1200').catch((e) => e);
+    expect(err.message).toBe('the server refused the request (HTTP 422: side_arcsec: Input should be less than or equal to 900)');
+    expect(err.status).toBe(422);
+  });
+
+  it('carries the server reason with other statuses, and keeps aborts as aborts', async () => {
+    const { services } = await load([{ status: 502, body: { detail: 'IRSA request failed: timeout' } }]);
+    await expect(services.apiJson('/frames')).rejects.toThrow('HTTP 502: IRSA request failed: timeout');
+    vi.stubGlobal('fetch', vi.fn((url, { signal }) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason)))));
+    const ctrl = new AbortController();
+    const p = services.apiJson('/frames', { signal: ctrl.signal });
+    ctrl.abort(new DOMException('gone', 'AbortError'));
+    await expect(p).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('reads FastAPI error details', async () => {
+    const { detailText } = await import('./services.js');
+    expect(detailText({ detail: 'no run' })).toBe('no run');
+    expect(detailText({ detail: [{ msg: 'bad', loc: ['query', 'ra'] }] })).toBe('ra: bad');
+    expect(detailText({})).toBeNull();
+    expect(detailText(null)).toBeNull();
+  });
+});

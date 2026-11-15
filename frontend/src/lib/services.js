@@ -168,9 +168,25 @@ export async function resolveName(name, { signal } = {}) {
  */
 export async function apiJson(path, { signal, timeoutMs = 30000 } = {}) {
   const t = withTimeout(signal, timeoutMs);
+  let res;
   try {
-    const res = await fetch(`${API_BASE}${path}`, { signal: t.signal });
-    if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
+    res = await fetch(`${API_BASE}${path}`, { signal: t.signal });
+  } catch (err) {
+    t.done();
+    if (err?.name === 'TimeoutError') throw new Error('the request timed out', { cause: err });
+    if (signal?.aborted || err?.name === 'AbortError') throw err;
+    // fetch() rejects with a bare TypeError ("Failed to fetch") when no answer can be read:
+    // the server is down or restarting, or it does not allow this page's origin (CORS).
+    throw Object.assign(new Error(unreachable(), { cause: err }), { network: true });
+  }
+  try {
+    if (!res.ok) {
+      const detail = await res.json().then(detailText, () => null);
+      const message = res.status === 422
+        ? `the server refused the request (HTTP 422${detail ? `: ${detail}` : ''})`
+        : `HTTP ${res.status}${detail ? `: ${detail}` : ''}`;
+      throw Object.assign(new Error(message), { status: res.status });
+    }
     return await res.json();
   } catch (err) {
     if (err?.name === 'TimeoutError') throw new Error('the request timed out', { cause: err });
@@ -178,6 +194,26 @@ export async function apiJson(path, { signal, timeoutMs = 30000 } = {}) {
   } finally {
     t.done();
   }
+}
+
+/** Why no answer could be read from the API, for people. */
+function unreachable() {
+  let host = API_BASE;
+  try { host = new URL(API_BASE, globalThis.location?.href).host; } catch { /* keep API_BASE as written */ }
+  const origin = globalThis.location?.origin;
+  return `could not reach the PlanetX server at ${host}: it is down or restarting, or it does not allow `
+    + `${origin ? `this page (${origin})` : 'this page'} in PLANETX_CORS_ORIGINS`;
+}
+
+/** The `detail` of a FastAPI error body in words: a string, or the first validation error. */
+export function detailText(body) {
+  const d = body?.detail;
+  if (typeof d === 'string') return d;
+  if (Array.isArray(d) && d[0]?.msg) {
+    const field = Array.isArray(d[0].loc) ? d[0].loc[d[0].loc.length - 1] : null;
+    return field ? `${field}: ${d[0].msg}` : d[0].msg;
+  }
+  return null;
 }
 
 /**
