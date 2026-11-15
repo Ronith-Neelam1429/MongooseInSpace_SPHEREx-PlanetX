@@ -3,7 +3,7 @@ import { separation } from './coords.js';
 import { toOffsets } from './evidence.js';
 import {
   MAX_SIDE_ARCSEC, cutoutSideArcsec, cutoutSizeDeg, engineViews, frameImageUrl, groupPasses, imageSrc, isRemote, knownMotion,
-  knownViews, pickFrames, picturePatch, positionAt, spread, stepKey, wantedKeys,
+  knownViews, pickFrames, picturePatch, positionAt, spread, stepKey, wantedKeys, defaultFrame, offFrame, angleText,
 } from './pictures.js';
 
 const frame = (mjd, detector, date = '2025-08-15', obs = `o${mjd}`) => ({
@@ -144,7 +144,8 @@ describe('the views of a catalogued star', () => {
   });
 
   it('puts every picture on one frame, so they blink in register', () => {
-    const { side, views } = knownViews({ motion: m, patch, surveys, frames, cutoutUrl: () => '' });
+    const { frames: zooms, views } = knownViews({ motion: m, patch, surveys, frames, cutoutUrl: () => '' });
+    const { side } = zooms.find((z) => z.key === 'wide');
     for (const v of views) expect([v.box.east, v.box.north]).toEqual([0, 0]);
     // The SPHEREx cutout is a whole number of pixels: a little wider than the archive images,
     // and the frame holds the widest.
@@ -207,7 +208,7 @@ describe('the views of an engine object', () => {
     expect(views[0].marks.line).not.toBeNull();
     // The archive patch is centred 126″ south of the SPHEREx one: the SPHEREx images sit north
     // of the frame's centre, at their own scale, and every mark is in the frame's coordinates.
-    const { side } = engineViews(object, evidence, surveys);
+    const { side } = engineViews(object, evidence, surveys).frames.find((z) => z.key === 'wide');
     expect(side).toBeCloseTo(432, 2);
     expect(views[0].box).toEqual({ east: 0, north: 0, side: 432 });
     const pass = views[1];
@@ -222,14 +223,15 @@ describe('the views of an engine object', () => {
 
   it('makes the frame large enough for an image that reaches beyond the archive patch', () => {
     const surveys = { ra: evidence.patch_ra, dec: evidence.patch_dec - 0.035, patch_arcsec: 200, unavailable: [], images: [] };
-    const { side, views } = engineViews(object, evidence, surveys);
+    const { frames: zooms, views } = engineViews(object, evidence, surveys);
+    const { side } = zooms.find((z) => z.key === 'wide');
     // SPHEREx box: 126″ north, 180″ wide, so it reaches 216″ from the centre.
     expect(side).toBeCloseTo(2 * (126 + 90), 0);
     expect(views.every((v) => v.box.side === 180)).toBe(true);
   });
 
   it('uses the SPHEREx patch as the frame without archive images', () => {
-    expect(engineViews(object, evidence, null).side).toBe(180);
+    expect(engineViews(object, evidence, null).frames).toEqual([{ key: 'spherex', label: 'SPHEREx passes', east: 0, north: 0, side: 180 }]);
   });
 });
 
@@ -268,5 +270,63 @@ describe('stepping through the pictures and loading them', () => {
     expect(imageSrc('http://h/a.png', 1)).toBe('http://h/a.png?retry=1');
     expect(imageSrc('data:image/png;base64,AAA', 3)).toBe('data:image/png;base64,AAA');
     expect(imageSrc('http://h/a.png', 0)).toBe('http://h/a.png');
+  });
+});
+
+describe('zooming', () => {
+  const at = (north) => ({ at: { east: 0, north } });
+  const frames = [{ key: 'close', side: 150 }, { key: 'wide', side: 500 }];
+
+  it('opens wide when the motion crosses at least 15% of the wide frame, else close up', () => {
+    expect(defaultFrame(frames, [at(-270), at(0)])).toBe('wide'); // Barnard: 270″ in 514″
+    expect(defaultFrame(frames, [at(-30), at(0)])).toBe('close'); // 30″: 6% of wide, 20% of close
+    expect(defaultFrame(frames, [at(0), at(0.5)])).toBe('close'); // a slow star
+    expect(defaultFrame(frames, [at(0)])).toBe('close');
+    expect(defaultFrame([{ key: 'wide', side: 500 }], [at(0), at(1)])).toBe('wide');
+  });
+
+  it('opens an engine card on the SPHEREx passes, with the 25 years beside it', () => {
+    const evidence = {
+      patch_ra: 269.4459, patch_dec: 4.7673, patch_arcsec: 180, patch_pixel_arcsec: 3.075,
+      fit: { ref_mjd: 61102.1, east_arcsec: 0, north_arcsec: 0, pm_east: -0.8, pm_north: 10.4 },
+      difference_passes: [0, 0], difference_png_b64: 'D',
+      passes: [{ index: 0, start: '2025-08-10', end: '2025-08-20', n_frames: 18, image_png_b64: 'P0', point: { east_arcsec: 0, north_arcsec: 0, mjd: 60905, date: '2025-08-18' } }],
+    };
+    const surveys = { ra: 269.4459, dec: 4.7673 - 0.035, patch_arcsec: 432, unavailable: [], images: [] };
+    const r = engineViews({ kind: 'mover', pm_ra_cosdec: -0.8, pm_dec: 10.4, pm_err: 0.5, matches: [] }, evidence, surveys);
+    expect(r.initial).toBe('spherex');
+    expect(r.frames.map((f) => f.key)).toEqual(['spherex', 'wide']);
+    // The close frame is the SPHEREx patch, wherever it sits in the wide one.
+    expect(r.frames[0].north).toBeCloseTo(126, 1);
+    expect(r.frames[0].side).toBe(180);
+  });
+
+  it('points to a position outside the frame from its edge', () => {
+    const frame = { east: 0, north: 126, side: 180 };
+    expect(offFrame({ east: 10, north: 140 }, frame)).toBeNull();
+    expect(offFrame(null, frame)).toBeNull();
+    // 2000: 270″ south of the SPHEREx position.
+    const o = offFrame({ east: 0, north: 126 - 270 }, frame);
+    expect(o.direction).toBe('south');
+    expect(o.distance).toBeCloseTo(270, 6);
+    expect(o.x).toBeCloseTo(0.5, 6);
+    expect(o.y).toBeCloseTo(0.86, 6); // near the bottom edge, clear of the scale bar
+    expect(o.angle).toBeCloseTo(180, 6); // arrow points down
+    const east = offFrame({ east: 500, north: 126 }, frame);
+    expect(east.direction).toBe('east');
+    expect(east.x).toBeCloseTo(0.14, 6); // east is on the left
+    expect(east.angle).toBeCloseTo(270, 6); // arrow points left
+    expect(angleText(270)).toBe('4.5′');
+    expect(angleText(40.4)).toBe('40″');
+  });
+
+  it('offers a close-up of a catalogued star around its newest position', () => {
+    const m = { ra: 10, dec: 20, year: 2016, pmra: 0, pmdec: 10000 };
+    const patch = picturePatch(m, 2026.8);
+    const fr = [frame(61290, 3, '2026-09-07')];
+    const r = knownViews({ motion: m, patch, surveys: null, frames: fr, cutoutUrl: () => '' });
+    expect(r.frames.map((f) => f.key)).toEqual(['close', 'wide']);
+    expect(r.frames[0].north).toBeCloseTo(r.views[0].at.north, 6);
+    expect(r.frames[0].side).toBe(150);
   });
 });

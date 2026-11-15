@@ -3,7 +3,8 @@ import { prefersReducedMotion } from '../lib/camera.js';
 import { decimalYear } from '../lib/coords.js';
 import { fetchPatchSurveys, scaleBar } from '../lib/evidence.js';
 import {
-  fetchPatchFrames, frameImageUrl, imageSrc, isRemote, knownMotion, knownViews, picturePatch, stepKey, wantedKeys,
+  angleText, fetchPatchFrames, frameImageUrl, imageSrc, isRemote, knownMotion, knownViews, offFrame, picturePatch, stepKey,
+  wantedKeys,
 } from '../lib/pictures.js';
 import { API_BASE } from '../lib/services.js';
 import './SkyPictures.css';
@@ -43,16 +44,20 @@ function Compass() {
   );
 }
 
-/** Marks on the shared frame (`side` arcsec), in arcsec from its centre (east is left, north is up). */
-function Marks({ view, side }) {
+/**
+ * Marks in the shared coordinates (arcsec, east is left, north is up), seen through `frame`
+ * ({ east, north, side }): what falls outside it is cut off.
+ */
+function Marks({ view, frame }) {
   const { marks } = view;
+  const { side } = frame;
   const h = side / 2;
   const r = Math.max(RING_MIN_ARCSEC, side * 0.04);
   const [tin, tout] = [r * 1.35, r * 2.2];
   const p = (o) => ({ x: -o.east, y: -o.north });
   const ref = marks.ref && p(marks.ref);
   return (
-    <svg className={`pic-marks pic-tone-${marks.tone}`} viewBox={`${-h} ${-h} ${side} ${side}`} aria-hidden="true">
+    <svg className={`pic-marks pic-tone-${marks.tone}`} viewBox={`${-frame.east - h} ${-frame.north - h} ${side} ${side}`} aria-hidden="true">
       {marks.line && <line className="pic-track" x1={p(marks.line[0]).x} y1={p(marks.line[0]).y} x2={p(marks.line[1]).x} y2={p(marks.line[1]).y} />}
       {ref && (
         <g className="pic-ref">
@@ -67,13 +72,31 @@ function Marks({ view, side }) {
   );
 }
 
-/** Where an image's box sits in the shared frame, as CSS percentages. */
-function placement(box, side) {
-  const pct = (v) => `${(v / side) * 100}%`;
+/** Where an image's box sits in the frame shown, as CSS percentages (beyond 0-100%: cropped). */
+function placement(box, frame) {
+  const pct = (v) => `${(v / frame.side) * 100}%`;
   return {
-    left: pct(side / 2 - box.east - box.side / 2), top: pct(side / 2 - box.north - box.side / 2),
+    left: pct(frame.side / 2 - (box.east - frame.east) - box.side / 2),
+    top: pct(frame.side / 2 - (box.north - frame.north) - box.side / 2),
     width: pct(box.side), height: pct(box.side),
   };
+}
+
+/** An arrow at the frame's edge toward where the object was on this date, when that is outside the frame. */
+function OffFrame({ view, frame, wider }) {
+  const off = offFrame(view.at, frame);
+  if (!off) return null;
+  return (
+    // The words go on the inner side of the arrow, clear of the edge (and the scale bar).
+    <span className={`pic-off pic-tone-${view.marks.tone} ${off.y > 0.5 ? 'pic-off-low' : ''}`} style={{ left: `${off.x * 100}%`, top: `${off.y * 100}%` }}>
+      <svg width="14" height="14" viewBox="0 0 14 14" style={{ transform: `rotate(${off.angle}deg)` }} aria-hidden="true">
+        <path d="M7 13V2M2.5 6.5 7 2l4.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.75" />
+      </svg>
+      <span className="pic-off-label">
+        {view.date.slice(0, 4)} position is {angleText(off.distance)} {off.direction}{wider ? ' · zoom out' : ''}
+      </span>
+    </span>
+  );
 }
 
 /** The view a slot shows now: itself, or the exposure of the same pass it fell back on. */
@@ -86,10 +109,12 @@ function effective(view, state) {
  * The square with the pictures stacked in it, each at its place in the shared frame; only the
  * current one is visible. A remote image is only asked for once wanted (lib/pictures wantedKeys).
  */
-function Stage({ all, side, current, wanted, showMarks, images, onImage }) {
-  const bar = scaleBar(side);
+function Stage({ all, frame, wider, current, wanted, showMarks, images, onImage }) {
+  const bar = scaleBar(frame.side);
   const state = images[current.key];
   const shown = effective(current, state);
+  // An arrow to an off-frame position near the bottom takes the scale bar's corner: the bar moves up.
+  const low = state?.status === 'ok' && showMarks && (offFrame(shown.at, frame)?.y ?? 0) > 0.5;
   return (
     <span className="pic-sky">
       {all.filter((v) => !isRemote(v.src) || wanted.has(v.key)).map((v) => {
@@ -99,7 +124,7 @@ function Stage({ all, side, current, wanted, showMarks, images, onImage }) {
           <img
             key={`${v.key}:${s?.attempt || 0}:${s?.alt || 0}`}
             className={v.key === current.key && s?.status === 'ok' ? 'pic-on' : ''}
-            style={placement(e.box, side)}
+            style={placement(e.box, frame)}
             src={imageSrc(e.src, s?.attempt)}
             alt="" draggable="false"
             onLoad={() => onImage(v, 'ok')}
@@ -107,7 +132,8 @@ function Stage({ all, side, current, wanted, showMarks, images, onImage }) {
           />
         );
       })}
-      {state?.status === 'ok' && showMarks && <Marks view={shown} side={side} />}
+      {state?.status === 'ok' && showMarks && <Marks view={shown} frame={frame} />}
+      {state?.status === 'ok' && showMarks && <OffFrame view={shown} frame={frame} wider={wider} />}
       {state?.status !== 'ok' && (
         <span className="pic-wait" role="status">
           {state?.status === 'error'
@@ -117,7 +143,7 @@ function Stage({ all, side, current, wanted, showMarks, images, onImage }) {
       )}
       <span className="pic-tag pic-when"><b>{shown.telescope}</b> {shown.when}</span>
       <Compass />
-      <span className="pic-tag pic-scale" aria-hidden="true" style={{ '--bar': `${(bar / side) * 100}%` }}>
+      <span className={`pic-tag pic-scale ${low ? 'pic-scale-up' : ''}`} aria-hidden="true" style={{ '--bar': `${(bar / frame.side) * 100}%` }}>
         <i />{bar >= 60 ? `${bar / 60}′` : `${bar}″`}
       </span>
     </span>
@@ -129,7 +155,7 @@ const PlayIcon = ({ playing }) => (playing
   : <svg width="10" height="12" viewBox="0 0 10 12" aria-hidden="true"><path d="M0 0l10 6-10 6z" fill="currentColor" /></svg>);
 
 /** Play, step and pick: arrow keys step too; every action is also a button. */
-function Controls({ views, extras, current, playing, showMarks, images, onPlay, onStep, onShow, onMarks }) {
+function Controls({ views, extras, frames, frame, current, playing, showMarks, images, onPlay, onStep, onShow, onMarks, onZoom }) {
   const onKeyDown = (ev) => {
     if (ev.key === 'ArrowRight') { ev.preventDefault(); onStep(1); }
     if (ev.key === 'ArrowLeft') { ev.preventDefault(); onStep(-1); }
@@ -162,6 +188,15 @@ function Controls({ views, extras, current, playing, showMarks, images, onPlay, 
           );
         })}
       </ol>
+      {frames.length > 1 && (
+        <span className="pic-zooms" role="group" aria-label="Zoom">
+          {frames.map((f) => (
+            <button key={f.key} type="button" className={`pic-opt ${f.key === frame.key ? 'pic-on' : ''}`} aria-pressed={f.key === frame.key} onClick={() => onZoom(f.key)}>
+              {f.label}
+            </button>
+          ))}
+        </span>
+      )}
       <span className="pic-extra">
         {extras.map((v) => (
           <button key={v.key} type="button" className={`pic-opt ${v.key === current.key ? 'pic-on' : ''}`} aria-pressed={v.key === current.key} onClick={() => onShow(v.key)}>
@@ -178,13 +213,14 @@ function Controls({ views, extras, current, playing, showMarks, images, onPlay, 
  * The telescope pictures of one object, oldest first, with a play control that steps through
  * them, marks where the object is on each date, and a larger view on request.
  *
- * Props: `views` time-ordered pictures and `side` the shared frame they sit on (see knownViews /
+ * Props: `views` time-ordered pictures in shared coordinates, `frames` the zooms to look at them
+ * through (close to wide) and `initialFrame` the key of the one to open on (see knownViews /
  * engineViews in lib/pictures.js), `extras` pictures outside the sequence (the difference
  * image), `notes` [{ key, text }] for what is still loading or missing, `title` for the large view.
  * Remote pictures (SPHEREx cutouts, ~4 MB each from IRSA the first time) load one ahead of the
  * one shown, not all at once.
  */
-export default function SkyPictures({ views, side, extras = [], notes = [], title }) {
+export default function SkyPictures({ views, frames = [], initialFrame, extras = [], notes = [], title }) {
   const all = useMemo(() => [...views, ...extras], [views, extras]);
   const [key, setKey] = useState(null);
   const [playing, setPlaying] = useState(() => !prefersReducedMotion());
@@ -192,7 +228,10 @@ export default function SkyPictures({ views, side, extras = [], notes = [], titl
   const [images, setImages] = useState({}); // key -> { status: 'ok' | 'error' | null, attempt, alt }
   const [seen, setSeen] = useState(() => new Set()); // keys shown so far: their images stay
   const [big, setBig] = useState(false);
+  const [zoom, setZoom] = useState(null); // a frame key the viewer picked; until then, initialFrame
   const dialog = useRef(null);
+  const frame = frames.find((f) => f.key === zoom) || frames.find((f) => f.key === initialFrame) || frames[0];
+  const wider = frame && frames.indexOf(frame) < frames.length - 1;
 
   const current = all.find((v) => v.key === key) || views[0] || null;
   const newest = views[views.length - 1];
@@ -234,7 +273,7 @@ export default function SkyPictures({ views, side, extras = [], notes = [], titl
   });
   const retry = (k) => setImages((m) => ({ ...m, [k]: { status: null, attempt: (m[k]?.attempt || 0) + 1, alt: 0 } }));
 
-  if (!current) {
+  if (!current || !frame) {
     return (
       <section className="pic" aria-label="Telescope pictures">
         <div className="pic-sky pic-empty">
@@ -249,13 +288,13 @@ export default function SkyPictures({ views, side, extras = [], notes = [], titl
   const shown = effective(current, images[current.key]);
   const controls = (
     <Controls
-      views={views} extras={extras} current={current} playing={playing} showMarks={showMarks} images={images}
-      onPlay={() => setPlaying(!playing)} onStep={step} onShow={show} onMarks={() => setShowMarks(!showMarks)}
+      views={views} extras={extras} frames={frames} frame={frame} current={current} playing={playing} showMarks={showMarks} images={images}
+      onPlay={() => setPlaying(!playing)} onStep={step} onShow={show} onMarks={() => setShowMarks(!showMarks)} onZoom={setZoom}
     />
   );
   const label = `${shown.telescope} picture, ${shown.when}`;
   const failed = images[current.key]?.status === 'error';
-  const stage = { all, side, current, wanted, showMarks, images, onImage };
+  const stage = { all, frame, wider, current, wanted, showMarks, images, onImage };
 
   return (
     <section className="pic" aria-label="Telescope pictures">
@@ -345,7 +384,7 @@ export function KnownPictures({ row, title }) {
   if (f.status === 'ok' && f.data.length === 0) notes.push({ key: 'f', text: 'SPHEREx has not imaged this spot yet.' });
   return (
     <>
-      <SkyPictures views={pictures.views} side={pictures.side} notes={notes} title={title} />
+      <SkyPictures views={pictures.views} frames={pictures.frames} initialFrame={pictures.initial} notes={notes} title={title} />
       {(s.status === 'error' || f.status === 'error') && (
         <p className="line">
           {s.status === 'error' && <button type="button" className="textbtn" onClick={() => setSurveysAttempt(surveysAttempt + 1)}>Retry 2MASS and WISE</button>}

@@ -307,7 +307,7 @@ export function EnginePictures({ object, ev, title }) {
   for (const g of surveys.status === 'ok' ? surveys.data.unavailable : []) notes.push({ key: `g:${g.survey}`, text: `${g.label}: ${g.reason}` });
   return (
     <>
-      <SkyPictures key={ev.key} views={pictures.views} side={pictures.side} extras={pictures.extras} notes={notes} title={title} />
+      <SkyPictures key={ev.key} views={pictures.views} frames={pictures.frames} initialFrame={pictures.initial} extras={pictures.extras} notes={notes} title={title} />
       <p className="ev-note">
         Real images, north up, east left, nothing smoothed in. SPHEREx: the median of each pass, on one grey scale.{' '}
         <span className="ev-key"><i className="ev-key-ring" />where it was on that date</span>{' '}

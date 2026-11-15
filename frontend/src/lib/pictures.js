@@ -130,6 +130,48 @@ const dateMjd = (start, end) => (Date.parse(start) + Date.parse(end)) / 2 / 8640
 
 const inside = (p, box) => Math.abs(p.east - box.east) < box.side / 2 && Math.abs(p.north - box.north) < box.side / 2;
 
+// The close-up frame of a catalogued star: as small as the smallest picture patch.
+const TIGHT_SIDE_ARCSEC = MIN_SIDE_ARCSEC;
+// The wide frame is the default when the motion it shows is at least this part of its side.
+const VISIBLE_MOTION = 0.15;
+
+/**
+ * The frame to open on (its key): the widest whose side the object's motion between the first
+ * and the last picture crosses by at least 15%, else the closest one. `frames` run from close to wide.
+ */
+export function defaultFrame(frames, views) {
+  const placed = views.filter((v) => v.at);
+  const shift = placed.length > 1
+    ? Math.hypot(placed[placed.length - 1].at.east - placed[0].at.east, placed[placed.length - 1].at.north - placed[0].at.north)
+    : 0;
+  const fits = frames.filter((f) => shift >= VISIBLE_MOTION * f.side);
+  return (fits.length ? fits[fits.length - 1] : frames[0]).key;
+}
+
+const COMPASS8 = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
+
+/**
+ * Where a point outside a frame lies, for an arrow at the frame's edge: null when it is inside;
+ * else { distance } in arcsec from the frame's centre, `direction` as a compass word, and the
+ * edge point (`x`, `y`, 0-1 across and down the frame) the arrow sits at, pointing `angle`
+ * degrees clockwise from up.
+ */
+export function offFrame(point, frame) {
+  if (!point) return null;
+  const e = point.east - frame.east, n = point.north - frame.north, h = frame.side / 2;
+  if (Math.abs(e) < h && Math.abs(n) < h) return null;
+  const pa = ((Math.atan2(e, n) * 180) / Math.PI + 360) % 360; // east of north
+  // On the picture east is left: screen x = -east, y = -north.
+  const k = (h * 0.72) / Math.max(Math.abs(e), Math.abs(n));
+  return {
+    distance: Math.hypot(e, n), direction: COMPASS8[Math.round(pa / 45) % 8],
+    x: 0.5 - (e * k) / frame.side, y: 0.5 - (n * k) / frame.side, angle: (360 - pa) % 360,
+  };
+}
+
+/** "4.5′" or "40″" for a distance in arcsec. */
+export const angleText = (arcsec) => (arcsec >= 60 ? `${(arcsec / 60).toFixed(1)}′` : `${Math.round(arcsec)}″`);
+
 /**
  * The side of the shared square that holds every image box ({ east, north, side } in arcsec from
  * the shared centre), so no image is cropped.
@@ -185,7 +227,11 @@ export function knownViews({ motion, patch, surveys, frames, cutoutUrl }) {
     for (const a of v.alternates || []) markAll(a);
   };
   views.forEach(markAll);
-  return { side: views.length ? frameSide(views.map((v) => v.box)) : patch.side, views };
+  const wide = { key: 'wide', label: '25 years', east: 0, north: 0, side: views.length ? frameSide(views.map((v) => v.box)) : patch.side };
+  // Close in on where it is now: the size of the smallest patch, around the newest position.
+  const tight = last ? { key: 'close', label: 'Close up', ...last.at, side: Math.min(TIGHT_SIDE_ARCSEC, wide.side) } : null;
+  const zooms = tight && tight.side < 0.8 * wide.side ? [tight, wide] : [wide];
+  return { frames: zooms, initial: defaultFrame(zooms, views), views };
 }
 
 /**
@@ -244,7 +290,14 @@ export function engineViews(object, evidence, surveys) {
     src: `data:image/png;base64,${evidence.difference_png_b64}`, pixel: evidence.patch_pixel_arcsec, box,
     marks: { ring: pos(evidence.passes[b].point), was: pos(evidence.passes[a].point), tone: 'measured' },
   }];
-  return { side: frameSide([...views, ...extras].map((v) => v.box)), views, extras };
+  // Two zooms, both in register: the SPHEREx patch (where a pass-to-pass shift of a pixel or two
+  // shows; archive images cropped to it), and the archive patch with all 25 years of track.
+  const close = { key: 'spherex', label: 'SPHEREx passes', east: box.east, north: box.north, side: evidence.patch_arcsec };
+  const wideSide = frameSide([...views, ...extras].map((v) => v.box));
+  const frames = surveys && wideSide > close.side + 1
+    ? [close, { key: 'wide', label: '25 years', east: 0, north: 0, side: wideSide }]
+    : [close];
+  return { frames, initial: 'spherex', views, extras };
 }
 
 // ---------- stepping through the views, and loading them ----------

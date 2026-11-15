@@ -39,7 +39,17 @@
 .pic-ticker::after { content: ''; position: absolute; inset: 0; width: 40%; background: var(--pic-ink); animation: pic-tick 1s ease-in-out infinite alternate; }
 @keyframes pic-tick { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 
-.pic-marks { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.pic-marks { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: hidden; }
+/* Where the object was, when that is outside the frame shown: an arrow at the edge, and words. */
+.pic-off {
+  position: absolute; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 2px;
+  color: var(--pic-mark, var(--pic-measured)); pointer-events: none; filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000);
+}
+.pic-off-low { flex-direction: column-reverse; }
+.pic-off-label {
+  padding: 2px 6px; background: var(--pic-veil); color: var(--pic-ink); font-size: 10.5px; letter-spacing: 0.04em;
+  width: max-content; max-width: 15em; text-align: center; filter: none;
+}
 .pic-marks * { fill: none; vector-effect: non-scaling-stroke; }
 /* A dark edge keeps the marks readable on a bright star. */
 .pic-ref, .pic-ring, .pic-track { filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000); }
@@ -61,6 +71,7 @@
 .pic-compass text { fill: currentColor; font-family: var(--mono); font-size: 8px; }
 /* The bar is `--bar` of the picture's width; the tag around it adds only its padding. */
 .pic-scale { left: 8px; bottom: 8px; width: calc(var(--bar) + 14px); padding: 3px 7px; letter-spacing: 0; text-transform: none; }
+.pic-scale-up { bottom: auto; top: 40px; }
 .pic-scale i { display: block; height: 0; margin-bottom: 3px; border-top: 1.5px solid var(--pic-ink); }
 .pic-zoom { right: 8px; bottom: 8px; padding: 5px; line-height: 0; }
 .pic-frame:hover .pic-zoom, .pic-frame:focus-visible .pic-zoom { background: var(--pic-ink); color: #000; }
@@ -85,6 +96,7 @@
 .pic-opt-scope { color: var(--faint); }
 .pic-opt.pic-on .pic-opt-scope { color: var(--dim); }
 .pic-extra { display: inline-flex; gap: 2px; margin-left: auto; }
+.pic-zooms { display: inline-flex; gap: 2px; padding-left: 6px; border-left: 1px solid var(--line); }
 
 .pic-caption { margin-top: 6px; min-height: 3.2em; font-size: 12px; line-height: 1.55; font-variant-numeric: tabular-nums; }
 .pic-notes { margin-top: 6px; padding: 0; list-style: none; font-size: 11.5px; color: var(--dim); }
