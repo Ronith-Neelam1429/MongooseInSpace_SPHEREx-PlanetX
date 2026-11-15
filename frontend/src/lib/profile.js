@@ -57,6 +57,7 @@ export function moonTripText(kms) {
   return unit(Math.round(s / 86400), 'day');
 }
 
+const MOTION_SOURCE = { gaia: 'Gaia DR3', simbad: 'SIMBAD', measured: 'SPHEREx' };
 const SOURCE = {
   gaia_parallax: 'Gaia parallax',
   simbad_parallax: 'SIMBAD parallax',
@@ -373,7 +374,7 @@ export function researcherGroups(p) {
         ['Est. distance', Array.isArray(m.estimated_distance_pc) && ok(m.estimated_distance_pc[0]) && ok(m.estimated_distance_pc[1])
           ? `${raw(m.estimated_distance_pc[0])}–${raw(m.estimated_distance_pc[1])} pc (assumes 20–100 km/s)` : null],
         ['µα*, µδ', ok(m.pmra) && ok(m.pmdec) ? `${signedRaw(m.pmra)}, ${signedRaw(m.pmdec)} mas/yr` : null],
-        ['Total motion', from(withErr(m.pm, m.pm_err, ' mas/yr'), m.source === 'measured' ? 'SPHEREx' : m.source === 'gaia' ? 'Gaia DR3' : m.source)],
+        ['Total motion', from(withErr(m.pm, m.pm_err, ' mas/yr'), MOTION_SOURCE[m.source] || m.source)],
         ['Position angle', ok(m.pa_deg) ? `${raw(m.pa_deg)}° east of north` : null],
         ['Tangential', withErr(m.tangential_km_s, m.tangential_err, ' km/s')],
         ['Radial', withErr(m.radial_km_s, m.radial_err, ' km/s')],
@@ -391,7 +392,7 @@ export function researcherGroups(p) {
         ['Radius', from(withErr(ph.radius_rsun, ph.radius_rsun_err, ' R☉'), ph.radius_source)],
         ['Radius (km)', ok(ph.radius_km) ? `${group(ph.radius_km)} km` : null],
         ['Mass', from(ok(ph.mass_msun) ? `${raw(ph.mass_msun)} M☉` : null, ph.mass_source)],
-        ['Luminosity', ok(ph.luminosity_lsun) ? `${raw(ph.luminosity_lsun)} L☉` : null],
+        ['Luminosity', from(ok(ph.luminosity_lsun) ? `${raw(ph.luminosity_lsun)} L☉` : null, ph.luminosity_source)],
         ['Age', ok(ph.age_gyr) ? `${raw(ph.age_gyr)} Gyr` : null],
         ['M_G', ok(ph.abs_mag_g) ? raw(ph.abs_mag_g) : null],
       ],

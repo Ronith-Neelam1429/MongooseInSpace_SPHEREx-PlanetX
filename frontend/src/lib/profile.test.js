@@ -178,6 +178,22 @@ describe('partial profiles', () => {
     expect(colourWord(20000)).toBe('blue');
   });
 
+  it('names a SIMBAD motion and the luminosity source for researchers', () => {
+    const rows = Object.fromEntries(researcherGroups({
+      ...empty, motion: { pm: 8100, pm_err: 200, source: 'simbad' }, physical: { luminosity_lsun: 0.001, luminosity_source: 'Gaia FLAME', teff_k: 285.4 },
+    }).flatMap((g) => g.rows));
+    expect(rows['Total motion']).toBe('8,100 ± 200 mas/yr (SIMBAD)');
+    expect(rows.Luminosity).toBe('0.001 L☉ (Gaia FLAME)');
+    expect(rows.Teff).toBe('285 K');
+  });
+
+  it('draws a path whose points carry no distance, without an approach curve', () => {
+    const points = barnard.path.points.map((q) => ({ ...q, dist_ly: null }));
+    const p = { ...barnard, path: { ...barnard.path, points, closest_approach: null } };
+    expect(pathModel(p, NOW).points).toHaveLength(41);
+    expect(approachModel(p, NOW)).toBeNull();
+  });
+
   it('keeps only http(s) links', () => {
     expect(safeLinks({ links: [{ label: 'a', url: 'https://x.test' }, { label: 'b', url: 'javascript:alert(1)' }, { label: 'c' }] }))
       .toEqual([{ label: 'a', url: 'https://x.test' }]);
