@@ -60,6 +60,17 @@ describe('matchCandidate', () => {
     expect(matchCandidate([at(1, 5.9)], c).id).toBe(1);
   });
 
+  it('moves the candidate by its stored motion to the run\'s reference date first', () => {
+    // 10"/yr north, stored at 61000; the run's fit is a year later, 10" further north.
+    const mover = { ra: 248.0, dec: 66.0, pm_ra_cosdec: 0, pm_dec: 10, ref_mjd: 61000 };
+    const later = { id: 1, ra: 248.0, dec: 66.0 + 10 / 3600, ref_mjd: 61000 + 365.25 };
+    expect(matchCandidate([later], mover)).toBe(later);
+    expect(matchCandidate([later], { ...mover, pm_dec: 0 })).toBeNull();
+    // East motion is along the sky: 10"/yr east at dec 66 is 10"/cos(66) in RA.
+    const east = { id: 2, ra: 248.0 + 10 / 3600 / Math.cos((66 * Math.PI) / 180), dec: 66.0, ref_mjd: 61000 + 365.25 };
+    expect(matchCandidate([east], { ...mover, pm_ra_cosdec: 10, pm_dec: 0 })).toBe(east);
+  });
+
   it('finds nothing when the run no longer has it', () => {
     expect(matchCandidate([at(1, 7), at(2, 60)], c)).toBeNull();
     expect(matchCandidate([], c)).toBeNull();

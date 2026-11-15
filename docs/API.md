@@ -201,9 +201,10 @@ Re-processing a patch replaces its rows, so ids are not stable across runs.
 - `sort`: `score` (default) or `date` (newest survey run first, then best score).
 - `kind` is the engine's motion class (`mover | candidate | static`, the last for variables).
 - `field_ra`/`field_dec`: centre of the 0.2 deg field the object was measured in.
-  `/api/motion?ra=<field_ra>&dec=<field_dec>&size_deg=0.2` repeats the survey's run, on the
-  frames the survey already downloaded when the crawler shares the API's cache; the website
-  does this to open a candidate's card.
+  `/api/motion?ra=<field_ra>&dec=<field_dec>&size_deg=0.2` repeats the survey's run there: a
+  full run (about 54 cutouts of ~4 MB unless the server has them cached), so the website starts
+  it only when asked and then opens the candidate's card. `ref_mjd` is when `ra`/`dec` hold;
+  move the position by the motion to compare it with a run whose reference date differs.
 - `limit` 1-500 (default 100), `offset` >= 0. `classification` is one of
   `known_star | known_asteroid | variable_star | artifact | unknown_candidate | static`
   or empty for all (anything else is 422). Stored objects whose catalogue check could
@@ -233,11 +234,14 @@ curl 'http://127.0.0.1:8000/api/candidates?limit=20&classification=unknown_candi
 
 ### `GET /api/candidates/{id}/thumbnail.png`
 A small SPHEREx picture centred on one candidate (0.03 deg, ~18 px, grey + alpha, north up,
-east left): the newest detector 1-3 exposure the survey's own visit sample uses, cut from that
-field's raw cutout, so it downloads nothing when the crawler shares the API's cache (else one
-~4 MB download; tries up to 3 exposures). 404 for an unknown id (ids change when a patch is
-re-processed) or when no exposure has data there; 502/503 as for `/api/cutout.png`.
-`Cache-Control` one hour. Load these lazily: the website asks only for rows in view, two at once.
+east left): the newest detector 1-3 exposure of the engine's visit sample for that field, cut
+from the field's raw cutout (the same cutout an `/api/motion` run on the field uses, so either
+fills the cache for the other). A first request costs one ~4 MB download per exposure tried
+(up to 3, skipping exposures IRSA has no cutout of); repeats come from the cutout cache.
+- At most 2 render at once: **503 with `Retry-After: 3`** beyond that (and 503 when IRSA
+  downloads are saturated). 404 for an unknown id (ids change when a patch is re-processed)
+  or when no exposure has data there; 422 for an id outside 1..2^63-1; 502 when IRSA fails.
+- `Cache-Control` one hour. Load these lazily: the website asks only for rows in view, two at once.
 
 ## Survey progress and coverage
 

@@ -20,6 +20,12 @@ describe('mergePage', () => {
     expect(mergePage(unknown, { total: 10, candidates: [row(3)] }, '')).toBe(unknown);
   });
 
+  it('skips rows already shown when new rows shifted the pages', () => {
+    const next = mergePage(shown('', [5, 4]), { total: 11, candidates: [row(4), row(3)] }, '');
+    expect(next.candidates.map((c) => c.id)).toEqual([5, 4, 3]);
+    expect(next.total).toBe(11);
+  });
+
   it('stops loading when the route has gone', () => {
     expect(mergePage(shown('', [1]), null, '')).toMatchObject({ status: 'ok', loadingMore: false });
   });

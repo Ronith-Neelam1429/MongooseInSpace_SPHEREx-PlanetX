@@ -33,7 +33,7 @@ api = APIRouter(prefix="/api")
 
 
 @api.get("/health")
-def health() -> Health:
+async def health() -> Health:
     return Health()
 
 

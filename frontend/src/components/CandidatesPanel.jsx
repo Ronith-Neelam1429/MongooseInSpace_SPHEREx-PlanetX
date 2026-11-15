@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { formatDec, formatRa } from '../lib/coords.js';
-import { candidateMotion, foundDate, slots } from '../lib/crawl.js';
+import { candidateLine, foundDate } from '../lib/crawl.js';
 import { classLabel, shortName } from '../lib/plain.js';
-import { candidateThumbnailUrl, fetchCandidates } from '../lib/services.js';
+import { fetchCandidates } from '../lib/services.js';
 import { failPage, mergePage } from './candidatesList.js';
+import CandidateThumb from './CandidateThumb.jsx';
 import { CloseIcon } from './ObjectCard.jsx';
 import './CandidatesPanel.css';
 
@@ -17,75 +17,6 @@ const FILTERS = [
   ['artifact', 'Artifacts'],
 ];
 const SORTS = [['score', 'Best first'], ['date', 'Newest first']];
-
-// Each thumbnail can be a ~4 MB SPHEREx download on the server the first time: two at once, and
-// only for rows that stay in view a moment (scrolling past starts nothing).
-const thumbSlots = slots(2);
-const THUMB_DWELL_MS = 300;
-const THUMB_RETRY_MS = 5000;
-
-/** What a row says under the name: motion in words, or the brightness change, else the position. */
-function describe(c) {
-  const parts = [];
-  const motion = candidateMotion(c);
-  if (motion) parts.push(motion);
-  if (c.is_variable) parts.push('changes brightness');
-  return parts.length ? parts.join(' · ') : `${formatRa(c.ra)} ${formatDec(c.dec)}`;
-}
-
-/**
- * A small SPHEREx picture of the candidate, loaded only while its row is in view (see thumbSlots).
- * Retries once after a busy or failed answer, then shows an empty frame.
- */
-function Thumb({ id, root }) {
-  const box = useRef(null);
-  const [src, setSrc] = useState(null);
-  const [state, setState] = useState('wait'); // wait | loading | ok | none
-  const release = useRef(null);
-  const tries = useRef(0);
-  const url = candidateThumbnailUrl(id);
-
-  useEffect(() => {
-    if (!url || state !== 'wait' || !box.current) return undefined;
-    let timer = 0;
-    let cancel = null;
-    const stop = () => { clearTimeout(timer); cancel?.(); cancel = null; };
-    const io = new IntersectionObserver(([e]) => {
-      stop();
-      if (!e.isIntersecting) return;
-      timer = setTimeout(() => {
-        cancel = thumbSlots((done) => {
-          release.current = done;
-          setState('loading');
-          setSrc(tries.current ? `${url}?retry=${tries.current}` : url);
-        });
-      }, THUMB_DWELL_MS);
-    }, { root: root?.current || null });
-    io.observe(box.current);
-    return () => { io.disconnect(); stop(); };
-  }, [url, state, root]);
-
-  // A row that goes away mid-load gives its slot back.
-  const retry = useRef(0);
-  useEffect(() => () => { release.current?.(); clearTimeout(retry.current); }, []);
-
-  const finish = (ok) => {
-    release.current?.();
-    release.current = null;
-    if (ok) { setState('ok'); return; }
-    setState('none');
-    if (tries.current++ < 1) {
-      setSrc(null);
-      retry.current = setTimeout(() => setState('wait'), THUMB_RETRY_MS);
-    }
-  };
-
-  return (
-    <span ref={box} className={`cand-thumb ${state}`} aria-hidden="true">
-      {src && state !== 'none' && <img src={src} alt="" width="56" height="56" decoding="async" onLoad={() => finish(true)} onError={() => finish(false)} />}
-    </span>
-  );
-}
 
 /**
  * What the offline survey has flagged so far (GET /api/candidates), ranked by score or newest
@@ -194,14 +125,14 @@ export default function CandidatesPanel({ onGo, onClose }) {
                 {list.candidates.map((c, i) => (
                   <li key={c.id}>
                     <button type="button" className="row cand-row" onClick={() => onGo(c)}>
-                      <Thumb id={c.id} root={body} />
+                      <CandidateThumb id={c.id} root={body} />
                       <span className="cand-main">
                         <span className="cand-top">
                           {sort === 'score' && <span className="cand-rank tabular">{i + 1}</span>}
                           <span className="row-name" title={c.name || undefined}>{c.name ? shortName(c.name) : 'Uncatalogued object'}</span>
                           <span className="badge">{classLabel(c.classification)}</span>
                         </span>
-                        <span className="row-sub">{describe(c)}</span>
+                        <span className="row-sub">{candidateLine(c)}</span>
                         <span className="cand-meta">
                           patch {c.ipix.toLocaleString('en-US')} · found {foundDate(c.found)}
                         </span>
