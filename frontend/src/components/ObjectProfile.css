@@ -23,6 +23,10 @@
 .pf-discs { display: block; max-width: 100%; height: auto; margin-bottom: 8px; overflow: visible; }
 .pf-discs text { font-family: var(--mono); font-size: 9.5px; fill: var(--dim); }
 .pf-disc-ref circle { fill: color-mix(in srgb, var(--fg) 8%, transparent); stroke: var(--dim); stroke-width: 1; }
+/* Reference bodies get a faint tint of their real colour, so they read at a glance. */
+.pf-ref-sun circle { fill: color-mix(in srgb, #ffd27a 22%, transparent); stroke: color-mix(in srgb, #ffd27a 70%, var(--dim)); }
+.pf-ref-jupiter circle { fill: color-mix(in srgb, #d9a46c 22%, transparent); stroke: color-mix(in srgb, #d9a46c 70%, var(--dim)); }
+.pf-ref-earth circle { fill: color-mix(in srgb, #5fa8ff 25%, transparent); stroke: color-mix(in srgb, #5fa8ff 70%, var(--dim)); }
 .pf-disc-self circle { fill: var(--measured); }
 .pf-disc-self text { fill: var(--fg); }
 

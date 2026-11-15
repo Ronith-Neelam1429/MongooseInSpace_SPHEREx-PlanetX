@@ -25,7 +25,7 @@ function SizeDiscs({ discs, color }) {
       {discs.discs.map((d, i) => {
         const cx = lefts[i] + slot(d) / 2;
         return (
-          <g key={d.label} className={d.self ? 'pf-disc-self' : 'pf-disc-ref'}>
+          <g key={d.label} className={d.self ? 'pf-disc-self' : `pf-disc-ref pf-ref-${d.label.toLowerCase()}`}>
             <circle cx={cx} cy={base - d.px} r={d.px} style={d.self && color ? { fill: color } : undefined} />
             <text x={cx} y={H - 2} textAnchor="middle">{d.label}</text>
           </g>
