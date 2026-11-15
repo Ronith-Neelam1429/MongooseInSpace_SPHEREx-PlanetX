@@ -5,14 +5,27 @@ motions and fluxes, so the engine's answers can be checked precisely.
 """
 from __future__ import annotations
 
+import io
+
 import astropy.units as u
 import numpy as np
 import pytest
 from astropy.coordinates import SkyCoord
+from astropy.io import fits
 from astropy.wcs import WCS
 from scipy.special import erf
+from synthetic import SHAPE, SIP_A00, make_mef, wavelength_at_raw_pixel
 
-from planetx.engine import Frame, detect_sources, find_motion, group_into_passes
+from planetx.engine import (
+    Frame,
+    PassSource,
+    detect_sources,
+    find_motion,
+    fit_motion,
+    frame_from_hdul,
+    group_into_passes,
+)
+from planetx.engine.motion import SkyPlane
 
 PIX = 6.15  # arcsec / px, as SPHEREx
 FWHM = 9.0  # arcsec, as SPHEREx PSF_FWHM
@@ -164,6 +177,38 @@ def test_a_sample_of_each_window_is_grouped_like_the_full_list():
 def test_window_without_frames_is_not_a_pass():
     # 135 days with no gap over 60: three 45-day windows, the middle one empty.
     assert group_into_passes([0.0, 5.0, 40.0, 95.0, 130.0, 135.0], 60.0) == [[0, 1, 2], [3, 4, 5]]
+
+
+def test_sky_plane_agrees_with_astropy_offsets():
+    # The engine's own offset maths replaced astropy's (for speed); it must
+    # give the same answers, also across RA 0/360 and close to a pole.
+    rng = np.random.default_rng(13)
+    for centre in [(150.0, 20.0), (359.9999, -30.0), (0.0001, 45.0), (270.0, 89.5)]:
+        sky, plane = SkyCoord(*centre, unit="deg"), SkyPlane(*centre)
+        east, north = rng.uniform(-300, 300, (2, 50))
+        there = sky.spherical_offsets_by(east * u.arcsec, north * u.arcsec)
+        ra, dec = plane.sky(east, north)
+        assert ((ra >= 0) & (ra < 360)).all()
+        assert SkyCoord(ra, dec, unit="deg").separation(there).arcsec.max() < 1e-6
+        back_east, back_north = plane.offsets(there.ra.deg, there.dec.deg)
+        np.testing.assert_allclose(back_east, east, atol=1e-6)
+        np.testing.assert_allclose(back_north, north, atol=1e-6)
+
+
+def test_fit_motion_takes_a_skycoord_centre():
+    # 10"/yr due north, one position a year: callers outside the engine pass a SkyCoord.
+    sources = []
+    for k in range(3):
+        c = CENTER.spherical_offsets_by(5 * u.arcsec, (-20 + 10 * k) * u.arcsec)
+        sources.append(PassSource(
+            pass_index=k, ra=c.ra.deg, dec=c.dec.deg, sigma_arcsec=0.3, mjd=61000 + 365.25 * k,
+            n_det=5, n_cover=5, snr=50.0, flux_by_detector={},
+        ))
+    ra, dec, ref_mjd, pm_east, pm_north, pm_err, chi2_dof = fit_motion(sources, CENTER)
+    assert pm_east == pytest.approx(0.0, abs=1e-6) and pm_north == pytest.approx(10.0, abs=1e-6)
+    assert ref_mjd == pytest.approx(61000 + 365.25) and chi2_dof == pytest.approx(0.0, abs=1e-9)
+    middle = SkyCoord(sources[1].ra, sources[1].dec, unit="deg")
+    assert SkyCoord(ra, dec, unit="deg").separation(middle).arcsec < 1e-6
 
 
 def test_detects_star_at_subpixel_position():
@@ -333,3 +378,74 @@ def test_frame_without_usable_pixels_is_skipped_not_fatal():
     r = find_motion(frames)
     assert any("skipped 1 frames" in n for n in r.notes)
     assert len(r.movers) == 1
+
+
+def test_frame_wavelength_ignores_celestial_sip_terms():
+    # The WCS-WAVE table is indexed by raw pixels; the synthetic header's SIP
+    # A_0_0 = 3 px would shift the lookup by 0.003 um if it were applied.
+    hdul = fits.open(io.BytesIO(make_mef(150.0, 20.0)))
+    frame = frame_from_hdul(hdul)
+    centre_x = (SHAPE[1] - 1) / 2
+    assert frame.wavelength_um == pytest.approx(wavelength_at_raw_pixel(centre_x), abs=1e-5)
+    assert frame.wavelength_um != pytest.approx(wavelength_at_raw_pixel(centre_x + SIP_A00), abs=1e-3)
+
+
+def _outcome(r):
+    """Everything a caller reads from a result, frame order aside."""
+    objects = [
+        (o.link, o.ra, o.dec, o.pm_ra_cosdec, o.pm_dec, o.pm_err, o.is_mover, o.is_variable,
+         o.missing_passes, [(s.pass_index, s.ra, s.dec, s.mjd) for s in o.sources])
+        for o in r.objects
+    ]
+    passes = [[r.frames[i].mjd for i in ids] for ids in r.passes]
+    unlinked = [(s.pass_index, s.ra, s.dec) for s in r.unlinked]
+    return objects, passes, unlinked, r.pm_floor_arcsec_yr, r.notes
+
+
+@pytest.mark.parametrize("stack", [False, True])
+def test_result_does_not_depend_on_frame_order(stack):
+    rng = np.random.default_rng(14)
+
+    def brightening(mjd):
+        return 600.0 if mjd < PASS_MJDS[1] - 30 else 1200.0
+
+    stars = field_stars(rng) + [(0.0, -10.0, -1.0, 10.0, 1500.0), (-40.0, 25.0, 0.0, 0.0, brightening)]
+    frames = survey(stars, rng)
+    # Same time and detector, no obs_id: only their content tells them apart.
+    frames.append(make_frame(stars, frames[0].mjd, WAVES[1], rng, rot_deg=77.0))
+    expected = _outcome(find_motion(frames, stack=stack))
+    assert expected[0], "the scenario must produce tracked objects"
+    for seed in range(3):
+        shuffled = list(frames)
+        np.random.default_rng(seed).shuffle(shuffled)
+        assert _outcome(find_motion(shuffled, stack=stack)) == expected
+
+
+def test_variable_seen_across_visits_cut_into_time_windows():
+    # Visits of ~80 days (as at R Dra, Dec +67) are cut into 40-day windows,
+    # each holding only half of a visit's wavelengths. Brightness must still
+    # be compared visit against visit, with all their same-wavelength pairs.
+    rng = np.random.default_rng(15)
+    starts = [60900.0, 61080.0, 61265.0]
+
+    def brightening(mjd):
+        return 600.0 if mjd < starts[2] - 30 else 1200.0
+
+    stars = field_stars(rng)
+    spot = clear_spot(stars)
+    stars.append((*spot, 0.0, 0.0, brightening))
+    frames = [
+        make_frame(
+            stars, m0 + 11 * k, WAVES[k], rng,
+            rot_deg=rng.uniform(0, 360), wcs_error=tuple(rng.normal(0, 0.7, 2)),
+        )
+        for m0 in starts
+        for k in range(8)
+    ]
+    r = find_motion(frames)
+    assert len(r.passes) == 6  # each visit is two windows
+    v = nearest(r, *spot)
+    assert v.is_variable and not v.is_mover
+    assert v.variability["ratio"] == pytest.approx(2.0, rel=0.15)
+    assert v.variability["n_pairs"] >= 8
+    assert [o for o in r.variables] == [v]

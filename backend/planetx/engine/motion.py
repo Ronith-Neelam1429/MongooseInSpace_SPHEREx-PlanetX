@@ -23,13 +23,16 @@ Intra-pass motion (fast asteroids moving within one visit) is not handled yet.
 """
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import math
 from dataclasses import dataclass, field
 
 import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
-from scipy.stats import chi2 as chi2_dist
+from scipy.spatial import cKDTree
+from scipy.special import chdtrc
 
 from .detect import Detection, detect_sources, frame_background
 from .frames import Frame
@@ -50,6 +53,10 @@ PASS_FLOOR_ARCSEC = 0.3
 # Saturated patch this large marks a very bright star (R Dra: ~90-100 px).
 BRIGHT_SAT_AREA_PX = 50
 BRIGHT_CAUTION_ARCSEC = 150.0
+_ARCSEC_PER_RAD = float(u.rad.to(u.arcsec))
+# Neighbour searches ask the k-d tree for slightly more than the radius and then
+# apply the exact test, so the tree's own rounding never decides a borderline case.
+_TREE_MARGIN = 1 + 1e-9
 
 
 @dataclass
@@ -107,7 +114,7 @@ class TrackedObject:
 
 @dataclass
 class EngineResult:
-    frames: list[Frame]  # frames analysed: the inputs, or one stack per pass
+    frames: list[Frame]  # frames analysed: the usable inputs in time order, or one stack per pass
     passes: list[list[int]]  # indices into `frames` per pass, time-ordered
     detections: list[list[Detection]]  # per frame, after alignment
     frame_offsets_arcsec: list[tuple[float, float]]  # (east, north) shift applied
@@ -167,38 +174,66 @@ def group_into_passes(
     return passes
 
 
-def _offsets(center: SkyCoord, ra, dec) -> tuple[np.ndarray, np.ndarray]:
-    """Tangent-plane offsets (east, north) in arcsec from `center`."""
-    dra, ddec = center.spherical_offsets_to(SkyCoord(ra * u.deg, dec * u.deg))
-    return np.atleast_1d(dra.to_value(u.arcsec)), np.atleast_1d(ddec.to_value(u.arcsec))
+class SkyPlane:
+    """Offsets (east, north) in arcsec from a centre on the sky, and back.
+
+    The rotation behind astropy's `SkyCoord.spherical_offsets_to` and
+    `spherical_offsets_by`, in plain numpy (equal to 1e-9 arcsec): building
+    coordinate objects for every call used to take most of the engine's time.
+    """
+
+    def __init__(self, ra_deg: float, dec_deg: float):
+        a, d = np.radians(ra_deg), np.radians(dec_deg)
+        # Rows: unit vectors towards the centre, east of it and north of it.
+        self._rotation = np.array([
+            [np.cos(d) * np.cos(a), np.cos(d) * np.sin(a), np.sin(d)],
+            [-np.sin(a), np.cos(a), 0.0],
+            [-np.sin(d) * np.cos(a), -np.sin(d) * np.sin(a), np.cos(d)],
+        ])
+
+    def offsets(self, ra, dec) -> tuple[np.ndarray, np.ndarray]:
+        """(east, north) in arcsec of positions given in degrees."""
+        x, y, z = self._rotation @ _unit_vectors(np.radians(ra), np.radians(dec))
+        return np.arctan2(y, x) * _ARCSEC_PER_RAD, np.arctan2(z, np.hypot(x, y)) * _ARCSEC_PER_RAD
+
+    def sky(self, east, north) -> tuple[np.ndarray, np.ndarray]:
+        """(ra, dec) in degrees of offsets given in arcsec."""
+        x, y, z = self._rotation.T @ _unit_vectors(
+            np.asarray(east) / _ARCSEC_PER_RAD, np.asarray(north) / _ARCSEC_PER_RAD
+        )
+        return np.degrees(np.arctan2(y, x)) % 360.0, np.degrees(np.arctan2(z, np.hypot(x, y)))
 
 
-def _from_offsets(center: SkyCoord, east, north) -> tuple[float, float]:
-    c = center.spherical_offsets_by(east * u.arcsec, north * u.arcsec)
-    return float(c.ra.deg), float(c.dec.deg)
+def _unit_vectors(lon, lat) -> np.ndarray:
+    return np.array([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)])
 
 
-def _nearest(xs, ys, x, y) -> tuple[int, float]:
-    if len(xs) == 0:
-        return -1, np.inf
-    d = np.hypot(np.asarray(xs) - x, np.asarray(ys) - y)
-    i = int(np.argmin(d))
-    return i, float(d[i])
+def _plane(center: SkyCoord | SkyPlane) -> SkyPlane:
+    """The engine passes its `SkyPlane` around; other callers may give a SkyCoord."""
+    return center if isinstance(center, SkyPlane) else SkyPlane(center.ra.deg, center.dec.deg)
 
 
-def _covers(frame: Frame, ra: float, dec: float, margin_px: float = 2.0) -> bool:
-    x, y = frame.wcs.all_world2pix(ra, dec, 0)
+def _source_offsets(plane: SkyPlane, sources: list[PassSource]) -> tuple[np.ndarray, np.ndarray]:
+    return plane.offsets(np.array([s.ra for s in sources]), np.array([s.dec for s in sources]))
+
+
+def _covers(frame: Frame, ra, dec, margin_px: float = 2.0) -> np.ndarray:
+    """Whether the frame observed each position (degrees), as a boolean array."""
+    x, y = frame.wcs.all_world2pix(np.atleast_1d(ra), np.atleast_1d(dec), 0)
     ny, nx = frame.data.shape
-    if not (margin_px <= x <= nx - 1 - margin_px and margin_px <= y <= ny - 1 - margin_px):
-        return False
-    iy, ix = int(round(float(y))), int(round(float(x)))
-    # A saturated star's own pixels are NaN but the spot was observed.
-    return bool(np.isfinite(frame.data[iy, ix]) or (frame.saturated is not None and frame.saturated[iy, ix]))
+    inside = (margin_px <= x) & (x <= nx - 1 - margin_px) & (margin_px <= y) & (y <= ny - 1 - margin_px)
+    iy, ix = np.rint(y[inside]).astype(int), np.rint(x[inside]).astype(int)
+    seen = np.isfinite(frame.data[iy, ix])
+    if frame.saturated is not None:
+        seen |= frame.saturated[iy, ix]  # a saturated star's own pixels are NaN but the spot was observed
+    covered = np.zeros(x.shape, bool)
+    covered[inside] = seen
+    return covered
 
 
 def align_frames(
     detections: list[list[Detection]],
-    center: SkyCoord,
+    center: SkyCoord | SkyPlane,
     match_arcsec: float = 3.0,
     min_stars: int = 3,
 ) -> tuple[list[tuple[float, float]], list[str]]:
@@ -213,27 +248,27 @@ def align_frames(
     ref = detections[ref_i]
     if not ref:
         return [(0.0, 0.0)] * len(detections), ["no detections; frames not aligned"]
-    rx, ry = _offsets(center, np.array([d.ra for d in ref]), np.array([d.dec for d in ref]))
+    plane = _plane(center)
+    rx, ry = plane.offsets(np.array([d.ra for d in ref]), np.array([d.dec for d in ref]))
+    ref_tree = cKDTree(np.column_stack([rx, ry]))
     shifts: list[tuple[float, float]] = []
     for i, dets in enumerate(detections):
         if i == ref_i or not dets:
             shifts.append((0.0, 0.0))
             continue
-        fx, fy = _offsets(center, np.array([d.ra for d in dets]), np.array([d.dec for d in dets]))
-        dx, dy = [], []
-        for x, y in zip(fx, fy):
-            j, dist = _nearest(rx, ry, x, y)
-            if dist <= match_arcsec:
-                dx.append(rx[j] - x)
-                dy.append(ry[j] - y)
-        if len(dx) < min_stars:
+        fx, fy = plane.offsets(np.array([d.ra for d in dets]), np.array([d.dec for d in dets]))
+        _, j = ref_tree.query(np.column_stack([fx, fy]))  # nearest reference star
+        dx, dy = rx[j] - fx, ry[j] - fy
+        matched = np.hypot(dx, dy) <= match_arcsec
+        if matched.sum() < min_stars:
             unaligned += 1
             shifts.append((0.0, 0.0))
             continue
-        sx, sy = float(np.median(dx)), float(np.median(dy))
+        sx, sy = float(np.median(dx[matched])), float(np.median(dy[matched]))
         shifts.append((sx, sy))
-        for d, x, y in zip(dets, fx, fy):
-            d.ra, d.dec = _from_offsets(center, x + sx, y + sy)
+        ra, dec = plane.sky(fx + sx, fy + sy)
+        for d, a, b in zip(dets, ra, dec):
+            d.ra, d.dec = float(a), float(b)
     if unaligned:
         notes.append(
             f"{unaligned} of {len(detections)} frames had fewer than {min_stars} stars "
@@ -242,12 +277,40 @@ def align_frames(
     return shifts, notes
 
 
+def _cluster(xs: np.ndarray, ys: np.ndarray, frame_of: list[int], link_arcsec: float) -> list[list[int]]:
+    """Group one pass's detections (given brightest first) into objects.
+
+    Each detection joins the nearest cluster seed within `link_arcsec`, unless
+    that cluster already holds a detection from the same frame; otherwise it
+    seeds a new cluster.
+    """
+    xy = np.column_stack([xs, ys])
+    nearby = cKDTree(xy).query_ball_point(xy, link_arcsec * _TREE_MARGIN)
+    cluster_of_seed: dict[int, int] = {}
+    clusters: list[list[int]] = []
+    frames_in: list[set[int]] = []
+    for k in range(len(xs)):
+        seeds = sorted(j for j in nearby[k] if j in cluster_of_seed)  # oldest cluster first, as ties go to it
+        if seeds:
+            dist = np.hypot(xs[seeds] - xs[k], ys[seeds] - ys[k])
+            nearest = int(np.argmin(dist))
+            c = cluster_of_seed[seeds[nearest]]
+            if dist[nearest] <= link_arcsec and frame_of[k] not in frames_in[c]:
+                clusters[c].append(k)
+                frames_in[c].add(frame_of[k])
+                continue
+        cluster_of_seed[k] = len(clusters)
+        clusters.append([k])
+        frames_in.append({frame_of[k]})
+    return clusters
+
+
 def _merge_pass(
     pass_index: int,
     frame_ids: list[int],
     frames: list[Frame],
     detections: list[list[Detection]],
-    center: SkyCoord,
+    plane: SkyPlane,
     link_arcsec: float,
     min_detect_frac: float,
 ) -> list[PassSource]:
@@ -256,25 +319,22 @@ def _merge_pass(
     dets.sort(key=lambda d: -d.snr)  # brightest seed clusters first
     if not dets:
         return []
-    xs, ys = _offsets(center, np.array([d.ra for d in dets]), np.array([d.dec for d in dets]))
-    clusters: list[list[int]] = []
-    cx: list[float] = []
-    cy: list[float] = []
-    for k, d in enumerate(dets):
-        j, dist = _nearest(cx, cy, xs[k], ys[k])
-        if dist <= link_arcsec and all(dets[m].frame_index != d.frame_index for m in clusters[j]):
-            clusters[j].append(k)
-        else:
-            clusters.append([k])
-            cx.append(xs[k])
-            cy.append(ys[k])
+    xs, ys = plane.offsets(np.array([d.ra for d in dets]), np.array([d.dec for d in dets]))
+    clusters = _cluster(xs, ys, [d.frame_index for d in dets], link_arcsec)
+
+    centres = np.empty((len(clusters), 2))
+    weights = []
+    for c, members in enumerate(clusters):
+        w = 1 / np.array([dets[m].sigma_arcsec for m in members]) ** 2
+        centres[c] = (w * xs[members]).sum() / w.sum(), (w * ys[members]).sum() / w.sum()
+        weights.append(w)
+    ras, decs = plane.sky(centres[:, 0], centres[:, 1])
+    covered = np.array([_covers(frames[fi], ras, decs) for fi in frame_ids])  # [frame, cluster]
 
     out: list[PassSource] = []
-    for members in clusters:
+    for c, members in enumerate(clusters):
         mx, my = xs[members], ys[members]
-        sig = np.array([dets[m].sigma_arcsec for m in members])
-        w = 1 / sig**2
-        ex, ey = float((w * mx).sum() / w.sum()), float((w * my).sum() / w.sum())
+        w = weights[c]
         formal = float(1 / np.sqrt(w.sum()))
         n = len(members)
         scatter = float(np.hypot(mx.std(), my.std()) / np.sqrt(2 * n)) if n > 2 else 0.0
@@ -284,8 +344,8 @@ def _merge_pass(
         if any(dets[m].saturated for m in members):
             # Saturated-patch centres share a bias that averaging can't remove.
             sigma = max(sigma, SATURATED_PASS_FLOOR_PX * frames[frame_ids[0]].pixel_scale_arcsec)
-        ra, dec = _from_offsets(center, ex, ey)
-        covering = [fi for fi in frame_ids if _covers(frames[fi], ra, dec)]
+        ra, dec = float(ras[c]), float(decs[c])
+        covering = [fi for fi, seen in zip(frame_ids, covered[:, c]) if seen]
         n_cover = len(covering)
         # A stacked pass is a single frame, so one detection is all there is.
         if n < (2 if len(frame_ids) > 1 else 1):
@@ -337,36 +397,48 @@ def _merge_pass(
     return out
 
 
+def _fit_line(x, y, t, sig):
+    """Weighted straight-line fit of offsets (arcsec) against time (years).
+
+    Works along the last axis, so the rows of 2-D arrays are separate tracks.
+    Returns (tbar, (x0, pm_x), (y0, pm_y), sxx, chi2), with x0/y0 at time tbar.
+    """
+    w = 1 / sig**2
+    wsum = w.sum(-1)
+    tbar = (w * t).sum(-1) / wsum
+    dt = t - tbar[..., None]
+    sxx = (w * dt**2).sum(-1)
+    if np.any(sxx <= 0):
+        raise ValueError("motion fit needs observations at two or more epochs")
+    axes = []
+    chi2 = 0.0
+    for v in (x, y):
+        vbar = (w * v).sum(-1) / wsum
+        slope = (w * dt * (v - vbar[..., None])).sum(-1) / sxx
+        chi2 = chi2 + (w * (v - vbar[..., None] - slope[..., None] * dt) ** 2).sum(-1)
+        axes.append((vbar, slope))
+    return tbar, axes[0], axes[1], sxx, chi2
+
+
 def fit_motion(
-    sources: list[PassSource], center: SkyCoord, floor_arcsec: float = 0.0
+    sources: list[PassSource], center: SkyCoord | SkyPlane, floor_arcsec: float = 0.0
 ) -> tuple[float, float, float, float, float, float, float]:
     """Weighted linear fit of position vs time.
 
     Returns (ra, dec, ref_mjd, pm_east, pm_north, pm_err, chi2_dof); pm in arcsec/yr.
     `floor_arcsec` is added in quadrature to every position error.
     """
-    ra = np.array([s.ra for s in sources])
-    dec = np.array([s.dec for s in sources])
+    plane = _plane(center)
     t = np.array([s.mjd for s in sources]) / DAYS_PER_YEAR
     sig = np.sqrt(np.array([s.sigma_arcsec for s in sources]) ** 2 + floor_arcsec**2)
-    x, y = _offsets(center, ra, dec)
-    w = 1 / sig**2
-    tbar = float((w * t).sum() / w.sum())
-    dt = t - tbar
-    sxx = float((w * dt**2).sum())
-    if sxx <= 0:
-        raise ValueError("motion fit needs observations at two or more epochs")
-    fits_ = []
-    chi2 = 0.0
-    for v in (x, y):
-        vbar = float((w * v).sum() / w.sum())
-        slope = float((w * dt * (v - vbar)).sum() / sxx)
-        chi2 += float((w * (v - vbar - slope * dt) ** 2).sum())
-        fits_.append((vbar, slope))
+    x, y = _source_offsets(plane, sources)
+    tbar, (x0, pmx), (y0, pmy), sxx, chi2 = _fit_line(x, y, t, sig)
     dof = 2 * (len(sources) - 2)
-    (x0, pmx), (y0, pmy) = fits_
-    ra0, dec0 = _from_offsets(center, x0, y0)
-    return ra0, dec0, tbar * DAYS_PER_YEAR, pmx, pmy, 1 / np.sqrt(sxx), chi2 / dof if dof > 0 else float("nan")
+    ra0, dec0 = plane.sky(x0, y0)
+    return (
+        float(ra0), float(dec0), float(tbar) * DAYS_PER_YEAR, float(pmx), float(pmy),
+        float(1 / np.sqrt(sxx)), float(chi2) / dof if dof > 0 else float("nan"),
+    )
 
 
 def parallax_factors(ra_deg: float, dec_deg: float, mjds) -> tuple[np.ndarray, np.ndarray]:
@@ -386,7 +458,7 @@ def parallax_factors(ra_deg: float, dec_deg: float, mjds) -> tuple[np.ndarray, n
     return -(east @ pos), -(north @ pos)
 
 
-def fit_astrometry(sources: list[PassSource], center: SkyCoord, parallax: bool) -> dict:
+def fit_astrometry(sources: list[PassSource], center: SkyCoord | SkyPlane, parallax: bool) -> dict:
     """Weighted least-squares fit of position, proper motion and optionally parallax.
 
     Parameters x0, y0 (arcsec offsets at the weighted mean epoch), pm_east,
@@ -396,7 +468,8 @@ def fit_astrometry(sources: list[PassSource], center: SkyCoord, parallax: bool) 
     dec = np.array([s.dec for s in sources])
     mjd = np.array([s.mjd for s in sources])
     sig = np.array([s.sigma_arcsec for s in sources])
-    x, y = _offsets(center, ra, dec)
+    plane = _plane(center)
+    x, y = plane.offsets(ra, dec)
     w = 1 / sig**2
     t = mjd / DAYS_PER_YEAR
     tbar = float((w * t).sum() / w.sum())
@@ -423,10 +496,10 @@ def fit_astrometry(sources: list[PassSource], center: SkyCoord, parallax: bool) 
     p = cov @ (Aw.T @ bw)
     chi2 = float(((bw - Aw @ p) ** 2).sum())
     dof = 2 * n - k
-    ra0, dec0 = _from_offsets(center, p[0], p[1])
+    ra0, dec0 = plane.sky(p[0], p[1])
     return {
-        "ra": ra0,
-        "dec": dec0,
+        "ra": float(ra0),
+        "dec": float(dec0),
         "ref_mjd": tbar * DAYS_PER_YEAR,
         "pm_east": float(p[2]),
         "pm_north": float(p[3]),
@@ -438,19 +511,27 @@ def fit_astrometry(sources: list[PassSource], center: SkyCoord, parallax: bool) 
     }
 
 
-def _line_pvalue(sources: list[PassSource], center: SkyCoord) -> float:
+def _line_pvalues(x, y, t, sig) -> np.ndarray:
     """Probability that positions this far off a straight line arise by chance.
+
+    Arguments as for `_fit_line`; one p-value per track.
+    """
+    chi2 = _fit_line(x, y, t, sig)[4]
+    dof = 2 * (np.shape(x)[-1] - 2)
+    return chdtrc(dof, chi2) if dof > 0 else np.ones(np.shape(chi2))
+
+
+def _line_pvalue(sources: list[PassSource], plane: SkyPlane) -> float:
+    """`_line_pvalues` for one track of pass sources.
 
     Used to decide whether a pass's source continues a track. Parallax isn't
     modelled, so nearby objects (WISE 0855: 0.44") fit a line less well than
     their errors suggest; a p-value cut tolerates that better than a fixed
     reduced-chi2 cut, and adapts to how many passes there are.
     """
-    chi2_dof = fit_motion(sources, center)[6]
-    dof = 2 * (len(sources) - 2)
-    if dof <= 0:
-        return 1.0
-    return float(chi2_dist.sf(chi2_dof * dof, dof))
+    x, y = _source_offsets(plane, sources)
+    t = np.array([s.mjd for s in sources]) / DAYS_PER_YEAR
+    return float(_line_pvalues(x, y, t, np.array([s.sigma_arcsec for s in sources])))
 
 
 def _flux_compatible(a: PassSource, b: PassSource, max_ratio: float) -> bool:
@@ -490,6 +571,22 @@ def _flux_kinds(d: Detection) -> list[tuple[str, float, float]]:
     elif np.isfinite(d.flux) and d.flux > 0:
         out.append((f"D{d.detector}", d.flux, d.flux_err))
     return out
+
+
+def _brightness_epochs(sources: list[PassSource], epoch_of_pass: list[int]) -> list[PassSource]:
+    """A track's sources merged per brightness epoch (time-ordered input).
+
+    Each merged source keeps the first pass's fields (so its `pass_index`
+    names the epoch's first pass) and holds all the epoch's detections.
+    """
+    merged: dict[int, PassSource] = {}
+    for s in sources:
+        e = epoch_of_pass[s.pass_index]
+        if e in merged:
+            merged[e] = dataclasses.replace(merged[e], detections=merged[e].detections + s.detections)
+        else:
+            merged[e] = s
+    return list(merged.values())
 
 
 def _variability(
@@ -550,7 +647,7 @@ def _variability(
 def _grow(
     groups: list[list[PassSource]],
     leftovers: list[PassSource],
-    center: SkyCoord,
+    plane: SkyPlane,
     max_pm_arcsec_yr: float,
     max_flux_ratio: float,
     chain_pvalue: float,
@@ -561,39 +658,48 @@ def _grow(
     its shift between two passes fell inside the static radius but not the
     third). Mutates `groups`; returns the sources still unattached.
     """
-    remaining = list(leftovers)
+    if not leftovers:
+        return []
+    lx, ly = _source_offsets(plane, leftovers)
+    tree = cKDTree(np.column_stack([lx, ly]))
+    mjds = [s.mjd for s in leftovers]
+    first, last = min(mjds), max(mjds)
+    widest = 3 * max(s.sigma_arcsec for s in leftovers)
+    free = [True] * len(leftovers)
     changed = True
-    while changed and remaining:
+    while changed and any(free):
         changed = False
         for g in groups:
             have = {s.pass_index for s in g}
             best, best_p = None, chain_pvalue
-            ox, oy = _offsets(center, np.array([s.ra for s in g]), np.array([s.dec for s in g]))
-            gx, gy = np.array([ox.mean()]), np.array([oy.mean()])  # tangent plane: safe at RA 0/360
+            ox, oy = _source_offsets(plane, g)
+            gx, gy = ox.mean(), oy.mean()  # offsets, not RA/Dec: safe at RA 0/360
             gmjd = float(np.mean([s.mjd for s in g]))
-            for s in remaining:
-                if s.pass_index in have:
+            # No leftover can be reached from farther away than this.
+            bound = max_pm_arcsec_yr * max(last - gmjd, gmjd - first) / DAYS_PER_YEAR + widest
+            for k in sorted(tree.query_ball_point([gx, gy], bound * _TREE_MARGIN)):
+                s = leftovers[k]
+                if not free[k] or s.pass_index in have:
                     continue
-                sx, sy = _offsets(center, s.ra, s.dec)
                 reach = max_pm_arcsec_yr * abs(s.mjd - gmjd) / DAYS_PER_YEAR + 3 * s.sigma_arcsec
-                if np.hypot(sx[0] - gx[0], sy[0] - gy[0]) > reach:
+                if np.hypot(lx[k] - gx, ly[k] - gy) > reach:
                     continue
                 if not all(_flux_compatible(s, o, max_flux_ratio) for o in g):
                     continue
-                p = _line_pvalue(g + [s], center)
+                p = _line_pvalue(g + [s], plane)
                 if p >= best_p:
-                    best, best_p = s, p
+                    best, best_p = k, p
             if best is not None:
-                g.append(best)
-                remaining.remove(best)
+                g.append(leftovers[best])
+                free[best] = False
                 changed = True
-    return remaining
+    return [s for s, is_free in zip(leftovers, free) if is_free]
 
 
 def _merge_tracks(
     static: list[list[PassSource]],
     movers: list[list[PassSource]],
-    center: SkyCoord,
+    plane: SkyPlane,
     max_pm_arcsec_yr: float,
     max_flux_ratio: float,
     pvalue: float,
@@ -603,25 +709,39 @@ def _merge_tracks(
     Returns (static groups, mover groups); merged tracks count as movers.
     """
     tracks = [(g, False) for g in static] + [(g, True) for g in movers]
+    sources = [s for g, _ in tracks for s in g]
+    if not sources:
+        return [], []
+    xy = dict(zip(map(id, sources), zip(*_source_offsets(plane, sources))))
+    every_pass = 0
+    for s in sources:
+        every_pass |= 1 << s.pass_index
     while True:
+        # A track seen in every pass shares a pass with any other track, so only
+        # the rest can merge: in an ordinary field that leaves a handful.
+        partial = []
+        for i, (g, _) in enumerate(tracks):
+            seen = 0
+            for s in g:
+                seen |= 1 << s.pass_index
+            if seen != every_pass:
+                ends = min(g, key=lambda s: s.mjd), max(g, key=lambda s: s.mjd)
+                partial.append((i, seen, ends))
         best = None
-        for i in range(len(tracks)):
-            gi = tracks[i][0]
-            pi = {s.pass_index for s in gi}
-            for j in range(i + 1, len(tracks)):
-                gj = tracks[j][0]
-                if pi & {s.pass_index for s in gj}:
+        for n, (i, seen_i, (first_i, last_i)) in enumerate(partial):
+            for j, seen_j, (first_j, last_j) in partial[n + 1:]:
+                if seen_i & seen_j:
                     continue
-                a = min(gi + gj, key=lambda s: s.mjd)
-                b = max(gi + gj, key=lambda s: s.mjd)
-                ax, ay = _offsets(center, a.ra, a.dec)
-                bx, by = _offsets(center, b.ra, b.dec)
+                a = first_j if first_j.mjd < first_i.mjd else first_i
+                b = last_j if last_j.mjd > last_i.mjd else last_i
+                (ax, ay), (bx, by) = xy[id(a)], xy[id(b)]
                 reach = max_pm_arcsec_yr * (b.mjd - a.mjd) / DAYS_PER_YEAR + 3 * np.hypot(a.sigma_arcsec, b.sigma_arcsec)
-                if np.hypot(bx[0] - ax[0], by[0] - ay[0]) > reach:
+                if np.hypot(bx - ax, by - ay) > reach:
                     continue
+                gi, gj = tracks[i][0], tracks[j][0]
                 if not all(_flux_compatible(x, y, max_flux_ratio) for x in gi for y in gj):
                     continue
-                p = _line_pvalue(gi + gj, center)
+                p = _line_pvalue(gi + gj, plane)
                 if p >= pvalue and (best is None or p > best[0]):
                     best = (p, i, j)
         if best is None:
@@ -636,7 +756,7 @@ def _missing_passes(
     obj: TrackedObject,
     frames: list[Frame],
     passes: list[list[int]],
-    center: SkyCoord,
+    plane: SkyPlane,
     nsigma: float,
 ) -> list[int]:
     """Passes that covered the object's predicted position but didn't see it.
@@ -648,20 +768,20 @@ def _missing_passes(
         return []
     have = {s.pass_index for s in obj.sources}
     missing = []
-    x0, y0 = _offsets(center, obj.ra, obj.dec)
+    x0, y0 = plane.offsets(obj.ra, obj.dec)
     for pi, ids in enumerate(passes):
         if pi in have:
             continue
         mjd = float(np.mean([frames[i].mjd for i in ids]))
         dt = (mjd - obj.ref_mjd) / DAYS_PER_YEAR
-        ra, dec = _from_offsets(center, x0[0] + obj.pm_ra_cosdec * dt, y0[0] + obj.pm_dec * dt)
-        covering = sum(_covers(frames[i], ra, dec) for i in ids)
+        ra, dec = plane.sky(x0 + obj.pm_ra_cosdec * dt, y0 + obj.pm_dec * dt)
+        covering = sum(bool(_covers(frames[i], ra, dec)[0]) for i in ids)
         if covering >= max(1, 0.5 * len(ids)):
             missing.append(pi)
     return missing
 
 
-def _caution_near_bright(objects: list[TrackedObject], center: SkyCoord) -> None:
+def _caution_near_bright(objects: list[TrackedObject], plane: SkyPlane) -> None:
     """Annotate variables close to very bright (heavily saturated) stars.
 
     Such stars' scattered light and ghosts change with telescope orientation
@@ -677,15 +797,143 @@ def _caution_near_bright(objects: list[TrackedObject], center: SkyCoord) -> None
     for o in objects:
         if not o.is_variable or o in bright:
             continue
-        ox, oy = _offsets(center, o.ra, o.dec)
+        ox, oy = plane.offsets(o.ra, o.dec)
         for b in bright:
-            bx, by = _offsets(center, b.ra, b.dec)
-            sep = float(np.hypot(ox[0] - bx[0], oy[0] - by[0]))
+            bx, by = plane.offsets(b.ra, b.dec)
+            sep = float(np.hypot(ox - bx, oy - by))
             if sep <= BRIGHT_CAUTION_ARCSEC:
                 o.variability["caution"] = (
                     f"{sep:.0f}\" from a very bright star; its scattered light may cause this"
                 )
                 break
+
+
+def _link_static(
+    per_pass: list[list[PassSource]], plane: SkyPlane, static_arcsec: float
+) -> list[list[PassSource]]:
+    """Link each pass's sources to the objects earlier passes found at the same spot.
+
+    Brightest first, a source joins the nearest object no other source of its
+    pass has taken, if that lies within its radius; otherwise it starts a new
+    object. An object's position stays that of its first source.
+    """
+    groups: list[list[PassSource]] = []
+    anchors: list[tuple[float, float]] = []
+    for srcs in per_pass:
+        if not srcs:
+            continue
+        srcs = sorted(srcs, key=lambda s: -s.snr)
+        x, y = _source_offsets(plane, srcs)
+        radius = np.array([max(static_arcsec, 3 * s.sigma_arcsec) for s in srcs])
+        known = np.array(anchors).reshape(-1, 2)  # objects of earlier passes
+        if len(known):
+            nearby = cKDTree(known).query_ball_point(np.column_stack([x, y]), radius * _TREE_MARGIN)
+        else:
+            nearby = [[] for _ in srcs]
+        claimed: set[int] = set()
+        for k, s in enumerate(srcs):
+            free = sorted(g for g in nearby[k] if g not in claimed)  # oldest object first, as ties go to it
+            if free:
+                dist = np.hypot(known[free, 0] - x[k], known[free, 1] - y[k])
+                nearest = int(np.argmin(dist))
+                if dist[nearest] <= radius[k]:
+                    groups[free[nearest]].append(s)
+                    claimed.add(free[nearest])
+                    continue
+            groups.append([s])
+            anchors.append((float(x[k]), float(y[k])))
+    return groups
+
+
+def _covered_elsewhere(
+    sources: list[PassSource], frames: list[Frame], passes: list[list[int]]
+) -> np.ndarray:
+    """Whether a pass other than its own observed each source's position."""
+    if not sources:
+        return np.zeros(0, bool)
+    ra, dec = np.array([s.ra for s in sources]), np.array([s.dec for s in sources])
+    covered = np.array(
+        [np.any([_covers(frames[fi], ra, dec) for fi in ids], axis=0) for ids in passes]
+    )  # [pass, source]
+    covered[[s.pass_index for s in sources], np.arange(len(sources))] = False
+    return covered.any(axis=0)
+
+
+def _link_movers(
+    pool: list[PassSource],
+    n_passes: int,
+    plane: SkyPlane,
+    max_pm_arcsec_yr: float,
+    max_flux_ratio: float,
+    chain_pvalue: float,
+) -> tuple[list[list[PassSource]], list[PassSource]]:
+    """Chain single-pass sources that lie on one straight track.
+
+    Returns (chains, the sources left over).
+    """
+    if not pool:
+        return [], []
+    px, py = _source_offsets(plane, pool)
+    pt = np.array([s.mjd for s in pool]) / DAYS_PER_YEAR
+    psig = np.array([s.sigma_arcsec for s in pool])
+    ppass = np.array([s.pass_index for s in pool])
+    in_pass = [np.nonzero(ppass == pk)[0] for pk in range(n_passes)]
+    # A pair is never linked across more than the fastest motion over the
+    # whole time span plus both position errors: look no farther than that.
+    reach = max_pm_arcsec_yr * (pt.max() - pt.min()) + 3 * np.hypot(psig, psig.max())
+    xy = np.column_stack([px, py])
+    nearby = cKDTree(xy).query_ball_point(xy, reach * _TREE_MARGIN)
+    candidates: list[tuple[int, float, list[int]]] = []
+    for i, a in enumerate(pool):
+        for j in sorted(nearby[i]):
+            b = pool[j]
+            if b.pass_index <= a.pass_index:
+                continue
+            dt_yr = (b.mjd - a.mjd) / DAYS_PER_YEAR
+            sep = float(np.hypot(px[j] - px[i], py[j] - py[i]))
+            if sep > max_pm_arcsec_yr * dt_yr + 3 * np.hypot(a.sigma_arcsec, b.sigma_arcsec):
+                continue
+            if not _flux_compatible(a, b, max_flux_ratio):
+                continue
+            chain = [i, j]
+            # Extend pass by pass with the best-fitting source in each later
+            # pass (not the first acceptable one, which could be a decoy).
+            for pk in range(b.pass_index + 1, n_passes):
+                cand = in_pass[pk]
+                if not len(cand):
+                    continue
+                # One row per candidate: the chain so far, then the candidate.
+                rows = np.column_stack([np.tile(chain, (len(cand), 1)), cand])
+                pvalues = _line_pvalues(px[rows], py[rows], pt[rows], psig[rows])
+                best_k, best_p = None, chain_pvalue
+                last = pool[chain[-1]]
+                for n in np.nonzero(pvalues >= chain_pvalue)[0]:
+                    k = int(cand[n])
+                    if pvalues[n] >= best_p and _flux_compatible(last, pool[k], max_flux_ratio):
+                        best_k, best_p = k, pvalues[n]
+                if best_k is not None:
+                    chain.append(best_k)
+            candidates.append((len(chain), sep, chain))
+    # Prefer longer chains, then shorter jumps (less chance of a chance pairing).
+    used: set[int] = set()
+    chains: list[list[PassSource]] = []
+    for _, _, chain in sorted(candidates, key=lambda c: (-c[0], c[1])):
+        if any(k in used for k in chain):
+            continue
+        used.update(chain)
+        chains.append([pool[k] for k in chain])
+    return chains, [s for k, s in enumerate(pool) if k not in used]
+
+
+def _frame_sort_key(f: Frame) -> tuple:
+    """A total order on frames: time, detector, id, then content.
+
+    The content digest only separates frames that agree on everything else
+    (e.g. no obs_id); identical frames may come in any order.
+    """
+    digest = hashlib.blake2b(np.ascontiguousarray(f.data).tobytes(), digest_size=16)
+    digest.update(f.wcs.to_header_string(relax=True).encode())
+    return (f.mjd, f.detector, f.obs_id, digest.digest())
 
 
 def find_motion(
@@ -713,10 +961,13 @@ def find_motion(
     """
     if not frames:
         raise ValueError("no frames")
+    # The tangent-plane centre, the alignment reference and every tie-break
+    # below follow frame order, so fix one that doesn't depend on the caller.
+    frames = sorted(frames, key=_frame_sort_key)
     notes: list[str] = []
     ny, nx = frames[0].data.shape
     c_ra, c_dec = frames[0].wcs.all_pix2world((nx - 1) / 2, (ny - 1) / 2, 0)
-    center = SkyCoord(float(c_ra) * u.deg, float(c_dec) * u.deg)
+    plane = SkyPlane(float(c_ra), float(c_dec))
     pix = float(np.median([f.pixel_scale_arcsec for f in frames]))
 
     passes = group_into_passes([f.mjd for f in frames], pass_gap_days, pass_max_days)
@@ -734,12 +985,23 @@ def find_motion(
             raise ValueError("no frame has enough usable pixels")
         passes = group_into_passes([f.mjd for f in frames], pass_gap_days, pass_max_days)
     detections = [detect_sources(f, i, nsigma) for i, f in enumerate(frames)]
-    offsets, align_notes = align_frames(detections, center)
+    offsets, align_notes = align_frames(detections, plane)
     notes += align_notes
     input_frames, input_passes = frames, passes
+    # Brightness is compared between survey visits (runs split at gaps), not
+    # between the time windows a long visit is cut into: halving a visit
+    # halves the same-wavelength pairs each comparison gets (R Dra's ~85-day
+    # visits fell below `min_pairs`). Where there are no gaps (ecliptic
+    # poles), the windows are the only epochs there are.
+    visits = group_into_passes([f.mjd for f in frames], pass_gap_days, math.inf)
+    if len(visits) >= 2:
+        visit_of_frame = {i: v for v, ids in enumerate(visits) for i in ids}
+        epoch_of_pass = [visit_of_frame[ids[0]] for ids in input_passes]
+    else:
+        epoch_of_pass = list(range(len(input_passes)))
     if stack:
         n = int(round(max(frames[0].data.shape)))
-        grid = stack_grid(center, n, pix)
+        grid = stack_grid(SkyCoord(float(c_ra) * u.deg, float(c_dec) * u.deg), n, pix)
         frames = [
             stack_pass([input_frames[i] for i in ids], [offsets[i] for i in ids], grid, (n, n))
             for ids in input_passes
@@ -752,98 +1014,34 @@ def find_motion(
 
     link = 0.7 * pix  # within one pass a star sits still to well under a pixel
     per_pass = [
-        _merge_pass(pi, ids, frames, detections, center, link, min_detect_frac)
+        _merge_pass(pi, ids, frames, detections, plane, link, min_detect_frac)
         for pi, ids in enumerate(passes)
     ]
 
-    # --- static linking -------------------------------------------------------
-    groups: list[list[PassSource]] = []
-    gx: list[float] = []
-    gy: list[float] = []
-    for srcs in per_pass:
-        claimed: set[int] = set()
-        for s in sorted(srcs, key=lambda s: -s.snr):
-            x, y = _offsets(center, s.ra, s.dec)
-            radius = max(static_arcsec, 3 * s.sigma_arcsec)
-            best, best_d = -1, np.inf
-            for gi, (px, py) in enumerate(zip(gx, gy)):
-                if gi in claimed:
-                    continue
-                d = float(np.hypot(px - x[0], py - y[0]))
-                if d < best_d:
-                    best, best_d = gi, d
-            if best >= 0 and best_d <= radius:
-                groups[best].append(s)
-                claimed.add(best)
-            else:
-                groups.append([s])
-                gx.append(float(x[0]))
-                gy.append(float(y[0]))
-                claimed.add(len(groups) - 1)
-
+    groups = _link_static(per_pass, plane, static_arcsec)
     multi = [g for g in groups if len(g) >= 2]
     singles = [g[0] for g in groups if len(g) == 1]
 
     # --- mover linking among sources seen in only one pass ---------------------
-    # A single-pass source only counts as "missing" elsewhere if the other pass
+    # A single-pass source only counts as "missing" elsewhere if another pass
     # actually covered that spot; otherwise it's just off the edge.
-    def missing_elsewhere(s: PassSource) -> bool:
-        return any(
-            any(_covers(frames[fi], s.ra, s.dec) for fi in passes[pj])
-            for pj in range(len(passes))
-            if pj != s.pass_index
-        )
-
-    pool = [s for s in singles if missing_elsewhere(s)]
-    used: set[int] = set()
-    mover_groups: list[list[PassSource]] = []
-    candidates: list[tuple[int, float, list[int]]] = []
-    for i, a in enumerate(pool):
-        for j, b in enumerate(pool):
-            if b.pass_index <= a.pass_index:
-                continue
-            dt_yr = (b.mjd - a.mjd) / DAYS_PER_YEAR
-            ax, ay = _offsets(center, a.ra, a.dec)
-            bx, by = _offsets(center, b.ra, b.dec)
-            sep = float(np.hypot(bx[0] - ax[0], by[0] - ay[0]))
-            if sep > max_pm_arcsec_yr * dt_yr + 3 * np.hypot(a.sigma_arcsec, b.sigma_arcsec):
-                continue
-            if not _flux_compatible(a, b, max_flux_ratio):
-                continue
-            chain = [i, j]
-            # Extend pass by pass with the best-fitting source in each later
-            # pass (not the first acceptable one, which could be a decoy).
-            for pk in range(b.pass_index + 1, len(passes)):
-                best_k, best_p = None, chain_pvalue
-                last = pool[chain[-1]]
-                for k, c in enumerate(pool):
-                    if c.pass_index != pk or not _flux_compatible(last, c, max_flux_ratio):
-                        continue
-                    p = _line_pvalue([pool[m] for m in chain] + [c], center)
-                    if p >= best_p:
-                        best_k, best_p = k, p
-                if best_k is not None:
-                    chain.append(best_k)
-            candidates.append((len(chain), sep, chain))
-    # Prefer longer chains, then shorter jumps (less chance of a chance pairing).
-    for _, _, chain in sorted(candidates, key=lambda c: (-c[0], c[1])):
-        if any(k in used for k in chain):
-            continue
-        used.update(chain)
-        mover_groups.append([pool[k] for k in chain])
-    leftovers = [s for k, s in enumerate(pool) if k not in used]
-    unlinked = _grow(multi + mover_groups, leftovers, center, max_pm_arcsec_yr, max_flux_ratio, chain_pvalue)
-    unlinked += [s for s in singles if s not in pool]
+    in_pool = _covered_elsewhere(singles, frames, passes)
+    pool = [s for s, keep in zip(singles, in_pool) if keep]
+    mover_groups, leftovers = _link_movers(
+        pool, len(passes), plane, max_pm_arcsec_yr, max_flux_ratio, chain_pvalue
+    )
+    unlinked = _grow(multi + mover_groups, leftovers, plane, max_pm_arcsec_yr, max_flux_ratio, chain_pvalue)
+    unlinked += [s for s, keep in zip(singles, in_pool) if not keep]
     # A slow mover's early passes can link to each other as "static" and its
     # late passes likewise; join such pieces when one line fits them all.
-    multi, merged = _merge_tracks(multi, mover_groups, center, max_pm_arcsec_yr, max_flux_ratio, chain_pvalue)
+    multi, merged = _merge_tracks(multi, mover_groups, plane, max_pm_arcsec_yr, max_flux_ratio, chain_pvalue)
     mover_groups = merged
 
     # --- systematic floor from static objects --------------------------------
     raw = []
     for g in multi:
         try:
-            raw.append(fit_motion(g, center))
+            raw.append(fit_motion(g, plane))
         except ValueError:
             continue
     floor_pm = 0.0
@@ -859,7 +1057,7 @@ def find_motion(
     objects: list[TrackedObject] = []
     for g, kind in [(g, "static") for g in multi] + [(g, "mover") for g in mover_groups]:
         try:
-            fit = fit_astrometry(g, center, parallax=False)
+            fit = fit_astrometry(g, plane, parallax=False)
         except ValueError:
             continue
         # Nearby objects wobble with the Earth's orbit (WISE 0855: 0.44"), which
@@ -867,7 +1065,7 @@ def find_motion(
         # fit: one extra parameter must cut chi2 by > 4 (~2 sigma).
         if fit["dof"] >= 2 and fit["chi2"] > fit["dof"]:
             try:
-                plx_fit = fit_astrometry(g, center, parallax=True)
+                plx_fit = fit_astrometry(g, plane, parallax=True)
                 # Only a physical (positive, significant) parallax counts as an
                 # explanation; otherwise the misfit stays and inflates errors.
                 if (
@@ -896,7 +1094,7 @@ def find_motion(
             parallax=fit["plx"],
             parallax_err=fit["plx_err"],
         )
-        obj.missing_passes = _missing_passes(obj, frames, passes, center, nsigma)
+        obj.missing_passes = _missing_passes(obj, frames, passes, plane, nsigma)
         obj_span_yr = (obj.sources[-1].mjd - obj.sources[0].mjd) / DAYS_PER_YEAR
         # A mover must beat its errors, shift by > ~1 px over its own baseline,
         # and not be absent from a pass that covered its predicted position
@@ -910,14 +1108,14 @@ def find_motion(
             and not obj.missing_passes
             and len(obj.sources) >= min(3, len(passes))
         )
-        var = _variability(obj.sources, calib_frac)
+        var = _variability(_brightness_epochs(obj.sources, epoch_of_pass), calib_frac)
         obj.variability = var
         obj.is_variable = bool(
             var and var["ratio"] >= variable_ratio and var["significance"] >= variable_sigma
         )
         objects.append(obj)
 
-    _caution_near_bright(objects, center)
+    _caution_near_bright(objects, plane)
     return EngineResult(
         frames=frames,
         passes=passes,
