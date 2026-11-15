@@ -34,6 +34,7 @@ from typing import Any
 import numpy as np
 
 from planetx import pipeline
+from planetx.classify import reliability
 from planetx.spherex import cutouts
 from planetx.survey import patch_frames
 from planetx.survey.candidates import Candidate, CandidateStore, TrackPoint, is_notable, score
@@ -98,6 +99,7 @@ def _candidate(found: pipeline.FieldObject, field: Field) -> Candidate:
         score=score(known.kind, known.classification, significance=t.pm_significance,
                     variability_significance=var_sigma),
         field_ra=field.ra, field_dec=field.dec,
+        verdict=reliability.object_verdict(found),
     )
 
 
