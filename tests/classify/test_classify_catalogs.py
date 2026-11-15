@@ -189,7 +189,7 @@ def test_fetch_skybot_asks_for_one_moment_and_handles_no_content(monkeypatch):
         fetch_skybot(180.0, 1.0, 60.0, 61000.0)
     params = calls[0]["params"]
     assert params["-ep"] == "2461000.500000" and params["-rd"] == "0.010000"  # Julian date, degrees
-    assert params["-loc"] == "500" and params["-objFilter"] == "101" and params["-mime"] == "json"
+    assert params["-observer"] == "500" and "-loc" not in params and params["-objFilter"] == "101" and params["-mime"] == "json"
 
 
 def test_send_retries_a_5xx_once_and_reports_network_errors(monkeypatch):

@@ -7,9 +7,10 @@ import math
 
 import pytest
 
-from planetx.classify import check
+from planetx.classify import catalogs, check
 from planetx.classify.catalogs import CatalogError, CatalogObject, SolarSystemBody
 from planetx.classify.check import check_objects, field_cone, motion_kind, unchecked
+from planetx.classify.observer import from_observer
 from planetx.engine import Detection, PassSource, TrackedObject
 from planetx.observatories import ArchivalSource, FusedMotion, Observatory, Verdict
 
@@ -57,9 +58,11 @@ def gaia(name, ra, dec, pm=(None, None), g=15.0, variable=False):
 class Catalogues:
     """Fake fetchers that record what was asked."""
 
-    def __init__(self, gaia=(), simbad=(), bodies=()):
-        self.gaia_rows, self.simbad_rows, self.bodies = gaia, simbad, bodies
-        self.gaia_calls, self.simbad_calls, self.skybot_calls = [], [], []
+    def __init__(self, gaia=(), simbad=(), bodies=(), spherex_km=(0.0, 0.0, 0.0)):
+        """`spherex_km`: SPHEREx's geocentric position for every time asked (the geocentre by
+        default, so SkyBoT positions stand as given), or an exception Horizons raises."""
+        self.gaia_rows, self.simbad_rows, self.bodies, self.spherex_km = gaia, simbad, bodies, spherex_km
+        self.gaia_calls, self.simbad_calls, self.skybot_calls, self.observer_calls = [], [], [], []
 
     def _answer(self, rows):
         if isinstance(rows, Exception):
@@ -78,9 +81,15 @@ class Catalogues:
         self.skybot_calls.append((ra, dec, radius, mjd))
         return self._answer(self.bodies)
 
+    def fetch_observer(self, mjds):
+        self.observer_calls.append(list(mjds))
+        if isinstance(self.spherex_km, Exception):
+            raise self.spherex_km
+        return [self.spherex_km for _ in mjds]
+
     def check(self, objects, fusion):
-        return check_objects(objects, fusion, PIXEL, fetch_gaia=self.fetch_gaia,
-                             fetch_simbad=self.fetch_simbad, fetch_skybot=self.fetch_skybot)
+        return check_objects(objects, fusion, PIXEL, fetch_gaia=self.fetch_gaia, fetch_simbad=self.fetch_simbad,
+                             fetch_skybot=self.fetch_skybot, fetch_observer=self.fetch_observer)
 
 
 # --- the cached Barnard field: one real mover and two false ones ------------------
@@ -214,6 +223,58 @@ def test_a_known_asteroid_at_one_pass_position_explains_the_mover():
     assert (known.kind, known.classification, known.name) == ("mover", "known_asteroid", "(1) Ceres")
     assert known.matches[0].catalog == "skybot" and known.matches[0].sep_arcsec == pytest.approx(4.0, abs=0.01)
     assert len(catalogues.skybot_calls) == 2  # stops at the pass that matched
+
+
+def test_skybot_cone_holds_a_near_earth_object_seen_from_spherex():
+    # 8' of parallax at 0.02 au plus the match radius and SkyBoT's 120" position-error filter.
+    assert check.SKYBOT_RADIUS_ARCSEC == pytest.approx(619.5, abs=0.1)
+    assert check.SKYBOT_RADIUS_ARCSEC <= catalogs.MAX_RADIUS_ARCSEC
+
+
+def test_a_near_earth_object_is_moved_to_spherex_and_horizons_is_asked_once_per_pass():
+    mover = lone_mover(frame_gap_days=0.002)
+    first = mover.sources[0]
+    spherex_km = (0.0, 7000.0, 0.0)
+    # Geocentric position chosen so that, seen from SPHEREx, the body sits on the first pass.
+    geo_ra, geo_dec = from_observer(first.ra, first.dec, 0.05, (0.0, -7000.0, 0.0))
+    neo = SolarSystemBody("2026 CD", "Near-Earth asteroid", geo_ra, geo_dec, first.mjd, 19.0, 0.05, 2.0)
+    catalogues = Catalogues(bodies=[neo], spherex_km=spherex_km)
+    result = catalogues.check([mover], [fused(mover)])
+    (known,) = result.known
+    assert (known.classification, known.name) == ("known_asteroid", "2026 CD")
+    assert known.matches[0].sep_arcsec < 1.0  # where SPHEREx saw it, not 6' away (beyond the 3.3' fallback allowance)
+    assert catalogues.observer_calls == [[d.mjd for d in first.detections]]  # one request, this pass's frames
+    assert result.notes == []
+
+
+def test_no_horizons_request_when_skybot_lists_nothing():
+    mover = lone_mover(frame_gap_days=0.002)
+    catalogues = Catalogues(spherex_km=CatalogError("must not be called"))
+    assert catalogues.check([mover], [fused(mover)]).notes == []
+    assert len(catalogues.skybot_calls) == 3 and catalogues.observer_calls == []
+
+
+def test_a_horizons_outage_falls_back_to_geocentric_positions_with_a_note():
+    mover = lone_mover(frame_gap_days=0.002)
+    # A main-belt body 6" off and an unrelated one 3' off, at every pass.
+    near = [SolarSystemBody("(9) Metis", "Main-belt asteroid", *offset(s.ra, s.dec, 6.0, 0.0), s.mjd, 10.0, 2.0, 0.1)
+            for s in mover.sources[1:]]
+
+    class Bodies(Catalogues):
+        def fetch_skybot(self, ra, dec, radius, mjd):
+            self.skybot_calls.append((ra, dec, radius, mjd))
+            far = SolarSystemBody("(3) Juno", "Main-belt asteroid", *offset(ra, dec, 180.0, 0.0), mjd, 9.0, 2.0, 0.1)
+            return [far] + [b for b in near if b.mjd == mjd]
+
+    catalogues = Bodies(spherex_km=CatalogError("Horizons request failed: ConnectTimeout"))
+    result = catalogues.check([mover], [fused(mover)])
+    (known,) = result.known
+    assert (known.classification, known.name) == ("known_asteroid", "(9) Metis")
+    assert len(catalogues.observer_calls) == 1  # not asked again after it failed
+    (note,) = result.notes
+    assert note.startswith("JPL Horizons unavailable (Horizons request failed: ConnectTimeout): 2 position(s)")
+    assert 'largest parallax (9.8" divided by the distance in au)' in note
+    assert note.endswith("1 known-asteroid match(es) rest on that wider radius")
 
 
 def test_skybot_is_not_asked_about_passes_averaged_over_days():

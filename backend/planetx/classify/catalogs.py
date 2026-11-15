@@ -366,7 +366,8 @@ def fetch_skybot(ra: float, dec: float, radius_arcsec: float, mjd: float) -> lis
     """Known asteroids and comets in a cone at one moment (UTC), seen from the Earth's centre.
 
     SPHEREx is in low Earth orbit, so a body's true position differs from the
-    geocentric one by up to about 10" divided by its distance in au. Raises CatalogError.
+    geocentric one by up to about 10" divided by its distance in au: see
+    planetx.classify.observer for the correction. Raises CatalogError.
     """
     _check_cone(ra, dec, radius_arcsec)
     if not math.isfinite(mjd):
@@ -376,7 +377,9 @@ def fetch_skybot(ra: float, dec: float, radius_arcsec: float, mjd: float) -> lis
         "-dec": f"{dec:.6f}",
         "-rd": f"{radius_arcsec / 3600.0:.6f}",
         "-ep": f"{mjd + 2400000.5:.6f}",  # Julian date
-        "-loc": "500",  # geocentre
+        # The geocentre. SkyBoT takes only observatory codes here: SPHEREx's own code
+        # (288) is answered as 500, and "-loc" (astroquery 0.4.11's name) is ignored.
+        "-observer": "500",
         "-filter": "120",  # keep bodies whose own position is uncertain by up to 120"
         "-objFilter": "101",  # asteroids and comets, no planets
         "-refsys": "EQJ2000",
