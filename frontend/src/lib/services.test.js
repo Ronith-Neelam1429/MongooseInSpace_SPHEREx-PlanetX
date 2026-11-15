@@ -259,3 +259,27 @@ describe('apiJson errors, in words', () => {
     expect(plainError('timeout')).toBe('timeout');
   });
 });
+
+describe('fetchProfile', () => {
+  it('asks the API for one object and returns its profile', async () => {
+    const profile = { ra: 269.4473, dec: 4.7685, identity: { name: "Barnard's Star" } };
+    const { services, fetchMock } = await load([ok(profile)]);
+    expect(await services.fetchProfile({ ra: 269.4473, dec: 4.7685, gaia_id: '4472832130942575872', pmra: -801.6, pmdec: 10362.4 })).toEqual(profile);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'http://api.test/api/object/profile?ra=269.447300&dec=4.768500&gaia_id=4472832130942575872&pmra=-801.600&pmdec=10362.400',
+    );
+  });
+
+  it('is null without a backend and rejects a bad answer or position', async () => {
+    let { services } = await load([], { apiBase: '' });
+    expect(await services.fetchProfile({ ra: 1, dec: 2 })).toBeNull();
+    ({ services } = await load([ok([1, 2])]));
+    await expect(services.fetchProfile({ ra: 1, dec: 2 })).rejects.toThrow('bad response');
+    await expect(services.fetchProfile({ ra: NaN, dec: 2 })).rejects.toThrow('no position');
+  });
+
+  it('passes on HTTP errors', async () => {
+    const { services } = await load([{ status: 404, body: { detail: 'Not Found' } }]);
+    await expect(services.fetchProfile({ ra: 1, dec: 2 })).rejects.toThrow('HTTP 404: Not Found');
+  });
+});

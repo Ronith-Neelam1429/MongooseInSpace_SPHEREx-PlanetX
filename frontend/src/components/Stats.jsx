@@ -2,9 +2,9 @@
  * A row of small figures at the top of the panel or a card: [{ label, value, sub, tone, title }].
  * `value` null shows a dash; `value` undefined shows that it is still loading.
  */
-export default function Stats({ items, label }) {
+export default function Stats({ items, label, className = '' }) {
   return (
-    <dl className="stats" aria-label={label} style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
+    <dl className={`stats ${className}`} aria-label={label} style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
       {items.map((it) => (
         <div key={it.label} className="stat" title={it.title}>
           <dt>{it.label}</dt>
