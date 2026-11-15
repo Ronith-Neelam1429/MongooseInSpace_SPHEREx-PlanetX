@@ -2,6 +2,7 @@
 import base64
 import gzip
 import io
+import json
 
 import astropy.units as u
 import numpy as np
@@ -284,28 +285,86 @@ def test_coverage_of_the_patch_by_a_footprint():
     assert images.coverage(_box(0.0, 10.0, 0.2, 0.2), 359.99, 10.0, 60) == 1.0
 
 
-def test_image_search_ranks_the_science_images_by_how_much_of_the_patch_they_cover(monkeypatch):
-    # 2MASS images are 512" x 1024" (0.142 x 0.284 deg). The nearest one is 0.06 deg east, so a
-    # 600" patch hangs over its west edge (~57% covered); the other, centred farther south, covers ~80%.
-    w, h = 512 / 3600, 1024 / 3600
-    near = TWOMASS_URL.replace("ki1010220", "ki1010221")
-    east = 0.06 / np.cos(np.radians(DEC))
-    rows = [
-        ("science", "K", RA + east, DEC + 0.03, _box(RA + east, DEC + 0.03, w, h), near),
-        ("science", "K", RA, DEC - 0.09, _box(RA, DEC - 0.09, w, h), TWOMASS_URL),
-        ("science", "J", RA, DEC, _box(RA, DEC, w, h), TWOMASS_URL.replace("ki1010220", "ji1010220")),
-        ("auxiliary", "K", RA, DEC, _box(RA, DEC, w, h), "https://irsa.ipac.caltech.edu/ibe/data/twomass/allsky/allsky/000528n/s101/pers.tbl"),
-    ]
+@pytest.fixture
+def listing(monkeypatch, tmp_path):
+    """Image listings kept in tmp_path, none in memory."""
+    monkeypatch.setattr(images, "settings", Settings(cache_dir=tmp_path))
+    images._listings.clear()
+    yield tmp_path
+    images._listings.clear()
+
+
+# 2MASS images are 512" x 1024" (0.142 x 0.284 deg). The nearest one is 0.06 deg east, so a
+# 600" patch hangs over its west edge (~57% covered); the other, centred farther south, covers ~80%.
+_W, _H = 512 / 3600, 1024 / 3600
+NEAR_URL = TWOMASS_URL.replace("ki1010220", "ki1010221")
+_EAST = 0.06 / np.cos(np.radians(DEC))
+SIA_ROWS = [
+    ("science", "K", RA + _EAST, DEC + 0.03, _box(RA + _EAST, DEC + 0.03, _W, _H), NEAR_URL),
+    ("science", "K", RA, DEC - 0.09, _box(RA, DEC - 0.09, _W, _H), TWOMASS_URL),
+    ("science", "J", RA, DEC, _box(RA, DEC, _W, _H), TWOMASS_URL.replace("ki1010220", "ji1010220")),
+    ("auxiliary", "K", RA, DEC, _box(RA, DEC, _W, _H), "https://irsa.ipac.caltech.edu/ibe/data/twomass/allsky/allsky/000528n/s101/pers.tbl"),
+]
+
+
+def _sia_body(rows) -> bytes:
     table = Table(rows=rows, names=("dataproduct_subtype", "energy_bandpassname", "s_ra", "s_dec", "s_region", "access_url"))
     buf = io.BytesIO()
     from_table(table).to_xml(buf)
-    monkeypatch.setattr(images, "_get", lambda url, params, limit: buf.getvalue())
-    assert images.find_images(TWOMASS, RA, DEC, 600) == [TWOMASS_URL, near]
+    return buf.getvalue()
+
+
+def test_image_search_ranks_the_science_images_by_how_much_of_the_patch_they_cover(monkeypatch, listing):
+    monkeypatch.setattr(images, "_get", lambda url, params, limit: _sia_body(SIA_ROWS))
+    assert images.find_images(TWOMASS, RA, DEC, 600) == [TWOMASS_URL, NEAR_URL]
+    images._listings.clear()
+    (listing / "surveys" / "listing-2mass.json").unlink()
     # A small patch fits in both: the better centred one wins.
-    assert images.find_images(TWOMASS, RA, DEC, 60) == [near, TWOMASS_URL]
-    monkeypatch.setattr(images, "_get", lambda url, params, limit: buf.getvalue().replace(b">K<", b">H<"))
+    assert images.find_images(TWOMASS, RA, DEC, 60) == [NEAR_URL, TWOMASS_URL]
+    images._listings.clear()
+    (listing / "surveys" / "listing-2mass.json").unlink()
+    monkeypatch.setattr(images, "_get", lambda url, params, limit: _sia_body(SIA_ROWS).replace(b">K<", b">H<"))
     with pytest.raises(images.Unusable, match="no image here"):
         images.find_images(TWOMASS, RA, DEC, 600)
+
+
+def _sia_down(url, params, limit):
+    raise images.Unusable("IRSA answered HTTP 502")
+
+
+def test_a_listed_area_is_answered_without_asking_irsa_again(monkeypatch, listing):
+    monkeypatch.setattr(images, "_get", lambda url, params, limit: _sia_body(SIA_ROWS))
+    assert images.find_images(TWOMASS, RA, DEC, 600) == [TWOMASS_URL, NEAR_URL]
+    monkeypatch.setattr(images, "_get", lambda *a: pytest.fail("must not search"))
+    # A smaller patch inside the searched one, and the same after a restart (read back from disk).
+    assert images.find_images(TWOMASS, RA, DEC, 60) == [NEAR_URL, TWOMASS_URL]
+    images._listings.clear()
+    assert images.find_images(TWOMASS, RA + 0.01, DEC, 60) == [NEAR_URL, TWOMASS_URL]
+
+
+def test_when_the_search_is_down_a_patch_listed_before_still_finds_its_images(monkeypatch, listing):
+    monkeypatch.setattr(images, "_get", lambda url, params, limit: _sia_body(SIA_ROWS))
+    images.find_images(TWOMASS, RA, DEC, 60)
+    monkeypatch.setattr(images, "_get", _sia_down)
+    # Wider than the listed cone, but its centre was listed: answered from the listing.
+    assert images.find_images(TWOMASS, RA, DEC, 600) == [TWOMASS_URL, NEAR_URL]
+    # A patch never looked up: the outage is reported, not "no image here".
+    with pytest.raises(images.Unusable, match=r"HTTP 502\) and this patch was not looked up before"):
+        images.find_images(TWOMASS, RA + 2, DEC, 60)
+    # Listed centre, but none of the listed footprints covers it: said so (not the nearest image).
+    images._listings.clear()
+    images._listings["2mass"] = {"cones": [[RA + 1, DEC, 0.001]], "rows": {}}
+    with pytest.raises(images.Unusable, match="search is down and no 2MASS Ks image listed before"):
+        images.find_images(TWOMASS, RA + 1, DEC, 60)
+
+
+def test_an_unreadable_listing_is_started_again(monkeypatch, listing):
+    path = listing / "surveys" / "listing-2mass.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json")
+    monkeypatch.setattr(images, "_get", lambda url, params, limit: _sia_body(SIA_ROWS))
+    assert images.find_images(TWOMASS, RA, DEC, 600) == [TWOMASS_URL, NEAR_URL]
+    assert len(json.loads(path.read_text())["rows"]) == 2  # the two K-band science images only
 
 
 @pytest.mark.parametrize("params", [

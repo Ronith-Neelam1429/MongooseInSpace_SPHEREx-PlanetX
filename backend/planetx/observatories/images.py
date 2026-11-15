@@ -16,11 +16,16 @@ becomes a short reason in `Unavailable`, never an exception for the caller, and 
 remembered briefly so a dead service is not asked again on every view. Fetches have
 their own timeouts, size limits and concurrency cap, separate from the SPHEREx
 downloads (`planetx.spherex.archive`), so they cannot hold those up.
+
+Finished patch images are cached on disk, and so is every image search's answer (the
+"listing"): a patch inside an area searched before needs no search, and while the
+search is down a patch whose centre was searched before is still cut from IBE.
 """
 from __future__ import annotations
 
 import hashlib
 import io
+import json
 import logging
 import re
 import threading
@@ -190,13 +195,102 @@ def coverage(s_region: str, ra: float, dec: float, side_arcsec: float) -> float:
     return float(inside.mean())
 
 
-def find_images(survey: Survey, ra: float, dec: float, side_arcsec: float) -> list[str]:
-    """URLs of the survey images touching the square patch, those covering most of it first.
+def _sep_deg(ra1: float, dec1: float, ra2, dec2):
+    """Angular separation in degrees (haversine; exact at any distance, unlike _offsets_deg)."""
+    ra1, dec1, ra2, dec2 = np.radians(ra1), np.radians(dec1), np.radians(ra2), np.radians(dec2)
+    h = np.sin((dec2 - dec1) / 2) ** 2 + np.cos(dec1) * np.cos(dec2) * np.sin((ra2 - ra1) / 2) ** 2
+    return np.degrees(2 * np.arcsin(np.sqrt(np.clip(h, 0.0, 1.0))))
 
-    2MASS images abut rather than overlap (8.5' x 17' each), so a patch around a fast star's
-    old and new positions often needs two of them.
-    """
-    radius = side_arcsec / 2 * 2**0.5 / 3600  # through the patch corners
+
+def _reach_deg(s_region: str, s_ra: float, s_dec: float) -> float:
+    """Farthest footprint corner from the image centre, deg (0 when the footprint cannot be read)."""
+    words = s_region.split()
+    try:
+        values = [float(w) for w in words[1:] if w.upper() not in ("ICRS", "FK5", "J2000", "UNKNOWNFRAME")]
+    except ValueError:
+        return 0.0
+    if len(values) < 6 or len(values) % 2:
+        return 0.0
+    return float(np.max(_sep_deg(s_ra, s_dec, np.array(values[0::2]), np.array(values[1::2]))))
+
+
+# Image listings kept on disk. IRSA's image search (SIA) can be down for hours while its file
+# server (IBE) still cuts images out (2026-11-15: SIA 502 for every collection, IBE fine), so a
+# patch whose images were listed once can still be shown. Survey images never change, so a
+# listing does not go stale. One small JSON file per survey; rows are only the science images
+# of the survey's band. The file is not a .fits, so the image cache's eviction leaves it alone.
+LISTING_MAX_ROWS = 50_000  # ~6 MB of JSON; far more than a hackathon's worth of visited objects
+_listings: dict[str, dict] = {}
+_listings_lock = threading.Lock()
+
+
+def _listing_path(survey: Survey):
+    return settings.cache_dir / "surveys" / f"listing-{survey.key}.json"
+
+
+def _read_listing(survey: Survey) -> dict:
+    """{"cones": [[ra, dec, radius_deg], ...], "rows": {url: [s_ra, s_dec, reach_deg, s_region]}}."""
+    path = _listing_path(survey)
+    try:
+        data = json.loads(path.read_text())
+        cones = [[float(a), float(d), float(r)] for a, d, r in data["cones"]]
+        rows = {str(u): [float(a), float(d), float(r), str(s)] for u, (a, d, r, s) in data["rows"].items()}
+        return {"cones": cones, "rows": rows}
+    except FileNotFoundError:
+        return {"cones": [], "rows": {}}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log.warning("unreadable image listing %s (%s); starting a new one", path, exc)
+        return {"cones": [], "rows": {}}
+
+
+def _listing(survey: Survey) -> dict:
+    """This survey's listing, read from disk on first use. Call with _listings_lock held."""
+    if survey.key not in _listings:
+        _listings[survey.key] = _read_listing(survey)
+    return _listings[survey.key]
+
+
+def _listed_cone(survey: Survey, ra: float, dec: float, radius: float, whole: bool) -> bool:
+    """Whether a listed cone holds the whole search cone (whole) or at least its centre."""
+    with _listings_lock:
+        cones = list(_listing(survey)["cones"])
+    if not cones:
+        return False
+    c = np.array(cones)
+    sep = _sep_deg(ra, dec, c[:, 0], c[:, 1])
+    return bool(np.any(sep + (radius if whole else 0.0) <= c[:, 2] + 1e-9))
+
+
+def _listed_rows(survey: Survey, ra: float, dec: float, radius: float) -> list[tuple[str, float, float, str]]:
+    """Listed images whose footprint can reach the search cone."""
+    with _listings_lock:
+        rows = list(_listing(survey)["rows"].items())
+    return [
+        (url, s_ra, s_dec, region) for url, (s_ra, s_dec, reach, region) in rows
+        if _sep_deg(ra, dec, s_ra, s_dec) <= reach + radius
+    ]
+
+
+def _remember_listing(survey: Survey, cone: list[float], rows: list[tuple[str, float, float, str]]) -> None:
+    """Add one search's answer to the listing, merged with what other processes wrote meanwhile."""
+    with _listings_lock:
+        merged = _read_listing(survey)  # the API and the survey worker can share the cache
+        for url, s_ra, s_dec, region in rows:
+            merged["rows"][url] = [s_ra, s_dec, _reach_deg(region, s_ra, s_dec), region]
+        if len(merged["rows"]) > LISTING_MAX_ROWS:
+            log.warning("%s image listing is full (%d rows); not keeping more", survey.key, LISTING_MAX_ROWS)
+            _listings[survey.key] = _read_listing(survey)
+            return
+        merged["cones"].append(cone)
+        _listings[survey.key] = merged
+        try:
+            cutouts._atomic_write(_listing_path(survey), json.dumps(merged).encode())
+        except OSError as exc:  # the listing is a convenience: the images themselves still work
+            log.warning("could not save the %s image listing: %s", survey.key, exc)
+
+
+def _search(survey: Survey, ra: float, dec: float, radius: float) -> list[tuple[str, float, float, str]]:
+    """Ask IRSA's SIA for the survey's science images of its band touching the cone."""
     body = _get(SIA_URL, {
         "COLLECTION": survey.collection, "POS": f"CIRCLE {ra:.7f} {dec:.7f} {radius:.5f}", "MAXREC": MAX_SIA_ROWS,
     }, MAX_SIA_BYTES)
@@ -204,17 +298,49 @@ def find_images(survey: Survey, ra: float, dec: float, side_arcsec: float) -> li
         table = archive.parse_sia_votable(body)
     except archive.UpstreamError as exc:
         raise Unusable("the image search failed") from exc
+    return [
+        (str(row["access_url"]), float(row["s_ra"]), float(row["s_dec"]), str(row["s_region"]))
+        for row in table
+        if str(row["dataproduct_subtype"]) == "science" and str(row["energy_bandpassname"]) == survey.band
+    ]
+
+
+def find_images(survey: Survey, ra: float, dec: float, side_arcsec: float) -> list[str]:
+    """URLs of the survey images touching the square patch, those covering most of it first.
+
+    2MASS images abut rather than overlap (8.5' x 17' each), so a patch around a fast star's
+    old and new positions often needs two of them. A patch inside an area listed before is
+    answered from the kept listing without asking IRSA; when the image search fails, a patch
+    whose centre was listed before is answered from it too (possibly missing an edge piece).
+    """
+    radius = side_arcsec / 2 * 2**0.5 / 3600  # through the patch corners
+    fallback = False
+    if _listed_cone(survey, ra, dec, radius, whole=True):
+        rows = _listed_rows(survey, ra, dec, radius)
+    else:
+        try:
+            rows = _search(survey, ra, dec, radius)
+        except Unusable as exc:
+            if not _listed_cone(survey, ra, dec, radius, whole=False):
+                raise Unusable(f"the image search failed ({exc}) and this patch was not looked up before") from exc
+            log.info("%s image search failed (%s); using the kept listing", survey.key, exc)
+            rows, fallback = _listed_rows(survey, ra, dec, radius), True
+        else:
+            _remember_listing(survey, [ra, dec, radius], rows)
     ranked = []
-    for row in table:
-        if str(row["dataproduct_subtype"]) != "science" or str(row["energy_bandpassname"]) != survey.band:
-            continue
-        east, north = _offsets_deg(ra, dec, np.array(float(row["s_ra"])), np.array(float(row["s_dec"])))
-        share = coverage(str(row["s_region"]), ra, dec, side_arcsec)
-        ranked.append((-share, float(np.hypot(east, north)), str(row["access_url"])))
+    for url, s_ra, s_dec, region in rows:
+        east, north = _offsets_deg(ra, dec, np.array(s_ra), np.array(s_dec))
+        share = coverage(region, ra, dec, side_arcsec)
+        ranked.append((-share, float(np.hypot(east, north)), url))
     ranked.sort()
-    useful = [url for share, _, url in ranked if share < 0] or [url for _, _, url in ranked[:1]]
+    useful = [url for share, _, url in ranked if share < 0]
+    if not useful and not fallback:  # unreadable footprints: the nearest image is the best guess
+        useful = [url for _, _, url in ranked[:1]]
     if not useful:
-        raise Unusable(f"{survey.label} has no image here")
+        raise Unusable(
+            f"the image search is down and no {survey.label} image listed before covers this patch" if fallback
+            else f"{survey.label} has no image here"
+        )
     return [validate_url(url, survey) for url in useful[:MAX_TILES]]
 
 
