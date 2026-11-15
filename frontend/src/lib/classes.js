@@ -27,7 +27,7 @@ export const CLASSES = [
   { id: 'variable', label: 'Variables', rgb: VARIABLE, mark: 'diamond', hint: 'Stars that change brightness (and engine results that did)' },
   { id: 'star', label: 'Stars', rgb: PLAIN, mark: 'dot', hint: 'Ordinary stars with little or no motion' },
   { id: 'galaxy', label: 'Galaxies & nebulae', rgb: GALAXY, mark: 'square', hint: 'Galaxies, quasars, clouds, nebulae and star clusters: far away, they never move' },
-  { id: 'other', label: 'Other', rgb: OTHER, mark: 'square', hint: 'Radio, X-ray, infrared and unclassified sources, and likely artifacts' },
+  { id: 'other', label: 'Other', rgb: OTHER, mark: 'square', hint: 'Radio, X-ray, infrared and unclassified sources, likely artifacts, and fake motion' },
 ];
 export const CLASS = Object.fromEntries(CLASSES.map((c) => [c.id, c]));
 
@@ -84,7 +84,17 @@ export function knownClass(row) {
  * change with no motion is drawn as a variable, so it is classed as one.
  */
 const BY_VERDICT = { known_star: 'mover', known_asteroid: 'mover', variable_star: 'variable', artifact: 'other', static: 'star' };
+const varies = (o) => o.is_variable || o.classification === 'variable_star';
 export function engineClass(o) {
+  // The backend's motion verdict, when it sent one, settles what moves: a fake motion is never a
+  // mover, and an unsure one is at most a candidate.
+  switch (o.motion_verdict?.verdict) {
+    case 'moving': return o.motion_verdict.certainty === 'confirmed' ? 'mover' : 'candidate';
+    case 'unsure': return 'candidate';
+    case 'fake_motion': return varies(o) ? 'variable' : 'other';
+    case 'not_moving': return varies(o) ? 'variable' : 'star';
+    default: break;
+  }
   if (o.classification === 'unknown_candidate') return o.kind === 'static' ? 'variable' : 'candidate';
   if (BY_VERDICT[o.classification]) return BY_VERDICT[o.classification];
   if (o.kind === 'candidate') return 'candidate';

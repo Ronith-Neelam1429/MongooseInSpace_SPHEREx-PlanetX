@@ -1,6 +1,7 @@
 import { candidateLine, foundDate, matchCandidate } from '../lib/crawl.js';
-import { classLabel, shortName } from '../lib/plain.js';
+import { classLabel, fakeMotionLine, motionVerdict, shortName } from '../lib/plain.js';
 import CandidateThumb from './CandidateThumb.jsx';
+import { VerdictReason, VerdictTag } from './MotionEvidence.jsx';
 
 /**
  * The survey candidate this patch was opened for: its picture and what the survey stored, and the
@@ -10,6 +11,7 @@ import CandidateThumb from './CandidateThumb.jsx';
  */
 export default function SurveyCandidateNote({ candidate: c, motion, onRun }) {
   const lost = motion.status === 'ok' && !matchCandidate(motion.result.objects, c);
+  const mv = motionVerdict(c);
   return (
     <section className="cand-note" aria-label="Survey candidate">
       <div className="cand-note-head">
@@ -17,10 +19,12 @@ export default function SurveyCandidateNote({ candidate: c, motion, onRun }) {
         <div className="cand-main">
           <span className="kicker">Survey candidate · {classLabel(c.classification)}</span>
           <span className="row-name">{c.name ? shortName(c.name) : 'Uncatalogued object'}</span>
-          <span className="row-sub">{candidateLine(c)}</span>
+          {mv && <span><VerdictTag mv={mv} /></span>}
+          <span className="row-sub">{fakeMotionLine(c) || candidateLine(c)}</span>
           <span className="cand-meta">score {c.score.toFixed(2)} · patch {c.ipix.toLocaleString('en-US')} · found {foundDate(c.found)}</span>
         </div>
       </div>
+      {mv && <VerdictReason mv={mv} />}
       {motion.status === 'idle' && (
         <>
           <button type="button" className="btn" onClick={onRun}>Run the engine here</button>

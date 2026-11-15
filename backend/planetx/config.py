@@ -41,6 +41,11 @@ class Settings:
     db_path: Path = field(
         default_factory=lambda: Path(os.environ.get("PLANETX_DB", "data/survey.sqlite"))
     )
+    # Folder of the analysis result files served by /api/results (docs/RESULTS.md). Unset: the
+    # repository's results/ (see planetx.api.routes.results); a deployed image must set it.
+    results_dir: Path | None = field(
+        default_factory=lambda: Path(p) if (p := os.environ.get("PLANETX_RESULTS_DIR")) else None
+    )
     # Observatories the motion engine may combine: "spherex" (SPHEREx only),
     # "multi" (+ 2MASS, AllWISE, CatWISE), "all" (+ NEOWISE), or a comma list.
     # Parsed by planetx.observatories.parse_observatories. "spherex" means no other
