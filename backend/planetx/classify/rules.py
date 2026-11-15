@@ -49,6 +49,9 @@ SLOW_FRACTION = 0.5
 # (or within SLOW_FRACTION of the motion, whichever is looser).
 AGREE_SIGMA = 3.0
 MAX_MATCHES = 4
+# A slow star under a pass is searched for out to this many of the pass's own
+# position errors (when that is wider than MATCH_RADIUS_ARCSEC).
+SLOW_STAR_SIGMA = 3.0
 
 # A solar-system body cannot stay inside one SPHEREx pixel for longer than this, so
 # only pass positions measured within such a window can be a body (a main-belt
@@ -75,6 +78,15 @@ class PositionLike(Protocol):
     ra: float
     dec: float
     mjd: float
+
+
+def pass_radius(p: PositionLike) -> float:
+    """How far from a pass position (arcsec) the star it measured can be: the match
+    radius, or SLOW_STAR_SIGMA of the pass's own error (`sigma_arcsec`) when wider."""
+    sigma = getattr(p, "sigma_arcsec", None)
+    if sigma is None or not math.isfinite(sigma):
+        return MATCH_RADIUS_ARCSEC
+    return max(MATCH_RADIUS_ARCSEC, SLOW_STAR_SIGMA * sigma)
 
 
 @dataclass(frozen=True)
@@ -221,18 +233,31 @@ def check_track(
     if explained_by is not None:
         return TrackCheck(explained_by=explained_by)
 
+    # A noisy pass mean can sit a few sigma from the star it measured: search each
+    # pass out to SLOW_STAR_SIGMA of its own position error, never less than the match radius.
     slow = [
         {
-            i for i in found
+            i for i, _ in field.near(p.ra, p.dec, p.mjd, pass_radius(p))
             if field.objects[i].catalog == "gaia"
             and magnitude(i) <= VISIBLE_G_MAG
             and field.objects[i].pm_total < SLOW_FRACTION * speed
         }
-        for found in per_pass
+        for p in passes
     ]
     if not all(slow):
         return TrackCheck()
     return TrackCheck(slow_stars="same" if set.intersection(*slow) else "different")
+
+
+def lead_star(field: FieldCatalog, ra: float, dec: float, mjd: float) -> int | None:
+    """Index of the star `identify` names an object after: the brightest Gaia star bright
+    enough for SPHEREx within the match radius of its mean position, if any."""
+    visible = [
+        (field.objects[i].magnitude, sep, i) for i, sep in field.near(ra, dec, mjd, MATCH_RADIUS_ARCSEC)
+        if field.objects[i].catalog == "gaia"
+        and field.objects[i].magnitude is not None and field.objects[i].magnitude <= VISIBLE_G_MAG
+    ]
+    return min(visible)[2] if visible else None
 
 
 def archive_is_other_stars(
