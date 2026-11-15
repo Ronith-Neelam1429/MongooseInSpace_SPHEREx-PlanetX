@@ -77,6 +77,17 @@ describe('engineClass', () => {
     // An uncatalogued brightness change without motion is drawn (and filtered) as a variable.
     expect(engineClass(o({ kind: 'static', is_variable: true, classification: 'unknown_candidate' }))).toBe('variable');
   });
+  it('lets the motion verdict settle what moves', () => {
+    const v = (verdict, certainty = null) => ({ verdict, certainty, cause: null, reason: '', decided_by: 'spherex' });
+    // An engine "mover" whose motion is fake is never drawn as a mover.
+    expect(engineClass(o({ kind: 'mover', classification: 'unknown_candidate', motion_verdict: v('fake_motion') }))).toBe('other');
+    expect(engineClass(o({ kind: 'mover', is_variable: true, motion_verdict: v('fake_motion') }))).toBe('variable');
+    expect(engineClass(o({ kind: 'mover', classification: 'unknown_candidate', motion_verdict: v('moving', 'confirmed') }))).toBe('mover');
+    expect(engineClass(o({ kind: 'mover', motion_verdict: v('moving', 'candidate') }))).toBe('candidate');
+    expect(engineClass(o({ kind: 'static', motion_verdict: v('unsure') }))).toBe('candidate');
+    expect(engineClass(o({ kind: 'static', motion_verdict: v('not_moving') }))).toBe('star');
+    expect(engineClass(o({ kind: 'static', classification: 'variable_star', motion_verdict: v('not_moving') }))).toBe('variable');
+  });
 });
 
 describe('countClasses', () => {

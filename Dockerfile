@@ -16,17 +16,21 @@ FROM python:3.13-slim
 RUN useradd --system --create-home --uid 10001 app
 COPY --from=build /app/.venv /app/.venv
 COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+# Tracked survey-result JSON files, served by GET /api/results/{name}. Read-only: the app
+# only reads them, and they change with the image (a new commit), not at runtime.
+COPY results /app/results
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PORT=8000 \
     PLANETX_CACHE_DIR=/data/cache \
-    PLANETX_DB=/data/survey.sqlite
+    PLANETX_DB=/data/survey.sqlite \
+    PLANETX_RESULTS_DIR=/app/results
 # Mount a persistent volume at /data. The entrypoint fixes its ownership and
 # then drops root, so the app never runs as root.
 RUN mkdir /data && chown app:app /data
 VOLUME /data
 EXPOSE 8000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD python -c "import os,urllib.request as u; u.urlopen('http://127.0.0.1:%s/api/health' % os.environ['PORT'], timeout=4)"
 ENTRYPOINT ["entrypoint.sh"]
 CMD ["sh", "-c", "exec uvicorn planetx.api.app:app --host 0.0.0.0 --port $PORT"]

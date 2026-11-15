@@ -104,6 +104,8 @@ seconds until `status` is `"done"` (with `result`) or `"failed"` (with `error`).
   changes. Motions are in arcsec/yr (east, north). `track` has one position per pass.
   `archive` is the refit with 2MASS/AllWISE/CatWISE positions and its verdict
   (set `PLANETX_OBSERVATORIES=spherex` to skip the catalogs).
+- `motion_verdict` (`MotionVerdict`) says whether the motion is real, from every check at once
+  (see [Motion verdict](#motion-verdict)). Read it, not `kind`, to tell real motion from fake.
 - One run executes at a time; **503 with `Retry-After`** when more than 4 are waiting.
 - Jobs live in the API process's memory: run a single worker process.
 
@@ -139,6 +141,57 @@ Also:
 - `missing_passes`: passes whose frames covered the fitted track but found nothing there.
   The engine then takes the positions for different objects, so such an object is never a
   mover, however large and significant its fitted slope.
+- `motion_verdict`: the object's `MotionObject.motion_verdict` after the `checks` (null when
+  the run's verdicts are not known). The image tests never overrule a catalogued star or
+  asteroid. A decisive failure (`no_stand_in`, `same_look`, `beyond_noise`) or two other
+  failures make a SPHEREx-only motion `fake_motion`, one other failure makes it `unsure`, and a
+  decisive failure drops an older-survey confirmation to `unsure`.
+
+## Motion verdict
+
+`MotionVerdict` (built in `planetx/classify/reliability.py`, pure rules over what the run
+already measured) is on every `MotionObject`, `MotionEvidence` and `SurveyCandidate`:
+
+```json
+{ "verdict": "fake_motion", "certainty": null, "cause": "chance_link", "decided_by": "catalogue",
+  "reason": "Each SPHEREx position falls on a different Gaia star, none moving anywhere near 7.78″ a year: the track hops between fixed stars." }
+```
+
+- `verdict`: `moving` (real motion) | `not_moving` (nothing beyond noise) | `fake_motion` (SPHEREx
+  shows motion, the evidence says it is not real) | `unsure` (motion is claimed, the evidence
+  cannot settle it).
+- `certainty` (moving only): `confirmed` (a catalogue or older surveys agree) | `candidate`
+  (SPHEREx alone, or one older survey family). A candidate is never called a discovery.
+- `cause`: for `fake_motion` always, for `unsure` when one is suspected; the causes of
+  `docs/RESULTS.md`: `blend | saturated_halo | edge | flagged_pixels | low_snr |
+  wavelength_centroid | parallax_misfit | chance_link | other`.
+- `decided_by`: `spherex | archive | catalogue | evidence_checks`.
+- There is no probability: nothing measured yet says how often each rule is right.
+
+Rules, first match wins (an object needs an apparent motion first: the engine's mover flag, a
+motion class other than static, an archival confirmation or one-family candidate, a SPHEREx
+motion of 5 sigma or more even under a pixel of total shift, or 3 sigma over 3+ passes with a
+pixel of shift):
+
+| Evidence | Verdict | Cause |
+|---|---|---|
+| no apparent motion | not_moving | |
+| a Gaia/SIMBAD star's own motion follows every pass | moving, confirmed | |
+| older surveys: a fixed source at each position (`refuted`) | fake_motion | chance_link (blend with a blended pass) |
+| a different slow Gaia star under each pass | fake_motion | chance_link |
+| a pass covered its path and saw nothing (`missing_passes`) | fake_motion | chance_link |
+| older surveys saw it in the same place (`stationary`) | fake_motion | the SPHEREx cause below, else other |
+| it sits on one slow Gaia star whose motion it matches | fake_motion | the SPHEREx cause below, else other |
+| archival "confirmation" from other stars, no SPHEREx motion | fake_motion | chance_link |
+| a known asteroid at one of its positions | moving, confirmed | |
+| older surveys confirm (`confirmed`) | moving, confirmed; a candidate when Gaia was not checked and SPHEREx < 5 sigma; unsure when saturated or in a bright star's halo | |
+| next to a slow Gaia star with a similar motion | unsure | blend |
+| SPHEREx only, saturated or within 150″ of a very bright star | fake_motion once Gaia was asked, unsure otherwise | saturated_halo |
+| SPHEREx only, a pass it needs is blended / mostly flagged pixels / faint / parallax with ≤ 3 passes | unsure | blend / flagged_pixels / low_snr / parallax_misfit |
+| one older survey family alone shows it | moving, candidate | |
+| SPHEREx only, an engine mover | moving, candidate | |
+| SPHEREx only, 5+ sigma but under a pixel of total shift (too little time between visits) | unsure; moving, candidate when another track moves the same way along the same path (one mover split in two, as Eps Indi B was) | |
+| SPHEREx only, 2 passes, or 3-5 sigma | unsure | |
 
 ### `GET /api/motion/evidence/surveys?ra=&dec=&side_arcsec=`
 The same sky in older surveys (`SurveyImages`): 2MASS Ks (1997-2001) and AllWISE W1 (mean
@@ -225,7 +278,7 @@ gets the per-field sample (`pick_visits`) and the same engine run. It stores the
 variables) in the `candidates` table of the survey database (`PLANETX_DB`).
 Re-processing a patch replaces its rows, so ids are not stable across runs.
 
-### `GET /api/candidates?limit=100&offset=0&classification=&sort=score`
+### `GET /api/candidates?limit=100&offset=0&classification=&sort=score&hide_fake=false`
 `SurveyCandidates` in `schemas.py`, best score first (ties by id):
 
 ```json
@@ -238,6 +291,13 @@ Re-processing a patch replaces its rows, so ids are not stable across runs.
 ```
 
 - `sort`: `score` (default) or `date` (newest survey run first, then best score).
+- `motion_verdict`: is the motion real ([Motion verdict](#motion-verdict)). The survey stores
+  it with each row (columns `verdict`, `verdict_certainty`, `verdict_cause`, `verdict_reason`,
+  `verdict_decided_by`; a writable store adds them to an older table). Rows stored before
+  verdicts were get one from their stored columns, with less detail (no saturation, blend or
+  Gaia checks), when read.
+- `hide_fake=true` leaves out rows whose verdict is `fake_motion` (stored or judged from the
+  columns), so `total` and the pages agree with the filter.
 - `kind` is the engine's motion class (`mover | candidate | static`, the last for variables).
 - `field_ra`/`field_dec`: centre of the 0.2 deg field the object was measured in.
   `/api/motion?ra=<field_ra>&dec=<field_dec>&size_deg=0.2` repeats the survey's run there: a

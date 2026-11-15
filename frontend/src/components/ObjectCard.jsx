@@ -2,11 +2,12 @@ import { Component, Fragment, useMemo } from 'react';
 import { decimalYear, formatDec, formatRa } from '../lib/coords.js';
 import { FAST_ARCSEC_YR, displayName, identityOf } from '../lib/names.js';
 import {
-  archiveSentence, claim, compass, plainType, confidence, distanceText, measuredMotion, moonCrossing, motionsAgree, speed, verdict,
+  archiveSentence, claim, compass, plainType, confidence, distanceText, measuredMotion, moonCrossing, motionsAgree, motionVerdict,
+  speed, verdict,
 } from '../lib/plain.js';
 import { knownClass } from '../lib/classes.js';
 import { trackedAt } from '../lib/evidence.js';
-import { EnginePictures, Exposures, Chart, Proof } from './MotionEvidence.jsx';
+import { EnginePictures, Exposures, Chart, Proof, VerdictReason } from './MotionEvidence.jsx';
 import { useChecks, useEvidence, useVerdict } from './useEvidence.js';
 import StarTimelapse from './StarTimelapse.jsx';
 import Spectrum from './Spectrum.jsx';
@@ -100,10 +101,14 @@ function CatalogueLine({ o, who, m }) {
 
 function EngineCard({ o, who, field, backLabel, onBack, onClose }) {
   const m = measuredMotion(o);
-  const moving = o.kind !== 'static';
   const ev = useEvidence(o, field);
   const said = useVerdict(o, ev);
   const checks = useChecks(o, ev);
+  // Is the motion real? The evidence's verdict includes the image tests; until it is in, the run's.
+  const tested = ev.status === 'ok' ? motionVerdict(ev.evidence) : null;
+  const mv = tested || motionVerdict(o);
+  // A fake motion is not quoted as a speed: it is a fitted slope, not motion.
+  const moving = o.kind !== 'static' && mv?.verdict !== 'fake_motion';
   const name = displayName(who);
   const best = who.matches[0];
   const far = who.matches.find((x) => x.distance_ly != null);
@@ -126,7 +131,17 @@ function EngineCard({ o, who, field, backLabel, onBack, onClose }) {
         <SpectrumSection target={spectrumTarget} />
 
         <section className="card-verdict">
-          <p className={`verdict-line ${said?.tone === 'moved' ? 'measured' : ''}`}>{said ? said.headline : verdict(o)}</p>
+          {mv ? (
+            <>
+              <p className={`verdict-line mv-text-${mv.tone}`}>{mv.label}</p>
+              <VerdictReason mv={mv} />
+            </>
+          ) : <p className={`verdict-line ${said?.tone === 'moved' ? 'measured' : ''}`}>{said ? said.headline : verdict(o)}</p>}
+          {mv?.verdict === 'fake_motion' && o.kind !== 'static' && (
+            <p className="lede">
+              SPHEREx alone fits <b>{speed(o.pm_total)}″</b> per year <span className="dim">({o.significance.toFixed(1)}× its error)</span>, but that motion is not real.
+            </p>
+          )}
           {moving && (
             <p className="lede">
               Moves <b className="measured">{speed(m.pm)}″</b> per year toward <b>{compass(m.pa)}</b> <Arrow pa={m.pa} />
@@ -139,10 +154,12 @@ function EngineCard({ o, who, field, backLabel, onBack, onClose }) {
             </p>
           )}
           <p className="line card-cat"><CatalogueLine o={o} who={who} m={m} /></p>
-          {o.kind === 'candidate' && <p className="line dim">A candidate, not a discovery: it stays one until other data confirm it.</p>}
+          {(mv ? mv.verdict === 'moving' && mv.certainty === 'candidate' : o.kind === 'candidate') && (
+            <p className="line dim">A candidate, not a discovery: it stays one until other data confirm it.</p>
+          )}
         </section>
 
-        {checks && <section className="ev"><EvidenceBoundary><Proof checks={checks} /></EvidenceBoundary></section>}
+        {checks && <section className="ev"><EvidenceBoundary><Proof checks={checks} verdict={tested} /></EvidenceBoundary></section>}
         {ev.status === 'ok' && (
           <section className="ev" aria-labelledby="chart-title">
             <h3 id="chart-title">Position over time</h3>
@@ -161,7 +178,7 @@ function EngineCard({ o, who, field, backLabel, onBack, onClose }) {
           {said && <div className="card-said">{said.lines.map((line) => <p key={line} className="line">{line}</p>)}</div>}
           <dl className="facts">
             {moving && crossing && <><dt>Scale</dt><dd>At that rate it crosses the width of the full Moon in {crossing}.</dd></>}
-            {moving && <><dt>Older surveys</dt><dd>{archiveSentence(a)}</dd></>}
+            {(moving || mv?.verdict === 'fake_motion' || mv?.verdict === 'unsure') && <><dt>Older surveys</dt><dd>{archiveSentence(a)}</dd></>}
             {o.variability?.caution && <><dt>Caution</dt><dd>{o.variability.caution}</dd></>}
             {about && <><dt>About it</dt><dd>{about}</dd></>}
           </dl>

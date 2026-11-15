@@ -137,6 +137,21 @@ def test_run_finds_the_planted_mover_and_no_other(fakes):
     assert sum(o["kind"] == "static" for o in result["objects"]) >= 30
 
 
+def test_every_object_says_whether_its_motion_is_real(fakes):
+    objects = client.get("/api/motion", params=PARAMS).json()["result"]["objects"]
+    assert all(o["motion_verdict"]["verdict"] in ("moving", "not_moving", "fake_motion", "unsure") for o in objects)
+    mover = objects[0]
+    # SPHEREx alone, nothing else asked: a moving candidate, never a confirmation.
+    assert mover["motion_verdict"] == {
+        "verdict": "moving", "certainty": "candidate", "cause": None, "decided_by": "spherex",
+        "reason": mover["motion_verdict"]["reason"],
+    }
+    assert "no other telescope has confirmed it yet" in mover["motion_verdict"]["reason"]
+    # The fixed stars do not move; a few may sit at the noise level, but none is called moving.
+    rest = [o["motion_verdict"]["verdict"] for o in objects[1:]]
+    assert "moving" not in rest and rest.count("not_moving") >= 30
+
+
 def _with_catalogues(monkeypatch, gaia, simbad=()):
     """Turn the catalogue check on with fake Gaia/SIMBAD answers (the archival refit stays SPHEREx-only)."""
 
@@ -167,6 +182,8 @@ def test_catalogue_check_names_and_classifies_the_objects(fakes, monkeypatch):
     (match,) = mover["matches"]
     assert match["catalog"] == "gaia" and match["kind"] == "High proper-motion star" and match["sep_arcsec"] < 3
     assert (match["pm_ra_cosdec"], match["pm_dec"], match["magnitude"]) == (MOVER_PM[0], MOVER_PM[1], 9.0)
+    assert (mover["motion_verdict"]["verdict"], mover["motion_verdict"]["certainty"]) == ("moving", "confirmed")
+    assert mover["motion_verdict"]["decided_by"] == "catalogue"
     rest = result["objects"][1:]
     assert all(o["kind"] == "static" and o["classification"] == "static" and o["name"] is None for o in rest)
 

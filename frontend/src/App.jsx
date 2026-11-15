@@ -2,6 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffec
 import SkyMap from './components/SkyMap.jsx';
 import InfoPanel from './components/InfoPanel.jsx';
 import CandidatesPanel from './components/CandidatesPanel.jsx';
+import Results from './components/Results.jsx';
 import SurveyLegend from './components/SurveyLegend.jsx';
 import { candidateField, matchCandidate } from './lib/crawl.js';
 import Search from './components/Search.jsx';
@@ -119,6 +120,7 @@ export default function App() {
   const [pointed, setPointed] = useState(null); // the list row under the pointer, as a selection
   const [resume, setResume] = useState(null); // the object just left: its list row takes the keyboard focus back
   const [listOpen, setListOpen] = useState(false); // the survey's candidates list
+  const [resultsOpen, setResultsOpen] = useState(() => window.location.hash === '#results'); // the Results page, linkable as #results
   const [candidate, setCandidate] = useState(null); // the survey candidate the open patch was opened for
   const [playing, setPlaying] = useState(false);
   const [filter, setFilter] = useState(SHOW_ALL); // which kinds of object are shown (lib/classes.js)
@@ -389,14 +391,21 @@ export default function App() {
       const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
       if (e.key === '/' && !typing) { e.preventDefault(); searchRef.current?.focus(); }
       else if (e.key === 'Escape' && !typing) {
-        if (listOpen) setListOpen(false);
+        if (resultsOpen) setResultsOpen(false);
+        else if (listOpen) setListOpen(false);
         else if (focus) backToPatch();
         else closePanel();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [listOpen, focus, backToPatch, closePanel]);
+  }, [resultsOpen, listOpen, focus, backToPatch, closePanel]);
+
+  useEffect(() => {
+    const { pathname, search, hash } = window.location;
+    const next = resultsOpen ? '#results' : '';
+    if (hash !== next) window.history.replaceState(null, '', `${pathname}${search}${next}`);
+  }, [resultsOpen]);
 
   const onViewChange = useCallback((v) => {
     view.current = v;
@@ -482,7 +491,9 @@ export default function App() {
   const wide = panel === 'patch' && Boolean(focus) && Boolean(API_BASE);
 
   return (
-    <div className={`app ${panel ? 'with-panel' : ''} ${wide ? 'wide' : ''}`}>
+    <>
+    {/* The Results page covers the app; inert keeps the keyboard and screen readers out from under it. */}
+    <div className={`app ${panel ? 'with-panel' : ''} ${wide ? 'wide' : ''}`} inert={resultsOpen}>
       <main className={`stage ${sel && show.gaia ? 'dimmed' : ''}`}>
         <SkyMap
           initial={INITIAL}
@@ -515,6 +526,7 @@ export default function App() {
           <button type="button" className={`opt ${listOpen ? 'on' : ''}`} aria-pressed={listOpen} disabled={!ready} onClick={() => setListOpen(!listOpen)}>
             Candidates
           </button>
+          <button type="button" className="opt" title="Results: what the survey found, and how far to trust it" onClick={() => setResultsOpen(true)}>Findings</button>
         </header>
 
         <nav className={`layers ${layersOpen ? 'open' : ''}`} aria-label="Layers">
@@ -602,5 +614,7 @@ export default function App() {
         />
       )}
     </div>
+    {resultsOpen && <Results onClose={() => setResultsOpen(false)} />}
+    </>
   );
 }

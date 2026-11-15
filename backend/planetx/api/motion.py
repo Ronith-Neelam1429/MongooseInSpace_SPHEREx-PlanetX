@@ -29,9 +29,11 @@ from planetx.api.schemas import (
     MotionPass,
     MotionResponse,
     MotionResult,
+    MotionVerdict,
     TrackPoint,
     Variability,
 )
+from planetx.classify import reliability
 from planetx.engine import EngineResult, TrackedObject
 from planetx.spherex import archive, cutouts
 
@@ -61,6 +63,9 @@ class EngineRun:
 
     result: EngineResult
     tracked: list[TrackedObject]  # tracked[i] is MotionResult.objects[i] (MotionObject.id == i)
+    # verdicts[i] is MotionResult.objects[i].motion_verdict, before the evidence view's image tests;
+    # empty when unknown.
+    verdicts: list[reliability.MotionVerdict] = field(default_factory=list)
 
 
 @dataclass
@@ -211,8 +216,18 @@ def _finite(value: float | None) -> float | None:
     return float(value) if value is not None and np.isfinite(value) else None
 
 
-def motion_object(found: pipeline.FieldObject) -> MotionObject:
-    """One pipeline object in the API's shape (`id` is left for the caller to number)."""
+def motion_verdict(v: reliability.MotionVerdict) -> MotionVerdict:
+    return MotionVerdict(
+        verdict=v.verdict, certainty=v.certainty, cause=v.cause, reason=v.reason, decided_by=v.decided_by,
+    )
+
+
+def motion_object(found: pipeline.FieldObject, verdict: reliability.MotionVerdict | None = None) -> MotionObject:
+    """One pipeline object in the API's shape (`id` is left for the caller to number).
+
+    `verdict` is the object's from `reliability.field_verdicts` (which knows the field's
+    bright stars); without it the object is judged on its own.
+    """
     obj, fm, known = found.tracked, found.fused, found.known
     var = obj.variability if obj.is_variable else None
     return MotionObject(
@@ -249,13 +264,19 @@ def motion_object(found: pipeline.FieldObject) -> MotionObject:
             )
             for m in known.matches
         ],
+        motion_verdict=motion_verdict(verdict or reliability.object_verdict(found)),
     )
 
 
 def build_result(run: pipeline.FieldRun) -> tuple[MotionResult, EngineRun]:
     """The API summary of a pipeline run, plus the engine data kept for follow-up requests."""
     result = run.result
-    objects = [motion_object(found) for found in run.objects]
+    pixel = (
+        float(np.median([f.pixel_scale_arcsec for f in result.frames])) if result.frames
+        else reliability.SPHEREX_PIXEL_ARCSEC
+    )
+    verdicts = reliability.field_verdicts(run.objects, pixel_arcsec=pixel)
+    objects = [motion_object(found, v) for found, v in zip(run.objects, verdicts, strict=True)]
     for i, o in enumerate(objects):
         o.id = i
 
@@ -268,4 +289,4 @@ def build_result(run: pipeline.FieldRun) -> tuple[MotionResult, EngineRun]:
         detectors=sorted({f.detector for f in result.input_frames}),
         pm_floor_arcsec_yr=result.pm_floor_arcsec_yr, objects=objects, notes=run.notes,
     )
-    return summary, EngineRun(result=result, tracked=[found.tracked for found in run.objects])
+    return summary, EngineRun(result=result, tracked=[found.tracked for found in run.objects], verdicts=verdicts)
