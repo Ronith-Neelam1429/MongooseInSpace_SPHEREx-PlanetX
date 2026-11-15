@@ -117,6 +117,14 @@ def test_a_pass_that_saw_nothing_on_the_path_is_a_chance_link():
     assert (v.verdict, v.cause, v.decided_by) == ("fake_motion", "chance_link", "spherex")
 
 
+def test_a_saturated_star_with_an_empty_pass_is_unsure_not_fake():
+    # Eps Indi A (a real 4.7"/yr mover) was called a chance link because one pass missed its
+    # saturated, masked core.
+    obj = replace(saturate(mover(pm_err=0.2, step_yr=1.0)), missing_passes=[1])
+    v = object_verdict(found(obj, classification="static"))
+    assert (v.verdict, v.cause, v.decided_by) == ("unsure", "saturated_halo", "spherex")
+
+
 def test_archive_stationary_makes_the_motion_fake_and_names_the_engine_cause():
     v = object_verdict(found(saturate(mover()), Verdict.STATIONARY, kind="static", classification="static"))
     assert (v.verdict, v.cause, v.decided_by) == ("fake_motion", "saturated_halo", "archive")

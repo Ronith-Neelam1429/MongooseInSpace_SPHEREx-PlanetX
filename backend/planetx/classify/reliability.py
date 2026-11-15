@@ -325,6 +325,14 @@ def object_verdict(
         )
     if obj.missing_passes:
         n = len(obj.missing_passes)
+        if _saturated(obj):
+            # A saturated star's core is masked and its patch is often cut at an image edge, so an
+            # empty pass is weak evidence here (Eps Indi A, a real 4.7"/yr mover, was called fake).
+            return MotionVerdict(
+                "unsure", f"{_plural(n, 'pass').capitalize()} of SPHEREx covered its path and found nothing, but it is "
+                "a saturated star, whose masked core or a cut image edge can hide it: not enough to call the motion "
+                "real or fake.", "spherex", cause="saturated_halo",
+            )
         return MotionVerdict(
             "fake_motion", f"{_plural(n, 'pass').capitalize()} of SPHEREx covered the path it would have taken and saw "
             "nothing there, so its positions belong to different objects.", "spherex", cause="chance_link",
