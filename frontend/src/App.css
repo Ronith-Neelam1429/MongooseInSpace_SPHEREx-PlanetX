@@ -294,6 +294,13 @@
   .hud-note { max-width: none; }
   .zoom { bottom: 44px; }
 }
+/* Phone-wide map: the search field gets a row of its own instead of being squeezed to a few letters. */
+@container stage (max-width: 480px) {
+  .bar { flex-wrap: wrap; row-gap: 0; }
+  .mark { margin-right: auto; }
+  .search { order: 3; flex: 1 0 100%; margin-right: 6px; }
+  .layers, .classes { top: 96px; }
+}
 @container stage (max-height: 420px) {
   .classes-list { display: none; }
   .readout { display: none; }
