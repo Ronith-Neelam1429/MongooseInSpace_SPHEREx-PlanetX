@@ -199,6 +199,89 @@ class MotionResponse(BaseModel):
     result: MotionResult | None = None
 
 
+class EvidenceFlux(BaseModel):
+    """Brightness of the object in one pass and detector: the median over that pass's frames."""
+
+    band: str = Field(description='Detector and measurement kind, e.g. "D3", or "D3-wing" for a saturated star')
+    flux: float = Field(description="Only comparable with the same band in other passes")
+    flux_err: float
+
+
+class EvidencePoint(BaseModel):
+    """Where the object was measured in one pass, as offsets from the patch centre."""
+
+    east_arcsec: float = Field(description="East is positive (to the left in the images)")
+    north_arcsec: float = Field(description="North is positive (up in the images)")
+    sigma_arcsec: float = Field(description="Position error of this pass, per axis")
+    mjd: float
+    date: str
+    n_frames: int = Field(description="Frames of the pass that detected the object")
+    fluxes: list[EvidenceFlux]
+
+
+class FieldScatter(BaseModel):
+    """How far the field's other tracked objects appear to shift between the object's first
+    pass and this one. Nearly all of them are fixed stars, so this is the measurement noise."""
+
+    sigma_arcsec: float = Field(description="Per axis: 1.4826 x the median absolute shift")
+    median_shift_arcsec: float = Field(description="Median total shift on the sky")
+    n_stars: int
+
+
+class EvidencePass(BaseModel):
+    """One survey pass: the image of the patch and the object's measurement in it."""
+
+    index: int = Field(description="Pass number in the run, 0-based, time-ordered")
+    start: str = Field(description="Date of the first exposure, YYYY-MM-DD")
+    end: str
+    n_frames: int = Field(description="Exposures combined into the image")
+    image_png_b64: str = Field(description="Base64 PNG, grey + alpha; transparent where there is no data")
+    coverage: float = Field(description="Fraction of the image that has data (below 1 at the edge of the field)")
+    point: EvidencePoint | None = Field(None, description="Null when the object was not measured in this pass")
+    field_scatter: FieldScatter | None = Field(
+        None, description="Null for the object's first pass, and when too few other objects were seen in both passes"
+    )
+
+
+class EvidenceFit(BaseModel):
+    """The engine's straight-line fit of the object's positions, as offsets from the patch centre."""
+
+    ref_mjd: float
+    east_arcsec: float = Field(description="Fitted position at ref_mjd")
+    north_arcsec: float
+    pm_east: float = Field(description="arcsec/yr, as MotionObject.pm_ra_cosdec")
+    pm_north: float
+
+
+class MotionEvidence(BaseModel):
+    """What the engine saw of one object: the same patch of sky in every pass, and its positions.
+
+    All images share one grid, grey scale and orientation: north up, east left, centred on
+    the object's first measured position (`patch_ra`, `patch_dec`). The pixel at image column
+    `(patch_px - 1) / 2 - east_arcsec / patch_pixel_arcsec` and row
+    `(patch_px - 1) / 2 - north_arcsec / patch_pixel_arcsec` (0-based, row 0 at the top) is
+    the sky at that offset.
+    """
+
+    object: int = Field(description="MotionObject.id in the run")
+    ra: float = Field(description="The object's fitted position, as MotionObject.ra: tells which object this is")
+    dec: float
+    patch_ra: float
+    patch_dec: float
+    patch_arcsec: float = Field(description="Side of the square patch")
+    patch_px: int = Field(description="Side of every image, pixels")
+    patch_pixel_arcsec: float = Field(description="Image pixel size: half a SPHEREx pixel")
+    spherex_pixel_arcsec: float
+    passes: list[EvidencePass] = Field(description="Every pass of the run, time-ordered")
+    difference_png_b64: str = Field(
+        description="Last minus first pass in which the object was measured: mid-grey is no change, "
+        "lighter is brighter in the last pass"
+    )
+    difference_passes: tuple[int, int] = Field(description="Pass indices (first, last) of the difference image")
+    fit: EvidenceFit
+    pm_floor_arcsec_yr: float = Field(description="As MotionResult.pm_floor_arcsec_yr")
+
+
 class SurveyCounts(BaseModel):
     pending: int = 0
     in_progress: int = 0
