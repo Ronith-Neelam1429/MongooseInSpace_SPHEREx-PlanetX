@@ -66,6 +66,8 @@ BLEND_DMAG = 1.5
 CHANCE_MAX = 0.05
 
 SNR_EDGES = CALIB_SNR_EDGES  # the engine's error-calibration bands (<15, 15-40, >=40)
+# The engine's own significance bar for a mover (find_motion's mover_sigma).
+NEAR_FALSE_SIGMA = 5.0
 # Gaia movers brighter than this that no track matched are listed as missed.
 UNTRACKED_MAX_G = 18.0
 TRUTHS = ("real_mover", "static", "ambiguous")
@@ -582,6 +584,16 @@ def untracked_movers(
             "gaia_pm_dec": _r(star.pm_dec, 5), "gaia_pm_total": _r(star.pm_total, 5),
         })
     return out
+
+
+def near_false_movers(matched: Sequence[dict], min_sigma: float = NEAR_FALSE_SIGMA) -> list[dict]:
+    """Gaia-static tracks the engine did not flag although their apparent motion is at least
+    `min_sigma` times its error: fakes that only the engine's other guards stopped. Most significant first."""
+    rows = [
+        r for r in matched
+        if not r["engine_is_mover"] and r["truth"] == "static" and (r["pm_significance"] or 0.0) >= min_sigma
+    ]
+    return sorted(rows, key=lambda r: -(r["pm_significance"] or 0.0))
 
 
 def false_movers(matched: Sequence[dict]) -> list[dict]:

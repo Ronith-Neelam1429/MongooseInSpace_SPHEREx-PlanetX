@@ -136,6 +136,17 @@ def test_static_blend_reported_as_mover_is_a_false_mover_and_not_clean():
     assert summary["n_residual"] == 0 and summary["residual_median"] is None
 
 
+def test_significant_static_tracks_the_engine_held_back_are_near_false_movers():
+    s = star(1)
+    field = gt.GaiaField([s], WIDE)
+    held = track(on(s), pm=(1.2, 0.0), pm_err=0.2)  # 6 sigma, not flagged (e.g. under 1 px of shift)
+    quiet = track(on(s), pm=(0.1, 0.0), pm_err=0.2)
+    flagged = track(on(s), pm=(1.2, 0.0), pm_err=0.2, mover=True)
+    matched, _ = gt.evaluate_field([quiet, held, flagged], field, "f")
+    assert gt.near_false_movers(matched) == [matched[1]]
+    assert gt.false_movers(matched) == [matched[2]]
+
+
 def test_much_fainter_neighbour_is_not_a_blend():
     a, b = star(1, g=12.0), star(2, dx=3.0, g=16.0)
     field = gt.GaiaField([a, b], WIDE)

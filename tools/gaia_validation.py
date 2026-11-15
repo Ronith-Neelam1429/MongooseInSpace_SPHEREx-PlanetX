@@ -48,6 +48,7 @@ from astropy.io import fits  # noqa: E402
 from planetx import pipeline  # noqa: E402
 from planetx.analysis import gaia_truth  # noqa: E402
 from planetx.api.schemas import Visit  # noqa: E402
+from planetx.classify import reliability  # noqa: E402
 from planetx.config import settings  # noqa: E402
 from planetx.engine import Frame, frame_from_hdul  # noqa: E402
 from planetx.observatories import SPHEREX_ONLY, parse_observatories  # noqa: E402
@@ -277,6 +278,31 @@ def list_visits(name: str, ra: float, dec: float) -> list[Visit]:
     return visits
 
 
+def verdicts(run: pipeline.FieldRun) -> list[dict]:
+    """The website's motion verdict for each of `run.result.objects` (in that order), as row fields.
+
+    Computed as the API does (`reliability.field_verdicts` over the pipeline's objects).
+    With PLANETX_OBSERVATORIES=spherex it sees no archive and no catalogue, so it is
+    SPHEREx's own verdict: nothing from Gaia leaks into what Gaia then scores.
+    """
+    frames = run.result.frames
+    pixel = float(np.median([f.pixel_scale_arcsec for f in frames])) if frames else reliability.SPHEREX_PIXEL_ARCSEC
+    by_track = {
+        id(found.tracked): v
+        for found, v in zip(run.objects, reliability.field_verdicts(run.objects, pixel_arcsec=pixel), strict=True)
+    }
+    out = []
+    for obj in run.result.objects:
+        v = by_track[id(obj)]
+        out.append({
+            "motion_verdict": v.verdict, "motion_certainty": v.certainty, "motion_cause": v.cause,
+            "motion_decided_by": v.decided_by,
+            # The sentence only where it says something (thousands of rows are plain "not moving").
+            "motion_reason": v.reason if v.verdict != "not_moving" else None,
+        })
+    return out
+
+
 def run_field(name: str) -> dict:
     ra, dec, why = FIELDS[name]
     t0 = time.monotonic()
@@ -291,7 +317,7 @@ def run_field(name: str) -> dict:
     radius = min(half_diag + gaia_truth.BLEND_RADIUS_ARCSEC + GAIA_REACH_ARCSEC, 3600.0)
     stars = gaia_truth.parse_gaia_csv(fetch_gaia_csv(name, ra_c, dec_c, radius))
     gaia = gaia_truth.GaiaField(stars, radius)
-    matched, unmatched = gaia_truth.evaluate_field(objects, gaia, name)
+    matched, unmatched = gaia_truth.evaluate_field(objects, gaia, name, verdicts(run))
     mid_mjd = float(np.median([f.mjd for f in result.frames]))
     missed = gaia_truth.untracked_movers(gaia, matched, mid_mjd, inside)
     for m in missed:
@@ -323,12 +349,14 @@ def build(done: dict[str, dict], failed: dict[str, str], argv: list[str]) -> dic
     n_objects = len(matched) + len(unmatched)
     summary = gaia_truth.summarize(matched, n_objects)
     fm = gaia_truth.false_movers(matched)
+    near = gaia_truth.near_false_movers(matched)
     engine_movers = sorted((r for r in matched + unmatched if r["engine_is_mover"]),
                            key=lambda r: -(r["pm_significance"] or 0.0))
     summary |= {
         "n_unmatched": len(unmatched),
         "n_engine_movers": len(engine_movers),
         "n_false_movers": len(fm),
+        "n_near_false_movers": len(near),
         "n_untracked_gaia_movers": len(missed),
     }
     tp, fn = summary["confusion"]["tp"], summary["confusion"]["fn"]
@@ -368,6 +396,13 @@ def build(done: dict[str, dict], failed: dict[str, str], argv: list[str]) -> dic
              "needs a SPHEREx error)."),
             ("A Gaia star matched by several tracks with no pass in common is split_track: the engine cut one "
              "object's passes into pieces (n_stars_split_into_tracks)."),
+            ("objects and unmatched rows are compacted: the docs/RESULTS.md fields are always there; other "
+             "fields are left out when null, false or empty, motion_decided_by when 'spherex', "
+             "n_tracks_same_star when 1, gaia_related_ids when only the matched star; snr_band, totals and "
+             "per-pass positions are in engine_movers and false_movers only."),
+            ("motion_verdict is the website's per-object verdict (planetx.classify.reliability.field_verdicts) "
+             "from SPHEREx alone (no archive, no catalogue check, so Gaia does not inform it); "
+             "summary.verdict_vs_truth counts each verdict by Gaia truth."),
             ("Engine motions are relative to the field's stars (frames are aligned on them); "
              "summary.frame_pm_offset is the median residual of the clean static stars."),
             "Engine movers are candidates to check, never confirmed objects.",
@@ -376,16 +411,44 @@ def build(done: dict[str, dict], failed: dict[str, str], argv: list[str]) -> dic
         "failed_fields": [{"name": k, "error": v} for k, v in failed.items()],
         "summary": summary,
         "false_movers": fm,
+        # Gaia-static tracks with a significant apparent motion that only the engine's other
+        # guards (1 px bar, 10 sigma for 2 passes) kept from being movers: full rows, per-pass positions.
+        "near_false_movers": near,
         "engine_movers": engine_movers,
         "untracked_gaia_movers": missed,
-        # Per-pass positions only for movers (above): they would triple the file.
-        "objects": [_without_passes(r) for r in matched],
-        "unmatched": [_without_passes(r) for r in unmatched],
+        # Full rows (with per-pass positions) only for the movers above; the thousands of
+        # others are compacted (see _compact) to keep the served file a few MB.
+        "objects": [_compact(r) for r in matched],
+        "unmatched": [_compact(r) for r in unmatched],
     }
 
 
-def _without_passes(row: dict) -> dict:
-    return {k: v for k, v in row.items() if k != "passes"}
+# docs/RESULTS.md object fields: always present, even when null.
+CONTRACT_FIELDS = frozenset({
+    "ra", "dec", "g_mag", "snr", "n_passes", "spherex_pm_ra", "spherex_pm_dec", "spherex_pm_err",
+    "gaia_pm_ra", "gaia_pm_dec", "gaia_pm_err", "engine_is_mover", "truth",
+})
+# Derivable from other fields (totals, SNR band) or the same in almost every row.
+DROPPED_FIELDS = frozenset({"passes", "snr_band", "spherex_pm_total", "gaia_pm_total", "engine_link"})
+
+
+def _compact(row: dict) -> dict:
+    """The row without derivable fields, and without extras that are null, empty, false or default.
+
+    Readers should use `.get()` for anything beyond CONTRACT_FIELDS.
+    """
+    out = {}
+    for k, v in row.items():
+        if k in DROPPED_FIELDS:
+            continue
+        if k not in CONTRACT_FIELDS and (v is None or v is False or v == []):
+            continue
+        if k == "gaia_related_ids" and v == [row.get("gaia_source_id")]:
+            continue
+        if (k, v) in (("motion_decided_by", "spherex"), ("n_tracks_same_star", 1)):
+            continue
+        out[k] = v
+    return out
 
 
 def write(doc: dict) -> None:
