@@ -119,6 +119,7 @@ export default function App() {
   const [pointed, setPointed] = useState(null); // the list row under the pointer, as a selection
   const [resume, setResume] = useState(null); // the object just left: its list row takes the keyboard focus back
   const [listOpen, setListOpen] = useState(false); // the survey's candidates list
+  const [candidate, setCandidate] = useState(null); // the survey candidate the open patch was opened for
   const [playing, setPlaying] = useState(false);
   const [filter, setFilter] = useState(SHOW_ALL); // which kinds of object are shown (lib/classes.js)
   const [query, setQuery] = useState('');
@@ -227,6 +228,7 @@ export default function App() {
     camera.current.flyTo({ ra, dec, fov: targetFov });
     const s = { ra, dec, radius: radiusFor(targetFov), label };
     wanted.current = null;
+    setCandidate(null);
     setSel(s);
     setFocus(null);
     setTrail([]);
@@ -245,6 +247,8 @@ export default function App() {
 
   const closePanel = useCallback(() => {
     Object.values(aborts.current).forEach((c) => c.abort());
+    wanted.current = null;
+    setCandidate(null);
     setSel(null);
     setFocus(null);
     setTrail([]);
@@ -257,6 +261,8 @@ export default function App() {
 
   /** Select one object: its card opens and the camera goes to it. */
   const pick = useCallback((s) => {
+    // Picking anything settles which card is open: a candidate's run must not take it over later.
+    wanted.current = null;
     setFocus(s);
     setTrail([]);
     setPointed(null);
@@ -437,24 +443,25 @@ export default function App() {
   };
 
   /**
-   * Open a survey candidate: its field as the patch, with the engine run started (the survey's
-   * frames are already in the server's cache), then its card once the run has found it again.
+   * Open a survey candidate: its field as the patch, with the candidate shown on top of it. The
+   * engine run that gives its pictures and proof costs tens of SPHEREx downloads, so it starts only
+   * when asked; the candidate's card then opens once the run has found it again.
    */
   const goCandidate = useCallback((c) => {
     const f = candidateField(c);
     const s = select(f.ra, f.dec, { fov: CANDIDATE_FOV, label: c.name || 'Survey candidate' });
-    if (!s || !API_BASE) return;
-    wanted.current = c;
-    load('motion', s);
-  }, [select, load]);
+    if (!s) return;
+    setCandidate(c);
+    if (API_BASE) wanted.current = c;
+  }, [select]);
 
-  // The candidate's card opens when its field's run is done; a field where the run no longer finds
-  // it stays open on the patch, with the run's results listed.
+  // The candidate's card opens when a run on its field is done. A failed run keeps it waiting for
+  // the retry; a run that no longer finds it leaves the patch open with what it found.
   useEffect(() => {
     const c = wanted.current;
-    if (!c || motion.status === 'loading' || motion.status === 'idle') return;
+    if (!c || motion.status !== 'ok') return;
     wanted.current = null;
-    const o = motion.status === 'ok' ? matchCandidate(motion.result.objects, c) : null;
+    const o = matchCandidate(motion.result.objects, c);
     if (o) pick({ kind: 'engine', obj: o });
   }, [motion, pick]);
 
@@ -571,6 +578,7 @@ export default function App() {
           onOpen={pickFromCard}
           backLabel={trail.length && trail[trail.length - 1].kind === 'known' ? `Back to ${shortName(trail[trail.length - 1].obj.name)}` : null}
           lists={lists}
+          candidate={candidate}
           onPoint={setPointed}
           onBack={backToPatch}
           onClose={closePanel}

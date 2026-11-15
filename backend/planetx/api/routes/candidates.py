@@ -6,11 +6,13 @@ be opened for reading (logged).
 """
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Annotated, Literal
 
 import numpy as np
 from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import Path as PathParam
 
 from planetx import pipeline
 from planetx.api.routes.survey import DbPath, cannot_open
@@ -28,6 +30,11 @@ MAX_LIMIT = 500
 THUMBNAIL_SIZE_DEG = 0.03
 # Exposures tried (newest first) before giving up on a thumbnail: each can be a ~4 MB download.
 THUMBNAIL_TRIES = 3
+# Thumbnails rendered at once. The route is sync (FastAPI's shared thread pool), so without a
+# cap a script walking the ids could tie up every thread; past the cap the answer is 503.
+THUMBNAIL_SLOTS = 2
+_thumbnail_slots = threading.BoundedSemaphore(THUMBNAIL_SLOTS)
+THUMBNAIL_RETRY_AFTER_S = 3
 
 
 def _stored_or_none(db_path: Path, read):
@@ -69,7 +76,7 @@ def _candidate(r: StoredCandidate) -> SurveyCandidate:
         id=r.id, ra=c.ra, dec=c.dec, name=c.name, classification=c.classification, kind=c.kind,
         is_variable=c.is_variable, pm_total=c.pm_total, pm_ra_cosdec=c.pm_ra_cosdec, pm_dec=c.pm_dec,
         significance=c.significance, position_angle_deg=c.position_angle_deg, score=c.score,
-        nside=r.nside, ipix=r.ipix, found=r.found, field_ra=c.field_ra, field_dec=c.field_dec,
+        nside=r.nside, ipix=r.ipix, found=r.found, field_ra=c.field_ra, field_dec=c.field_dec, ref_mjd=c.ref_mjd,
     )
 
 
@@ -78,23 +85,45 @@ def _candidate(r: StoredCandidate) -> SurveyCandidate:
     response_class=Response,
     responses={200: {"content": {"image/png": {}}}},
 )
-def candidate_thumbnail(candidate_id: int, db_path: DbPath) -> Response:
-    """A small SPHEREx picture centred on a candidate, from the newest exposure the survey used.
+def candidate_thumbnail(
+    candidate_id: Annotated[int, PathParam(ge=1, le=2**63 - 1, description="SurveyCandidate.id")],
+    db_path: DbPath,
+) -> Response:
+    """A small SPHEREx picture centred on a candidate, from the newest exposure the survey samples.
 
-    The survey's own cutouts are reused: the frame is cut from the raw cutout of the
-    candidate's field (same request as `/api/motion` on that field), so this downloads
-    nothing when the crawler shares the API's cache. Otherwise one ~4 MB download.
+    The frame is cut from the raw cutout of the candidate's field (the request `/api/motion`
+    makes on that field), so it is shared with any run there and served from the cutout
+    cache once fetched; a first request can cost up to THUMBNAIL_TRIES downloads of ~4 MB.
+    At most THUMBNAIL_SLOTS render at once; past that the answer is 503 with Retry-After.
     """
+    if not _thumbnail_slots.acquire(blocking=False):
+        raise HTTPException(503, "thumbnails are busy; try again shortly",
+                            headers={"Retry-After": str(THUMBNAIL_RETRY_AFTER_S)})
+    try:
+        return _thumbnail(candidate_id, db_path)
+    finally:
+        _thumbnail_slots.release()
+
+
+def _thumbnail(candidate_id: int, db_path: Path) -> Response:
     row = _stored_or_none(db_path, lambda s: s.get(candidate_id))
     if row is None:
         raise HTTPException(404, "no such candidate (ids change when the survey re-processes a patch)")
     c = row.candidate
+    no_cutout = None
     try:
         visits = pipeline.pick_visits(archive.query_visits(c.field_ra, c.field_dec, pipeline.VISIT_RADIUS_ARCSEC))
         request = cutouts.cutout_request(c.field_ra, c.field_dec, FIELD_SIZE_DEG)
         # Newest first: the picture shows where the object is now.
         for visit in sorted(visits, key=lambda v: v.mjd, reverse=True)[:THUMBNAIL_TRIES]:
-            frame = _aligned(visit.access_url, request, c.ra, c.dec)
+            try:
+                frame = _aligned(visit.access_url, request, c.ra, c.dec)
+            except archive.UpstreamError as exc:
+                # IRSA has no cutout of this file here: the next exposure may have one.
+                if exc.status in pipeline.NO_CUTOUT_STATUS and not isinstance(exc, archive.IrsaBusy):
+                    no_cutout = exc
+                    continue
+                raise
             if np.isfinite(frame.data).any():
                 return Response(
                     cutouts.render_png(frame.data), media_type="image/png",
@@ -107,7 +136,8 @@ def candidate_thumbnail(candidate_id: int, db_path: DbPath) -> Response:
         if exc.status in pipeline.NO_CUTOUT_STATUS:
             raise HTTPException(404, f"no SPHEREx picture at this candidate: {exc}") from exc
         raise HTTPException(502, f"IRSA request failed: {exc}") from exc
-    raise HTTPException(404, "no SPHEREx exposure has data at this candidate")
+    reason = f" ({no_cutout})" if no_cutout else ""
+    raise HTTPException(404, f"no SPHEREx exposure has data at this candidate{reason}")
 
 
 def _aligned(url: str, request: tuple[float, float, float], ra: float, dec: float) -> cutouts.AlignedCutout:

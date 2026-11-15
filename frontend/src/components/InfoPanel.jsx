@@ -6,6 +6,7 @@ import { CLASS, engineClass, knownClass } from '../lib/classes.js';
 import { flaggedKnown, otherKnown, patchVerdict } from '../lib/patch.js';
 import ObjectCard, { CloseIcon } from './ObjectCard.jsx';
 import { ClassMark } from './ClassFilter.jsx';
+import SurveyCandidateNote from './SurveyCandidateNote.jsx';
 
 const signed = (v, d) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`;
 const count = (n) => n.toLocaleString('en-US');
@@ -143,7 +144,7 @@ function Player({ gaia, fast, playing, onTogglePlay, getYear, moversOnly, onTogg
  * The top of the panel: one line saying what this patch holds, then the way to measure it (or
  * how the measurement is going), and whatever failed to load.
  */
-function Summary({ motion, results, known, simbad, gaia, visits, onRun, onRetry }) {
+function Summary({ motion, results, known, simbad, gaia, visits, onRun, onRetry, runShown }) {
   const loaded = simbad.status !== 'loading' && gaia.status !== 'loading';
   const ran = motion.status === 'ok';
   const v = patchVerdict({ ran, results, rows: known.rows, loaded });
@@ -170,7 +171,7 @@ function Summary({ motion, results, known, simbad, gaia, visits, onRun, onRetry 
         </p>
       )}
       {motion.status === 'none' && <p className="line dim">Measuring motion needs the PlanetX server, which is not connected.</p>}
-      {motion.status === 'idle' && (
+      {motion.status === 'idle' && !runShown && (
         <div className="run">
           <button type="button" className="btn" onClick={onRun}>Find what moves</button>
           <p className="line dim">Compares about 50 SPHEREx images taken months apart. A minute or two the first time.</p>
@@ -307,7 +308,7 @@ function More({ sel, visits, motion, known, results, filter, gaia, others, onTog
  */
 export default function InfoPanel({
   sel, simbad, gaia, visits, motion, known, results, others, onToggleOthers, focus, hover, resume, onPick, onOpen, onPoint, onBack, onClose, onRetry,
-  lists, backLabel,
+  lists, backLabel, candidate,
   onCopyLink, copied, playing, onTogglePlay, getYear, filter, moversOnly, onToggleMovers,
 }) {
   if (focus) {
@@ -348,9 +349,10 @@ export default function InfoPanel({
       </header>
 
       <div className="panel-body">
+        {candidate && <SurveyCandidateNote candidate={candidate} motion={motion} onRun={() => onRetry('motion')} />}
         <Summary
           motion={motion} results={results} known={known} simbad={simbad} gaia={gaia} visits={visits}
-          onRun={() => onRetry('motion')} onRetry={onRetry}
+          onRun={() => onRetry('motion')} onRetry={onRetry} runShown={Boolean(candidate)}
         />
         <Flagged
           results={results} known={known} filter={filter} gaia={gaia} {...pointing}

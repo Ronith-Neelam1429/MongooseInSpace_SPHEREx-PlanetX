@@ -424,9 +424,10 @@ class SurveyCandidate(BaseModel):
     found: str = Field(description="UTC date (YYYY-MM-DD) of the run that stored it")
     field_ra: float = Field(
         description="Centre of the field it was measured in; `/api/motion` there with size_deg=0.2"
-        " repeats the survey's run (on the frames the survey already downloaded)"
+        " repeats the survey's run (a full run: up to ~54 cutouts of ~4 MB unless cached)"
     )
     field_dec: float
+    ref_mjd: float = Field(description="MJD (UTC) at which ra, dec hold (the SPHEREx fit's reference date)")
 
 
 class SurveyCandidates(BaseModel):

@@ -12,6 +12,7 @@ from PIL import Image
 
 from planetx import pipeline
 from planetx.api.app import app
+from planetx.api.routes import candidates as candidates_route
 from planetx.api.routes.survey import get_db_path
 from planetx.api.schemas import Visit
 from planetx.spherex import archive, cutouts
@@ -25,7 +26,7 @@ from survey_fakes import candidate  # noqa: E402
 
 client = TestClient(app)
 KEYS = {"id", "ra", "dec", "name", "classification", "is_variable", "pm_total", "pm_ra_cosdec", "pm_dec",
-        "significance", "position_angle_deg", "score", "nside", "ipix", "found", "kind", "field_ra", "field_dec"}
+        "significance", "position_angle_deg", "score", "nside", "ipix", "found", "kind", "field_ra", "field_dec", "ref_mjd"}
 
 
 @pytest.fixture
@@ -73,7 +74,7 @@ def test_shape_and_order(filled):
         "id": barnard["id"], "ra": 10.0, "dec": 20.0, "name": "Barnard's Star", "classification": "known_star",
         "is_variable": False, "pm_total": 10.39, "pm_ra_cosdec": -0.8, "pm_dec": 10.36, "significance": 20.8,
         "position_angle_deg": 355.6, "score": 0.15, "nside": 1, "ipix": 2, "found": "2026-11-14",
-        "kind": "mover", "field_ra": 10.0, "field_dec": 20.0,
+        "kind": "mover", "field_ra": 10.0, "field_dec": 20.0, "ref_mjd": 61080.0,
     }
 
 
@@ -167,6 +168,47 @@ def test_thumbnail_of_an_unknown_candidate_is_404(thumb):
 
 def test_thumbnail_without_database_is_404(db_path):
     assert client.get("/api/candidates/1/thumbnail.png").status_code == 404
+
+
+@pytest.mark.parametrize("cid", ["0", "-1", str(2**63), "abc"])
+def test_thumbnail_rejects_bad_ids(db_path, cid):
+    assert client.get(f"/api/candidates/{cid}/thumbnail.png").status_code == 422
+
+
+def test_thumbnail_skips_an_exposure_without_cutout_here(thumb, monkeypatch):
+    cid, calls = thumb
+    real_fetch = archive.fetch_cutout
+
+    def fetch(url, *args):
+        if url == URL.format(n=2):  # the newest has no cutout at this position
+            calls["fetch"].append((url, *args))
+            raise archive.UpstreamError("no overlap", status=404)
+        return real_fetch(url, *args)
+
+    monkeypatch.setattr(archive, "fetch_cutout", fetch)
+    resp = client.get(f"/api/candidates/{cid}/thumbnail.png")
+    assert resp.status_code == 200
+    assert [c[0] for c in calls["fetch"]] == [URL.format(n=2), URL.format(n=1)]
+
+
+def test_thumbnails_beyond_the_slots_are_503_and_free_their_slot(thumb, monkeypatch):
+    cid, _ = thumb
+    held = [candidates_route._thumbnail_slots.acquire(blocking=False) for _ in range(candidates_route.THUMBNAIL_SLOTS)]
+    assert all(held)
+    try:
+        resp = client.get(f"/api/candidates/{cid}/thumbnail.png")
+        assert resp.status_code == 503 and resp.headers["retry-after"] == "3"
+        # The health check is async: it never waits for the thread pool the thumbnails use.
+        assert client.get("/api/health").status_code == 200
+    finally:
+        for _ in held:
+            candidates_route._thumbnail_slots.release()
+    # Slots come back after both successes and errors.
+    assert client.get(f"/api/candidates/{cid}/thumbnail.png").status_code == 200
+    assert client.get(f"/api/candidates/{cid + 100}/thumbnail.png").status_code == 404
+    assert all(candidates_route._thumbnail_slots.acquire(blocking=False) for _ in range(candidates_route.THUMBNAIL_SLOTS))
+    for _ in range(candidates_route.THUMBNAIL_SLOTS):
+        candidates_route._thumbnail_slots.release()
 
 
 def test_thumbnail_without_exposures_is_404(thumb, monkeypatch):

@@ -1,6 +1,6 @@
 // The offline survey in words and on the map: its progress line, the coverage layers, the
 // candidates list's wording, and finding a candidate again among an engine run's objects.
-import { separation } from './coords.js';
+import { formatDec, formatRa, propagate, separation } from './coords.js';
 import { compass, confidence, speed } from './plain.js';
 
 const n = (x) => x.toLocaleString('en-US');
@@ -35,6 +35,15 @@ export function candidateMotion(c) {
   return `${speed(c.pm_total)}″ a year toward the ${compass(c.position_angle_deg)} · ${confidence(c.significance).toLowerCase()} (${c.significance.toFixed(1)}σ)`;
 }
 
+/** What a candidate does, in one line: its motion in words and/or its brightness change, else where it is. */
+export function candidateLine(c) {
+  const parts = [];
+  const motion = candidateMotion(c);
+  if (motion) parts.push(motion);
+  if (c.is_variable) parts.push('changes brightness');
+  return parts.length ? parts.join(' · ') : `${formatRa(c.ra)} ${formatDec(c.dec)}`;
+}
+
 /** The candidate's "found" date (YYYY-MM-DD) as "14 Nov 2026"; the input unchanged if it is not a date. */
 export function foundDate(iso) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
@@ -52,16 +61,26 @@ export function candidateField(c) {
 export const MATCH_ARCSEC = 6.2;
 
 /**
- * The object of an engine run that is survey candidate `c`: the nearest within MATCH_ARCSEC of its
- * position (both are positions at the same reference date from the same pipeline), else null.
+ * The object of an engine run that is survey candidate `c`: the nearest within MATCH_ARCSEC of the
+ * candidate's position moved by its stored motion to the object's own reference date (a later run
+ * with more passes has a later one, and a fast mover shifts arcseconds in months), else null.
  */
 export function matchCandidate(objects, c) {
   let best = null, bestSep = MATCH_ARCSEC / 3600;
   for (const o of objects || []) {
-    const sep = separation(c.ra, c.dec, o.ra, o.dec);
+    const p = candidateAt(c, o.ref_mjd);
+    const sep = separation(p.ra, p.dec, o.ra, o.dec);
     if (sep <= bestSep) { best = o; bestSep = sep; }
   }
   return best;
+}
+
+/** Where candidate `c` (motions in arcsec/yr from its ref_mjd) is at `mjd`; as stored without dates. */
+export function candidateAt(c, mjd) {
+  if (!Number.isFinite(mjd) || !Number.isFinite(c.ref_mjd)) return { ra: c.ra, dec: c.dec };
+  const years = (mjd - c.ref_mjd) / 365.25;
+  // propagate takes mas/yr.
+  return propagate(c.ra, c.dec, (c.pm_ra_cosdec || 0) * 1000, (c.pm_dec || 0) * 1000, years);
 }
 
 /**

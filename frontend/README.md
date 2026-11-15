@@ -49,8 +49,10 @@ comparison); a **Survey** layer drawing the offline crawler's patches (searched 
 in red, the next 300 to search outlined) with a legend and a progress line ("312 of 49,152
 patches searched"); and a **Candidates** list of what that survey has flagged, ranked by score or
 newest first, filterable by class, each row with a small SPHEREx picture (loaded only for rows in
-view, two at a time). Picking one opens its survey field as the patch, runs the engine there (on
-the frames the survey already downloaded) and opens that object's card once the run finds it again. Search accepts names or coordinates. The URL (`?ra=&dec=&fov=` or `?target=`) is the
+view, two at a time). Picking one opens its survey field as the patch with the candidate on top
+(picture, stored motion, score). Its own pictures and proof need an engine run on that field
+(tens of SPHEREx downloads), so the run starts only when asked; the candidate's card then opens
+once the run finds it again (matched within one pixel after moving it by its stored motion). Search accepts names or coordinates. The URL (`?ra=&dec=&fov=` or `?target=`) is the
 open patch, so a copied link reopens the same one. Shortcuts: `/` focuses search, `Esc` steps back.
 With reduced motion turned on in the OS, the globe stays still and the camera jumps instead of flying.
 
@@ -93,7 +95,8 @@ for this cube), and the renderer's grey clear colour is replaced with black. Re-
   proof checklist, chart, single exposures) and the hooks that fetch it
 - `src/lib/pictures.js`: which SPHEREx exposures to show, catalogue positions per date, picture views
 - `src/lib/patch.js`: the patch's one-line verdict and which objects are listed first
-- `src/components/CandidatesPanel.jsx`: the survey's candidates list; `SurveyLegend.jsx`: the
+- `src/components/CandidatesPanel.jsx`: the survey's candidates list; `CandidateThumb.jsx`: its
+  lazy pictures; `SurveyCandidateNote.jsx`: the candidate on top of its patch; `SurveyLegend.jsx`: the
   coverage layer's legend and progress line
 - `src/lib/crawl.js`: the offline survey's coverage layers, progress and candidate wording, and
   finding a candidate again in an engine run
