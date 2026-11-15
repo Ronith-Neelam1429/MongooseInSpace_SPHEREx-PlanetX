@@ -116,7 +116,7 @@ export function shortClaim(o) {
   return parts.join(', ');
 }
 
-const OBSERVATORY = { twomass: '2MASS', allwise: 'AllWISE', catwise: 'CatWISE', neowise: 'NEOWISE' };
+const OBSERVATORY = { '2mass': '2MASS', allwise: 'AllWISE', catwise: 'CatWISE', neowise: 'NEOWISE' };
 
 /** What the check against older sky surveys found, as a sentence. */
 export function archiveSentence(a) {
