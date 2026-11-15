@@ -59,7 +59,11 @@ export function flaggedKnown(rows, results) {
   return rows.filter((row) => FLAGGED_KNOWN.has(knownClass(row)) && !results.some((r) => sameAsResult(row, r)));
 }
 
-/** The known objects behind "More": everything not flagged. */
-export function otherKnown(rows) {
-  return rows.filter((row) => !FLAGGED_KNOWN.has(knownClass(row)));
+/**
+ * The known objects behind "More": everything not listed at the top, including a fast mover or
+ * variable whose catalogue row an engine result stands for (so its catalogue card stays reachable).
+ */
+export function otherKnown(rows, results = []) {
+  const flagged = new Set(flaggedKnown(rows, results));
+  return rows.filter((row) => !flagged.has(row));
 }

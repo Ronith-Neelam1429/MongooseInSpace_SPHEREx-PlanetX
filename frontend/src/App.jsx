@@ -115,6 +115,7 @@ export default function App() {
   const [motion, setMotion] = useState({ status: 'idle' });
   const [crawl, setCrawl] = useState({ status: 'idle' }); // the offline survey's progress and coverage
   const [focus, setFocus] = useState(null); // the selected object: { kind: 'engine' | 'known', obj }
+  const [trail, setTrail] = useState([]); // cards that opened the current one (a card's own links), oldest first
   const [hover, setHover] = useState(null); // the map marker under the pointer: { kind, obj }
   const [pointed, setPointed] = useState(null); // the list row under the pointer, as a selection
   const [resume, setResume] = useState(null); // the object just left: its list row takes the keyboard focus back
@@ -130,19 +131,22 @@ export default function App() {
     () => knownObjects(simbad.status === 'ok' ? simbad.objects : [], gaia.status === 'ok' ? gaia.stars : []),
     [simbad, gaia],
   );
+  // The field's catalogue lists, to name engine objects (null for a list not loaded).
+  const lists = useMemo(
+    () => ({ simbad: simbad.status === 'ok' ? simbad.all : null, gaia: gaia.status === 'ok' ? gaia.all : null }),
+    [simbad, gaia],
+  );
   const results = useMemo(() => {
     if (motion.status !== 'ok') return [];
-    const lists = { simbad: simbad.status === 'ok' ? simbad.all : null, gaia: gaia.status === 'ok' ? gaia.all : null };
     return notable(motion.result).map((o) => ({ o, who: identify(o, lists) }));
-  }, [motion, simbad, gaia]);
+  }, [motion, lists]);
   // The run whose other (static) objects are listed and pickable on the map; a new run closes the list.
   const [othersFor, setOthersFor] = useState(null);
   const othersOpen = motion.status === 'ok' && othersFor === motion.result;
   const others = useMemo(() => {
     if (!othersOpen) return null;
-    const lists = { simbad: simbad.status === 'ok' ? simbad.all : null, gaia: gaia.status === 'ok' ? gaia.all : null };
     return otherObjects(motion.result.objects, results.map((r) => r.o)).map((o) => ({ o, who: identify(o, lists) }));
-  }, [othersOpen, motion, results, simbad, gaia]);
+  }, [othersOpen, motion, results, lists]);
   // Objects that keep a name on the map: the engine's results, then the notable known ones.
   const labels = useMemo(() => {
     // Only results the filter shows carry a name; a hidden one leaves the label to its known row.
@@ -225,6 +229,7 @@ export default function App() {
     const s = { ra, dec, radius: radiusFor(targetFov), label };
     setSel(s);
     setFocus(null);
+    setTrail([]);
     setPointed(null);
     setResume(null);
     setListOpen(false);
@@ -241,6 +246,7 @@ export default function App() {
     Object.values(aborts.current).forEach((c) => c.abort());
     setSel(null);
     setFocus(null);
+    setTrail([]);
     setPointed(null);
     setSimbad({ status: 'idle' });
     setGaia({ status: 'idle' });
@@ -251,19 +257,32 @@ export default function App() {
   /** Select one object: its card opens and the camera goes to it. */
   const pick = useCallback((s) => {
     setFocus(s);
+    setTrail([]);
     setPointed(null);
     const c = camera.current;
     const t = mapTarget(s);
     if (c) c.flyTo({ ra: t.ra, dec: t.dec, fov: Math.min(c.view().fov, objectFov(s)) });
   }, []);
 
-  /** Leave the selected object and frame the whole patch again. */
+  /** Open an object from another object's card: "Back" then returns to that card. */
+  const pickFromCard = useCallback((s) => {
+    const from = focus;
+    pick(s);
+    if (from) setTrail((t) => [...t, from]);
+  }, [focus, pick]);
+
+  /** Leave the selected object: back to the card it was opened from, else frame the whole patch again. */
   const backToPatch = useCallback(() => {
+    if (trail.length) {
+      setFocus(trail[trail.length - 1]);
+      setTrail(trail.slice(0, -1));
+      return;
+    }
     setResume(focus);
     setFocus(null);
     const s = latest.current.sel;
     if (s) camera.current?.flyTo({ ra: s.ra, dec: s.dec, fov: fovFor(s.radius) });
-  }, [focus]);
+  }, [focus, trail]);
 
   const goTarget = useCallback((t) => {
     const p = propagate(t.ra, t.dec, t.pmra, t.pmdec, decimalYear() - 2000);
@@ -530,6 +549,9 @@ export default function App() {
           hover={hovered}
           resume={resume}
           onPick={pick}
+          onOpen={pickFromCard}
+          backLabel={trail.length && trail[trail.length - 1].kind === 'known' ? `Back to ${shortName(trail[trail.length - 1].obj.name)}` : null}
+          lists={lists}
           onPoint={setPointed}
           onBack={backToPatch}
           onClose={closePanel}

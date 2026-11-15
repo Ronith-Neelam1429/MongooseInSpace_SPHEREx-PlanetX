@@ -214,8 +214,8 @@ function Flagged({ results: all, known, filter, gaia, hover, resume, onPick, onP
 }
 
 /** What most visitors do not need, behind one control: fixed stars, the engine's notes, coordinates, passes, credits. */
-function More({ sel, visits, motion, known, filter, gaia, others, onToggleOthers, hover, resume, onPick, onPoint }) {
-  const rest = useMemo(() => otherKnown(known.rows).filter((row) => filter[knownClass(row)]), [known, filter]);
+function More({ sel, visits, motion, known, results, filter, gaia, others, onToggleOthers, hover, resume, onPick, onPoint }) {
+  const rest = useMemo(() => otherKnown(known.rows, results).filter((row) => filter[knownClass(row)]), [known, results, filter]);
   const inside = Boolean(others) || rest.some((row) => sameObject(resume, { kind: 'known', obj: row }));
   const [open, setOpen] = useState(inside);
   const [all, setAll] = useState(() => rest.findIndex((row) => sameObject(resume, { kind: 'known', obj: row })) >= KNOWN_SHOWN);
@@ -306,7 +306,8 @@ function More({ sel, visits, motion, known, filter, gaia, others, onToggleOthers
  * panel for that object's card, with a way back.
  */
 export default function InfoPanel({
-  sel, simbad, gaia, visits, motion, known, results, others, onToggleOthers, focus, hover, resume, onPick, onPoint, onBack, onClose, onRetry,
+  sel, simbad, gaia, visits, motion, known, results, others, onToggleOthers, focus, hover, resume, onPick, onOpen, onPoint, onBack, onClose, onRetry,
+  lists, backLabel,
   onCopyLink, copied, playing, onTogglePlay, getYear, filter, moversOnly, onToggleMovers,
 }) {
   if (focus) {
@@ -319,7 +320,9 @@ export default function InfoPanel({
           others={others}
           objects={motion.status === 'ok' ? motion.result.objects : null}
           field={motion.result?.field}
-          onPick={onPick}
+          lists={lists}
+          backLabel={backLabel}
+          onPick={onOpen}
           onBack={onBack}
           onClose={onClose}
         />
@@ -354,7 +357,7 @@ export default function InfoPanel({
           player={{ playing, onTogglePlay, getYear, moversOnly, onToggleMovers }}
         />
         <More
-          sel={sel} visits={visits} motion={motion} known={known} filter={filter} gaia={gaia}
+          sel={sel} visits={visits} motion={motion} known={known} results={results} filter={filter} gaia={gaia}
           others={others} onToggleOthers={onToggleOthers} {...pointing}
         />
       </div>

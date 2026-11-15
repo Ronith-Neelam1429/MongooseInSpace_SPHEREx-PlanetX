@@ -23,8 +23,9 @@
   color: var(--pic-ink);
 }
 .pic-empty { display: grid; place-items: center; }
+/* Each image is placed at its own box in the shared frame (inline style), so all are in register. */
 .pic-sky img {
-  position: absolute; inset: 0; width: 100%; height: 100%; visibility: hidden;
+  position: absolute; visibility: hidden;
   /* Real pixels, not a smoothed enlargement. */
   image-rendering: pixelated; user-select: none;
 }
@@ -88,11 +89,12 @@
 .pic-caption { margin-top: 6px; min-height: 3.2em; font-size: 12px; line-height: 1.55; font-variant-numeric: tabular-nums; }
 .pic-notes { margin-top: 6px; padding: 0; list-style: none; font-size: 11.5px; color: var(--dim); }
 .pic-key { margin-top: 6px; font-size: 11.5px; color: var(--dim); }
+/* A legend on the page, not on a picture: it takes the theme's colour tokens. */
 .pic-key-ring {
   display: inline-block; width: 11px; height: 11px; margin-right: 6px; vertical-align: -1px;
-  border: 1.5px solid var(--pic-mark, rgb(92, 225, 255)); border-radius: 50%;
+  border: 1.5px solid var(--measured); border-radius: 50%;
 }
-.pic-key-ring.pic-tone-catalogue { --pic-mark: rgb(255, 77, 46); }
+.pic-key-ring.pic-tone-catalogue { border-color: var(--signal); }
 
 /* ---------- the larger view ---------- */
 .pic-dialog {

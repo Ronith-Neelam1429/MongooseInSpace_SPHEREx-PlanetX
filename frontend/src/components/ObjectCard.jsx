@@ -1,6 +1,6 @@
 import { Component, Fragment } from 'react';
 import { formatDec, formatRa } from '../lib/coords.js';
-import { FAST_ARCSEC_YR, displayName } from '../lib/names.js';
+import { FAST_ARCSEC_YR, displayName, identityOf } from '../lib/names.js';
 import {
   archiveSentence, claim, compass, confidence, distanceText, measuredMotion, moonCrossing, motionsAgree, speed, verdict,
 } from '../lib/plain.js';
@@ -49,14 +49,14 @@ class EvidenceBoundary extends Component {
   }
 }
 
-function Head({ tone, kicker, title, onBack, onClose }) {
+function Head({ tone, kicker, title, backLabel, onBack, onClose }) {
   return (
     <header className="panel-head card-head">
       <div className="panel-tools">
         {/* The list this card replaced is gone, so keyboard focus moves to the way back. */}
         <button type="button" className="textbtn back" autoFocus onClick={onBack}>
           <svg width="12" height="10" viewBox="0 0 12 10" aria-hidden="true"><path d="M12 5H1.5M5 1L1 5l4 4" fill="none" stroke="currentColor" strokeWidth="1.25" /></svg>
-          Back to the patch
+          {backLabel || 'Back to the patch'}
         </button>
         <span className="tools">
           <button type="button" className="iconbtn" onClick={onClose} aria-label="Close panel"><CloseIcon /></button>
@@ -86,7 +86,7 @@ function CatalogueLine({ o, who, m }) {
   );
 }
 
-function EngineCard({ o, who, field, onBack, onClose }) {
+function EngineCard({ o, who, field, backLabel, onBack, onClose }) {
   const m = measuredMotion(o);
   const moving = o.kind !== 'static';
   const ev = useEvidence(o, field);
@@ -105,7 +105,7 @@ function EngineCard({ o, who, field, onBack, onClose }) {
   const crossing = moving ? moonCrossing(m.pm) : null;
   return (
     <>
-      <Head tone="measured-bg" kicker={`Measured in SPHEREx images · ${verdict(o)}`} title={name} onBack={onBack} onClose={onClose} />
+      <Head tone="measured-bg" kicker={`Measured in SPHEREx images · ${verdict(o)}`} title={name} backLabel={backLabel} onBack={onBack} onClose={onClose} />
       <div className="panel-body">
         <section className="card-pictures ev" aria-label="Telescope pictures">
           <EvidenceBoundary><EnginePictures object={o} ev={ev} title={name} /></EvidenceBoundary>
@@ -235,10 +235,10 @@ function KnownCard({ row, measured, tracked, onPick, onBack, onClose }) {
 }
 
 /** The card for one selected object: an engine result (with its evidence) or a catalogued object. */
-export default function ObjectCard({ focus, results, others, objects, field, onPick, onBack, onClose }) {
+export default function ObjectCard({ focus, results, others, objects, field, lists, backLabel, onPick, onBack, onClose }) {
   if (focus.kind === 'engine') {
-    const who = [...results, ...(others || [])].find((r) => r.o === focus.obj)?.who || { name: null, matches: [], checked: false };
-    return <EngineCard o={focus.obj} who={who} field={field} onBack={onBack} onClose={onClose} />;
+    const who = identityOf(focus.obj, [...results, ...(others || [])], lists);
+    return <EngineCard o={focus.obj} who={who} field={field} backLabel={backLabel} onBack={onBack} onClose={onClose} />;
   }
   const row = focus.obj;
   const names = new Set([row.name, row.gaia && `Gaia DR3 ${row.gaia.id}`]);

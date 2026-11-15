@@ -43,5 +43,7 @@ describe('which known objects are listed first', () => {
     expect(flaggedKnown(rows, [result(mover(), ["Barnard's Star"])])).toEqual([rdra]);
     expect(flaggedKnown(rows, [result(mover(), ['Gaia DR3 447'])])).toEqual([rdra]);
     expect(otherKnown(rows)).toEqual([plain, galaxy]);
+    // Measured: the catalogue row moves behind "More" instead of vanishing.
+    expect(otherKnown(rows, [result(mover(), ["Barnard's Star"])])).toEqual([barnard, plain, galaxy]);
   });
 });

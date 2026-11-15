@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { prefersReducedMotion } from '../lib/camera.js';
 import { decimalYear } from '../lib/coords.js';
-import { scaleBar } from '../lib/evidence.js';
+import { fetchPatchSurveys, scaleBar } from '../lib/evidence.js';
 import {
-  fetchPatchFrames, fetchPatchSurveys, frameImageUrl, knownMotion, knownViews, picturePatch,
+  fetchPatchFrames, frameImageUrl, imageSrc, isRemote, knownMotion, knownViews, picturePatch, stepKey, wantedKeys,
 } from '../lib/pictures.js';
 import { API_BASE } from '../lib/services.js';
 import './SkyPictures.css';
 
 const STEP_MS = 1000;
+// Marks, in arcsec on the sky: never smaller than SPHEREx's PSF, so a ring frames the object.
+const RING_MIN_ARCSEC = 9;
 
 /** What one picture shows, in words. */
 function caption(view, newest) {
@@ -41,12 +43,12 @@ function Compass() {
   );
 }
 
-/** Marks on one picture, in arcsec from its centre (east is left, north is up). */
-function Marks({ view }) {
-  const { side, marks } = view;
+/** Marks on the shared frame (`side` arcsec), in arcsec from its centre (east is left, north is up). */
+function Marks({ view, side }) {
+  const { marks } = view;
   const h = side / 2;
-  const r = side * 0.045;
-  const [tin, tout] = [side * 0.06, side * 0.1];
+  const r = Math.max(RING_MIN_ARCSEC, side * 0.04);
+  const [tin, tout] = [r * 1.35, r * 2.2];
   const p = (o) => ({ x: -o.east, y: -o.north });
   const ref = marks.ref && p(marks.ref);
   return (
@@ -65,41 +67,59 @@ function Marks({ view }) {
   );
 }
 
-/** The square with every picture stacked in it; only the current one is visible. */
-function Stage({ all, current, showMarks, images, onImage }) {
-  const bar = current ? scaleBar(current.side) : null;
-  const state = current ? images[current.key] : null;
+/** Where an image's box sits in the shared frame, as CSS percentages. */
+function placement(box, side) {
+  const pct = (v) => `${(v / side) * 100}%`;
+  return {
+    left: pct(side / 2 - box.east - box.side / 2), top: pct(side / 2 - box.north - box.side / 2),
+    width: pct(box.side), height: pct(box.side),
+  };
+}
+
+/** The view a slot shows now: itself, or the exposure of the same pass it fell back on. */
+function effective(view, state) {
+  const alt = state?.alt || 0;
+  return alt && view.alternates?.[alt - 1] ? { ...view, ...view.alternates[alt - 1], key: view.key } : view;
+}
+
+/**
+ * The square with the pictures stacked in it, each at its place in the shared frame; only the
+ * current one is visible. A remote image is only asked for once wanted (lib/pictures wantedKeys).
+ */
+function Stage({ all, side, current, wanted, showMarks, images, onImage }) {
+  const bar = scaleBar(side);
+  const state = images[current.key];
+  const shown = effective(current, state);
   return (
     <span className="pic-sky">
-      {all.map((v) => (
-        <img
-          key={`${v.key}:${images[v.key]?.attempt || 0}`}
-          className={v === current && images[v.key]?.status === 'ok' ? 'pic-on' : ''}
-          src={images[v.key]?.attempt ? `${v.src}${v.src.includes('?') ? '&' : '?'}retry=${images[v.key].attempt}` : v.src}
-          alt="" draggable="false"
-          onLoad={() => onImage(v.key, 'ok')}
-          onError={() => onImage(v.key, 'error')}
-        />
-      ))}
-      {current && state?.status === 'ok' && showMarks && <Marks view={current} />}
-      {current && state?.status !== 'ok' && (
+      {all.filter((v) => !isRemote(v.src) || wanted.has(v.key)).map((v) => {
+        const s = images[v.key];
+        const e = effective(v, s);
+        return (
+          <img
+            key={`${v.key}:${s?.attempt || 0}:${s?.alt || 0}`}
+            className={v.key === current.key && s?.status === 'ok' ? 'pic-on' : ''}
+            style={placement(e.box, side)}
+            src={imageSrc(e.src, s?.attempt)}
+            alt="" draggable="false"
+            onLoad={() => onImage(v, 'ok')}
+            onError={() => onImage(v, 'error')}
+          />
+        );
+      })}
+      {state?.status === 'ok' && showMarks && <Marks view={shown} side={side} />}
+      {state?.status !== 'ok' && (
         <span className="pic-wait" role="status">
           {state?.status === 'error'
             ? 'This picture could not be loaded.'
-            : <><span className="pic-ticker" aria-hidden="true" />Loading {current.telescope} picture{current.telescope === 'SPHEREx' && current.src.startsWith('http') ? ' (about 4 MB from IRSA the first time)' : ''}</>}
+            : <><span className="pic-ticker" aria-hidden="true" />Loading {current.telescope} picture{current.telescope === 'SPHEREx' && isRemote(current.src) ? ' (about 4 MB from IRSA the first time)' : ''}</>}
         </span>
       )}
-      {current && (
-        <span className="pic-tag pic-when">
-          <b>{current.telescope}</b> {current.when}
-        </span>
-      )}
+      <span className="pic-tag pic-when"><b>{shown.telescope}</b> {shown.when}</span>
       <Compass />
-      {current && (
-        <span className="pic-tag pic-scale" aria-hidden="true" style={{ '--bar': `${(bar / current.side) * 100}%` }}>
-          <i />{bar >= 60 ? `${bar / 60}′` : `${bar}″`}
-        </span>
-      )}
+      <span className="pic-tag pic-scale" aria-hidden="true" style={{ '--bar': `${(bar / side) * 100}%` }}>
+        <i />{bar >= 60 ? `${bar / 60}′` : `${bar}″`}
+      </span>
     </span>
   );
 }
@@ -128,20 +148,23 @@ function Controls({ views, extras, current, playing, showMarks, images, onPlay, 
         </button>
       </span>
       <ol className="pic-epochs">
-        {views.map((v) => (
-          <li key={v.key}>
-            <button
-              type="button" className={`pic-opt ${v === current ? 'pic-on' : ''} ${images[v.key]?.status === 'error' ? 'pic-failed' : ''}`}
-              aria-pressed={v === current} aria-label={`${v.telescope}, ${v.when}`} onClick={() => onShow(v.key)}
-            >
-              <span className="pic-opt-scope">{v.telescope}</span> {v.button.slice(v.telescope.length + 1)}
-            </button>
-          </li>
-        ))}
+        {views.map((v) => {
+          const e = effective(v, images[v.key]);
+          return (
+            <li key={v.key}>
+              <button
+                type="button" className={`pic-opt ${v.key === current.key ? 'pic-on' : ''} ${images[v.key]?.status === 'error' ? 'pic-failed' : ''}`}
+                aria-pressed={v.key === current.key} aria-label={`${e.telescope}, ${e.when}`} onClick={() => onShow(v.key)}
+              >
+                <span className="pic-opt-scope">{v.telescope}</span> {v.button.slice(v.telescope.length + 1)}
+              </button>
+            </li>
+          );
+        })}
       </ol>
       <span className="pic-extra">
         {extras.map((v) => (
-          <button key={v.key} type="button" className={`pic-opt ${v === current ? 'pic-on' : ''}`} aria-pressed={v === current} onClick={() => onShow(v.key)}>
+          <button key={v.key} type="button" className={`pic-opt ${v.key === current.key ? 'pic-on' : ''}`} aria-pressed={v.key === current.key} onClick={() => onShow(v.key)}>
             {v.button}
           </button>
         ))}
@@ -155,34 +178,45 @@ function Controls({ views, extras, current, playing, showMarks, images, onPlay, 
  * The telescope pictures of one object, oldest first, with a play control that steps through
  * them, marks where the object is on each date, and a larger view on request.
  *
- * Props: `views` time-ordered pictures (see knownViews / engineViews in lib/pictures.js),
- * `extras` pictures outside the sequence (the difference image), `notes` [{ key, text }] for what
- * is still loading or missing, `title` for the large view.
+ * Props: `views` time-ordered pictures and `side` the shared frame they sit on (see knownViews /
+ * engineViews in lib/pictures.js), `extras` pictures outside the sequence (the difference
+ * image), `notes` [{ key, text }] for what is still loading or missing, `title` for the large view.
+ * Remote pictures (SPHEREx cutouts, ~4 MB each from IRSA the first time) load one ahead of the
+ * one shown, not all at once.
  */
-export default function SkyPictures({ views, extras = [], notes = [], title }) {
+export default function SkyPictures({ views, side, extras = [], notes = [], title }) {
   const all = useMemo(() => [...views, ...extras], [views, extras]);
   const [key, setKey] = useState(null);
   const [playing, setPlaying] = useState(() => !prefersReducedMotion());
   const [showMarks, setShowMarks] = useState(true);
-  const [images, setImages] = useState({}); // key -> { status: 'ok' | 'error', attempt }
+  const [images, setImages] = useState({}); // key -> { status: 'ok' | 'error' | null, attempt, alt }
+  const [seen, setSeen] = useState(() => new Set()); // keys shown so far: their images stay
   const [big, setBig] = useState(false);
   const dialog = useRef(null);
 
   const current = all.find((v) => v.key === key) || views[0] || null;
-  const loaded = views.filter((v) => images[v.key]?.status === 'ok');
   const newest = views[views.length - 1];
+  const currentKey = current?.key ?? null;
+  const status = Object.fromEntries(Object.entries(images).map(([k, s]) => [k, s.status]));
+  const wanted = wantedKeys(views, currentKey, seen);
+  // Playing waits on a picture that is still loading, and skips one that failed.
+  const next = stepKey(views, currentKey, 1, status);
+  const nextReady = next != null && status[next] === 'ok';
 
-  // Playing steps through the pictures that have arrived, in date order.
-  const loadedKeys = loaded.map((v) => v.key).join('\n');
-  const firstKey = views[0]?.key ?? null;
+  // Going to a picture keeps it (and so its image) among the ones fetched.
+  const go = (k) => {
+    setKey(k);
+    setSeen((s) => (s.has(k) ? s : new Set(s).add(k)));
+  };
+
   useEffect(() => {
-    const keys = loadedKeys ? loadedKeys.split('\n') : [];
-    if (!playing || keys.length < 2) return undefined;
-    const timer = setInterval(() => {
-      setKey((k) => keys[(keys.indexOf(k ?? firstKey) + 1) % keys.length]);
+    if (!playing || !nextReady || next === currentKey) return undefined;
+    const timer = setTimeout(() => {
+      setKey(next);
+      setSeen((s) => (s.has(next) ? s : new Set(s).add(next)));
     }, STEP_MS);
-    return () => clearInterval(timer);
-  }, [playing, loadedKeys, firstKey]);
+    return () => clearTimeout(timer);
+  }, [playing, nextReady, next, currentKey]);
 
   useEffect(() => {
     const d = dialog.current;
@@ -190,14 +224,15 @@ export default function SkyPictures({ views, extras = [], notes = [], title }) {
     if (!big && d?.open) d.close();
   }, [big]);
 
-  const show = (k) => { setPlaying(false); setKey(k); };
-  const step = (by) => {
-    if (!views.length) return;
-    const i = views.findIndex((v) => v === current);
-    show(views[(Math.max(i, 0) + by + views.length) % views.length].key);
-  };
-  const onImage = (k, status) => setImages((m) => ({ ...m, [k]: { ...m[k], status } }));
-  const retry = (k) => setImages((m) => ({ ...m, [k]: { status: null, attempt: (m[k]?.attempt || 0) + 1 } }));
+  const show = (k) => { setPlaying(false); go(k); };
+  const step = (by) => { const k = stepKey(views, currentKey, by); if (k) show(k); };
+  const onImage = (view, result) => setImages((m) => {
+    const s = m[view.key] || {};
+    // A cutout that cannot be had: show another exposure of the same pass instead.
+    if (result === 'error' && (s.alt || 0) < (view.alternates?.length || 0)) return { ...m, [view.key]: { ...s, alt: (s.alt || 0) + 1, status: null } };
+    return { ...m, [view.key]: { ...s, status: result } };
+  });
+  const retry = (k) => setImages((m) => ({ ...m, [k]: { status: null, attempt: (m[k]?.attempt || 0) + 1, alt: 0 } }));
 
   if (!current) {
     return (
@@ -211,27 +246,29 @@ export default function SkyPictures({ views, extras = [], notes = [], title }) {
     );
   }
 
+  const shown = effective(current, images[current.key]);
   const controls = (
     <Controls
-      views={views} extras={extras} current={current} playing={playing && loaded.length >= 2} showMarks={showMarks} images={images}
+      views={views} extras={extras} current={current} playing={playing} showMarks={showMarks} images={images}
       onPlay={() => setPlaying(!playing)} onStep={step} onShow={show} onMarks={() => setShowMarks(!showMarks)}
     />
   );
-  const label = `${current.telescope} picture, ${current.when}`;
+  const label = `${shown.telescope} picture, ${shown.when}`;
   const failed = images[current.key]?.status === 'error';
+  const stage = { all, side, current, wanted, showMarks, images, onImage };
 
   return (
     <section className="pic" aria-label="Telescope pictures">
       <button type="button" className="pic-frame" aria-label={`Enlarge: ${label}`} aria-haspopup="dialog" onClick={() => { setPlaying(false); setBig(true); }}>
-        <Stage all={all} current={current} showMarks={showMarks} images={images} onImage={onImage} />
+        <Stage {...stage} />
         <span className="pic-tag pic-zoom" aria-hidden="true">
           <svg width="11" height="11" viewBox="0 0 11 11"><path d="M1 4V1h3M7 1h3v3M10 7v3H7M4 10H1V7" fill="none" stroke="currentColor" strokeWidth="1.25" /></svg>
         </span>
       </button>
       {controls}
       <p className="pic-caption" aria-live={playing ? 'off' : 'polite'}>
-        {caption(current, newest)}
-        {failed && <> <button type="button" className="textbtn" onClick={() => retry(current.key)}>Retry</button></>}
+        {caption(shown, newest)}
+        {failed && isRemote(current.src) && <> <button type="button" className="textbtn" onClick={() => retry(current.key)}>Retry</button></>}
       </p>
       {notes.length > 0 && <ul className="pic-notes">{notes.map((n) => <li key={n.key}>{n.text}</li>)}</ul>}
 
@@ -250,14 +287,31 @@ export default function SkyPictures({ views, extras = [], notes = [], title }) {
                 <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.25" /></svg>
               </button>
             </div>
-            <div className="pic-big"><Stage all={all} current={current} showMarks={showMarks} images={images} onImage={onImage} /></div>
+            <div className="pic-big"><Stage {...stage} /></div>
             {controls}
-            <p className="pic-caption">{caption(current, newest)}</p>
+            <p className="pic-caption">{caption(shown, newest)}</p>
           </div>
         )}
       </dialog>
     </section>
   );
+}
+
+/** One request whose answer belongs to `id`; `attempt` re-asks after a failure. */
+function usePatchRequest(id, attempt, request) {
+  const [state, setState] = useState({ id: null });
+  useEffect(() => {
+    if (!API_BASE) return undefined;
+    const [ra, dec, side] = id.split(',').map(Number);
+    const ctrl = new AbortController();
+    request({ ra, dec, side }, { signal: ctrl.signal }).then(
+      (data) => { if (!ctrl.signal.aborted) setState({ id, attempt, status: 'ok', data }); },
+      (err) => { if (!ctrl.signal.aborted) setState({ id, attempt, status: 'error', error: err?.message || String(err) }); },
+    );
+    return () => ctrl.abort();
+  }, [id, attempt, request]);
+  // Until this patch's (and this attempt's) answer arrives, it is loading.
+  return state.id === id && state.attempt === attempt ? state : { status: 'loading' };
 }
 
 /**
@@ -267,28 +321,15 @@ export default function SkyPictures({ views, extras = [], notes = [], title }) {
  */
 export function KnownPictures({ row, title }) {
   const nowYear = useMemo(() => decimalYear(), []);
-  // Depends on the numbers only, so a re-rendered row does not ask again.
   const motion = useMemo(() => knownMotion(row, nowYear), [row, nowYear]);
   const patch = useMemo(() => picturePatch(motion, nowYear), [motion, nowYear]);
+  // Requests depend on the numbers only, so a re-rendered row does not ask again.
   const id = `${patch.ra.toFixed(6)},${patch.dec.toFixed(6)},${patch.side}`;
-  const [surveys, setSurveys] = useState({ id: null });
-  const [frames, setFrames] = useState({ id: null });
-  const [attempt, setAttempt] = useState(0);
-
-  useEffect(() => {
-    if (!API_BASE) return undefined;
-    const [ra, dec, side] = id.split(',').map(Number);
-    const patch = { ra, dec, side };
-    const ctrl = new AbortController();
-    const fail = (set) => (err) => { if (!ctrl.signal.aborted) set({ id, status: 'error', error: err?.message || String(err) }); };
-    fetchPatchSurveys(patch, { signal: ctrl.signal }).then((data) => { if (!ctrl.signal.aborted) setSurveys({ id, status: 'ok', data }); }, fail(setSurveys));
-    fetchPatchFrames(patch, { signal: ctrl.signal }).then((data) => { if (!ctrl.signal.aborted) setFrames({ id, status: 'ok', data }); }, fail(setFrames));
-    return () => ctrl.abort();
-  }, [id, attempt]);
-
-  const s = surveys.id === id ? surveys : { status: 'loading' };
-  const f = frames.id === id ? frames : { status: 'loading' };
-  const views = useMemo(() => knownViews({
+  const [surveysAttempt, setSurveysAttempt] = useState(0);
+  const [framesAttempt, setFramesAttempt] = useState(0);
+  const s = usePatchRequest(id, surveysAttempt, fetchPatchSurveys);
+  const f = usePatchRequest(id, framesAttempt, fetchPatchFrames);
+  const pictures = useMemo(() => knownViews({
     motion, patch, surveys: s.status === 'ok' ? s.data : null, frames: f.status === 'ok' ? f.data : null,
     cutoutUrl: (fr) => frameImageUrl(fr),
   }), [motion, patch, s.status, s.data, f.status, f.data]);
@@ -302,11 +343,16 @@ export function KnownPictures({ row, title }) {
   if (f.status === 'loading') notes.push({ key: 'f', text: 'Listing SPHEREx exposures…' });
   if (f.status === 'error') notes.push({ key: 'f', text: `SPHEREx exposures are unavailable: ${f.error}.` });
   if (f.status === 'ok' && f.data.length === 0) notes.push({ key: 'f', text: 'SPHEREx has not imaged this spot yet.' });
-  const failed = s.status === 'error' || f.status === 'error';
   return (
     <>
-      <SkyPictures views={views} notes={notes} title={title} />
-      {failed && <p className="line"><button type="button" className="textbtn" onClick={() => setAttempt(attempt + 1)}>Retry</button></p>}
+      <SkyPictures views={pictures.views} side={pictures.side} notes={notes} title={title} />
+      {(s.status === 'error' || f.status === 'error') && (
+        <p className="line">
+          {s.status === 'error' && <button type="button" className="textbtn" onClick={() => setSurveysAttempt(surveysAttempt + 1)}>Retry 2MASS and WISE</button>}
+          {s.status === 'error' && f.status === 'error' && ' '}
+          {f.status === 'error' && <button type="button" className="textbtn" onClick={() => setFramesAttempt(framesAttempt + 1)}>Retry SPHEREx</button>}
+        </p>
+      )}
       {motion.source && <p className="pic-key"><i className="pic-key-ring pic-tone-catalogue" />where the {motion.source} motion puts it on each date</p>}
     </>
   );

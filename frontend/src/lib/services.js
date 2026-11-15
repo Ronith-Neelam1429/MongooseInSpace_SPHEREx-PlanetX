@@ -162,13 +162,19 @@ export async function resolveName(name, { signal } = {}) {
   }, { signal, timeoutMs: 12000 });
 }
 
-/** GET a JSON document from the PlanetX API; rejects with `HTTP <status>` (also set as `err.status`). */
-async function apiJson(path, { signal, timeoutMs = 30000 } = {}) {
+/**
+ * GET a JSON document from the PlanetX API; rejects with `HTTP <status>` (also set as `err.status`),
+ * or "the request timed out" after `timeoutMs`. An abort through `signal` rejects with its reason.
+ */
+export async function apiJson(path, { signal, timeoutMs = 30000 } = {}) {
   const t = withTimeout(signal, timeoutMs);
   try {
     const res = await fetch(`${API_BASE}${path}`, { signal: t.signal });
     if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
     return await res.json();
+  } catch (err) {
+    if (err?.name === 'TimeoutError') throw new Error('the request timed out', { cause: err });
+    throw err;
   } finally {
     t.done();
   }
