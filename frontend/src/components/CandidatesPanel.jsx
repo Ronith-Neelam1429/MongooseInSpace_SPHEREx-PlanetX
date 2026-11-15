@@ -16,7 +16,9 @@ const FILTERS = [
 
 function describe(c) {
   const parts = [];
-  if (c.pm_total > 0) parts.push(`${speed(c.pm_total)}″/yr ${compass(c.position_angle_deg)}`);
+  // The survey also stores brightness variables, whose fitted motion is only noise: show a speed
+  // only when it stands out from its error (3 sigma, the engine's candidate threshold).
+  if (c.pm_total > 0 && c.significance >= 3) parts.push(`${speed(c.pm_total)}″/yr ${compass(c.position_angle_deg)}`);
   if (c.is_variable) parts.push('changes brightness');
   if (c.found) parts.push(`found ${c.found}`);
   return parts.join(' · ');
