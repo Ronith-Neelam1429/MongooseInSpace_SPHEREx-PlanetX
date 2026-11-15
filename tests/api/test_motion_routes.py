@@ -197,8 +197,23 @@ def test_a_dropped_archival_confirmation_is_not_reported_as_a_measurement(fakes,
     assert all(o["kind"] == "static" for o in objects)
     assert objects[0]["archive"] == {
         "verdict": "unconfirmed", "pm_ra_cosdec": None, "pm_dec": None, "pm_err": None, "baseline_yr": None,
-        "observatories": ["spherex"],
+        "observatories": ["spherex"], "notes": [],
     }
+
+
+def test_the_archival_refit_explains_its_verdict(fakes, monkeypatch):
+    def refit(objs, observatories):
+        result = refine_objects(objs, observatories="spherex")
+        for f in result.fused:
+            f.notes.append("secure matches from: none; two independent surveys are needed to confirm")
+        return result
+
+    monkeypatch.setattr(pipeline, "refine_objects", refit)
+    objects = client.get("/api/motion", params=PARAMS).json()["result"]["objects"]
+    assert all(
+        o["archive"]["notes"] == ["secure matches from: none; two independent surveys are needed to confirm"]
+        for o in objects
+    )
 
 
 def test_engine_data_is_kept_for_the_newest_runs_only(fakes, monkeypatch):
