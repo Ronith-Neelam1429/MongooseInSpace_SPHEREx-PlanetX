@@ -149,8 +149,8 @@ def _with_catalogues(monkeypatch, gaia, simbad=()):
 
     monkeypatch.setattr(sources, "settings", Settings(observatories="multi"))
     monkeypatch.setattr(pipeline, "refine_objects", lambda objs, observatories: refine_objects(objs, observatories="spherex"))
-    monkeypatch.setattr(pipeline, "check_objects", lambda objs, fused, pixel: check_objects(
-        objs, fused, pixel, fetch_gaia=fetch(gaia), fetch_simbad=fetch(simbad),
+    monkeypatch.setattr(pipeline, "check_objects", lambda objs, fused, pixel, stacked=False: check_objects(
+        objs, fused, pixel, stacked=stacked, fetch_gaia=fetch(gaia), fetch_simbad=fetch(simbad),
         fetch_skybot=lambda ra, dec, radius, mjd: [],
     ))
 
@@ -190,7 +190,7 @@ def test_a_dropped_archival_confirmation_is_not_reported_as_a_measurement(fakes,
     # The catalogue check found the refit's archival positions to be other stars (Known.archive_void).
     monkeypatch.setattr(sources, "settings", Settings(observatories="multi"))
     monkeypatch.setattr(pipeline, "refine_objects", lambda objs, observatories: refine_objects(objs, observatories="spherex"))
-    monkeypatch.setattr(pipeline, "check_objects", lambda objs, fused, pixel: CheckResult(
+    monkeypatch.setattr(pipeline, "check_objects", lambda objs, fused, pixel, stacked=False: CheckResult(
         known=[Known(kind="static", classification="static", archive_void=True) for _ in objs]
     ))
     objects = client.get("/api/motion", params=PARAMS).json()["result"]["objects"]
