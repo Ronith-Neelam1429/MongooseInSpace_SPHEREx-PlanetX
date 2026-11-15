@@ -205,10 +205,26 @@ function unreachable() {
     + `${origin ? `this page (${origin})` : 'this page'} in PLANETX_CORS_ORIGINS`;
 }
 
+/**
+ * A server's error reason fit to show people. Upstream services (IRSA behind a proxy) answer
+ * failures with an HTML page, which the backend passes on inside its reason; that page is cut
+ * down to its <title> ("HTTP 502 (Proxy Error)"), and the rest is kept to one short line.
+ */
+export function plainError(text, max = 160) {
+  let s = String(text ?? '');
+  const html = s.search(/<(!doctype|html|head|body)\b/i);
+  if (html >= 0) {
+    const title = /<title>\s*([^<]*?)\s*<\/title>/i.exec(s.slice(html))?.[1].replace(/^\d{3}\s+/, '');
+    s = s.slice(0, html).replace(/[\s:]+$/, '') + (title ? ` (${title})` : '');
+  }
+  s = s.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s;
+}
+
 /** The `detail` of a FastAPI error body in words: a string, or the first validation error. */
 export function detailText(body) {
   const d = body?.detail;
-  if (typeof d === 'string') return d;
+  if (typeof d === 'string') return plainError(d);
   if (Array.isArray(d) && d[0]?.msg) {
     const field = Array.isArray(d[0].loc) ? d[0].loc[d[0].loc.length - 1] : null;
     return field ? `${field}: ${d[0].msg}` : d[0].msg;
@@ -218,14 +234,19 @@ export function detailText(body) {
 
 /**
  * How often SPHEREx has imaged a position (GET {API_BASE}/visits, `VisitsResponse` in the API):
- * { count, passes: [{ start, end, n_visits }] } with YYYY-MM-DD dates, one entry per survey pass.
+ * { count, passes: [{ start, end, n_visits }], visits: [{ date, detector, wavelength_min_um, wavelength_max_um }] }
+ * with YYYY-MM-DD dates, one pass entry per survey pass.
  * Returns null when no backend is configured.
  */
 export async function fetchVisits(ra, dec, { signal } = {}) {
   if (!API_BASE) return null;
   const j = await apiJson(`/visits?ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}`, { signal, timeoutMs: 60000 });
   if (!Array.isArray(j?.passes) || !Number.isFinite(j.n_visits)) throw new Error('bad response');
-  return { count: j.n_visits, passes: j.passes };
+  // Each visit cut to what the coverage chart uses (lib/coverage.js): when, and on which detector.
+  const visits = (Array.isArray(j.visits) ? j.visits : []).map((v) => ({
+    date: v.date, detector: v.detector ?? null, wavelength_min_um: v.wavelength_min_um ?? null, wavelength_max_um: v.wavelength_max_um ?? null,
+  }));
+  return { count: j.n_visits, passes: j.passes, visits };
 }
 
 /**
@@ -315,7 +336,7 @@ export async function runMotion(ra, dec, sizeDeg, { signal, onProgress } = {}) {
     if (job.status === 'done' && job.result) {
       return { ...job.result, field: { ra: job.ra, dec: job.dec, size_deg: job.size_deg } };
     }
-    if (job.status === 'failed') throw new Error(job.error || 'the run failed');
+    if (job.status === 'failed') throw new Error(job.error ? plainError(job.error) : 'the run failed');
     if (job.status !== 'running') throw new Error('bad response');
     onProgress?.(job);
     await sleep(MOTION_POLL_MS, signal);
@@ -348,7 +369,7 @@ export async function runSpectrum(target, { signal, onProgress } = {}) {
       t.done();
     }
     if (job.status === 'done' && job.result) return job.result;
-    if (job.status === 'failed') throw new Error(job.error || 'the measurement failed');
+    if (job.status === 'failed') throw new Error(job.error ? plainError(job.error) : 'the measurement failed');
     if (job.status !== 'running') throw new Error('bad response');
     onProgress?.(job);
     await sleep(MOTION_POLL_MS, signal);

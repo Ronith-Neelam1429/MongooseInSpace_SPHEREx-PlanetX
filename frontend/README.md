@@ -3,18 +3,26 @@
 The SPHEREx sky as a slowly turning globe. Click anywhere (or search) and the camera flies in and
 opens that patch of sky. The side panel then shows, in this order:
 
-- **A one-line verdict** (`lib/patch.js`): after an engine run what it flagged ("1 candidate · 1
-  known mover · 1 variable", or "Nothing moved here"); before, what the catalogues list ("1
-  catalogued fast mover · not measured yet"). Under it, "Find what moves", which asks the PlanetX
-  API to measure motion and brightness changes between SPHEREx passes (needs `VITE_API_BASE`), or
-  its progress.
-- **Worth a look**: only the flagged objects. The engine's results by name with what they do in
-  words ("9.91″/yr north", drawn in cyan on the map), then catalogued fast movers (over 0.1″/yr,
-  in red, the colour of Gaia's catalogued motion) and variable stars from SIMBAD and Gaia DR3,
-  each listed once. A play button runs the stars' catalogued motion forward from 2016.0, with a
-  "Moving only" switch.
-- **More about this patch** (folded): every other known object, every object the engine tracked,
-  the engine's notes, coordinates in three systems, SPHEREx pass dates, data credits.
+- **Status and verdict** (`lib/patch.js`): whether the patch was measured, then one line on what it
+  holds: after an engine run what it flagged ("1 candidate · 1 known mover · 1 variable", or
+  "Nothing moved here"); before, what the catalogues list ("1 catalogued fast mover · 2 variable
+  stars"). Under it, "Find what moves" (needs `VITE_API_BASE`), or its progress.
+- **Four figures** (`Stats`): before a run, SPHEREx images and passes, the time span first to last
+  image, Gaia stars and SIMBAD names in the patch; after, images used, span, objects tracked and
+  flagged.
+- **Worth a look**: only the flagged objects, two lines each (name and motion, then the plain-word
+  type). Engine results first ("9.91″/yr north", cyan on the map), then catalogued fast movers (over
+  0.1″/yr, red) and variable stars. A play button runs the stars' catalogued motion forward from
+  2016.0, with a "Moving only" switch.
+- **SPHEREx coverage** (`Coverage`, logic in `lib/coverage.js`): images per week from the survey's
+  start to today with the passes shaded, the pass dates, and images per detector band (0.75-5 µm).
+  Left out when no server is configured.
+- **Folded sections**, each shown only when it has something: other known objects, engine details
+  (every tracked object, the engine's notes; after a run only), position in three systems. Data
+  credits close the panel.
+
+Server errors are cut to one line (`plainError` in `lib/services.js`): an upstream HTML error page
+becomes its title, e.g. "HTTP 502 (Proxy Error)".
 
 Picking an object, in the list or on the map, opens its card. It starts with the **telescope
 pictures** (`SkyPictures`): 2MASS (~2000), WISE (~2010) and SPHEREx (2025 on), oldest first, each

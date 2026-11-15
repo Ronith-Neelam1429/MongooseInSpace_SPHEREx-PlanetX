@@ -5,7 +5,7 @@
 import { decimalYear, propagate } from './coords.js';
 import { toOffsets } from './evidence.js';
 import { mjdToYear } from './names.js';
-import { API_BASE } from './services.js';
+import { API_BASE, plainError } from './services.js';
 
 /** The patch reaches back to 2MASS: it observed 1997-2001. */
 const OLDEST_YEAR = 1999.5;
@@ -134,7 +134,7 @@ async function fetchRetry(url, { signal } = {}) {
     }
     let detail = '';
     try { detail = (await res.json())?.detail; } catch { /* not JSON */ }
-    throw Object.assign(new Error(typeof detail === 'string' && detail ? detail : `HTTP ${res.status}`), { status: res.status });
+    throw Object.assign(new Error(typeof detail === 'string' && detail ? plainError(detail) : `HTTP ${res.status}`), { status: res.status });
   }
 }
 

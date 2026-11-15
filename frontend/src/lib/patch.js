@@ -15,7 +15,8 @@ function sameAsResult(row, result) {
 /**
  * The verdict for a patch, one line: { text, tone }. After an engine run it counts what the
  * engine flagged ("1 candidate · 1 known mover · 1 variable", or "Nothing moved here"); before,
- * what the catalogues list ("2 catalogued fast movers · not measured yet"). `tone` is 'measured'
+ * what the catalogues list ("2 catalogued fast movers · 1 variable star"); the panel says
+ * separately whether the patch was measured. `tone` is 'measured'
  * after a run with results, 'signal' for catalogued movers, otherwise 'plain'. `results` are the
  * engine's notable objects as { o, who } (who from identify in names.js); `rows` the known
  * objects (knownObjects in names.js); `loaded` whether the catalogues have answered.
@@ -43,9 +44,8 @@ export function patchVerdict({ ran, results, rows, loaded }) {
   const fast = rows.filter((r) => knownClass(r) === 'fast').length;
   const variable = rows.filter((r) => knownClass(r) === 'variable').length;
   const parts = [
-    fast ? count(fast, 'catalogued fast mover') : 'No catalogued fast movers',
+    fast ? count(fast, 'catalogued fast mover') : variable ? null : 'No catalogued fast movers',
     variable && count(variable, 'variable star'),
-    'not measured yet',
   ].filter(Boolean);
   return { text: parts.join(' · '), tone: fast ? 'signal' : 'plain' };
 }

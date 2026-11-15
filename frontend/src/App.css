@@ -193,7 +193,9 @@
 .row:hover, .row:focus, .row.lit { background: var(--hover); }
 .row.lit { box-shadow: inset 2px 0 0 var(--fg); }
 .row:focus-visible { outline-offset: -1px; }
-.row.known { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) auto; }
+/* Known objects: name and motion on the first line, the plain-word type under the name. */
+.row.known { grid-template-columns: minmax(0, 1fr) auto; row-gap: 2px; }
+.row.known .row-type { grid-column: 1 / -1; padding-left: 17px; font-size: 11.5px; }
 .row.result { grid-template-columns: minmax(0, 1fr) auto; row-gap: 3px; padding: 10px; }
 .row-name, .row-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row.result .row-name { font-size: 13.5px; font-weight: 500; }
@@ -230,9 +232,45 @@
 .kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 16px; font-size: 12px; }
 .kv dt { color: var(--dim); }
 .kv dd { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.passes { margin-top: 6px; }
-.passes li { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12.5px; font-variant-numeric: tabular-nums; }
-.credits { padding-top: 18px; font-size: 10.5px; color: var(--faint); line-height: 1.6; }
+.credits { padding-top: 20px; font-size: 10.5px; color: var(--faint); line-height: 1.6; }
+
+/* ---------- the patch in four figures ---------- */
+.stats {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0 -28px; padding: 0 28px;
+  border-bottom: 1px solid var(--line);
+}
+.stat { padding: 14px 10px 14px 0; min-width: 0; }
+.stat + .stat { padding-left: 12px; border-left: 1px solid var(--rule); }
+.stat dt { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat-value { margin-top: 6px; font-size: 17px; line-height: 1.15; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stat-sub { margin-top: 2px; font-size: 10.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat-wait { display: inline-block; width: 28px; height: 10px; background: var(--hover); animation: wait 1.2s ease-in-out infinite alternate; }
+@keyframes wait { from { opacity: 0.4; } to { opacity: 1; } }
+
+/* ---------- SPHEREx coverage: when, and in which colours ---------- */
+.coverage h4 { margin: 4px 0 6px; font-size: 10.5px; font-weight: 400; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.coverage h4 .dim { text-transform: none; letter-spacing: 0; }
+.coverage .cov-chart + h4, .cov-passes + h4 { margin-top: 18px; }
+.cov-chart { display: block; width: 100%; height: auto; overflow: visible; }
+.cov-pass { fill: var(--hover); }
+.cov-bar { fill: var(--measured); }
+.cov-empty { fill: var(--line); }
+.cov-axis { stroke: var(--line); stroke-width: 1; }
+.cov-today { stroke: var(--dim); stroke-width: 1; stroke-dasharray: 2 2; }
+.cov-label { fill: var(--faint); font-size: 9.5px; font-family: var(--mono); }
+.cov-num { fill: var(--dim); font-size: 9.5px; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.cov-passes { margin-top: 8px; }
+.cov-passes li { display: flex; justify-content: space-between; padding: 2px 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+.cov-note { margin-top: 12px; }
+
+/* ---------- folded sections at the bottom of the patch ---------- */
+.folds > .more { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.folds > .more:first-child { padding-top: 18px; }
+.fold-count { color: var(--faint); letter-spacing: 0; font-variant-numeric: tabular-nums; }
+.fold-body { padding-top: 10px; }
+.fold-body > .kv { margin-top: 4px; }
+.fold-body > .rowlist:first-child { margin-top: 0; }
+.status { display: flex; align-items: center; margin-bottom: 10px; }
 
 /* ---------- map too narrow for the top bar and the layer toggles side by side ---------- */
 @container stage (max-width: 1150px) {
@@ -271,6 +309,8 @@
   .title-coords, .title-long { font-size: 24px; }
   .object-kicker { margin-top: 10px; }
   .panel-body { padding: 0 16px 20px; }
+  .stats { margin: 0 -16px; padding: 0 16px; }
+  .stat-value { font-size: 15px; }
   .with-panel .readout { display: none; }
   .zoom { display: none; }
   .lambda, .hud-note { margin-right: 0; }
@@ -278,7 +318,7 @@
 
 /* ---------- the patch's verdict and an object's: one line first, then the rest ---------- */
 .verdict-line {
-  font-family: var(--serif); font-weight: 400; font-size: 26px; line-height: 1.1; letter-spacing: -0.01em;
+  font-family: var(--serif); font-weight: 400; font-size: 24px; line-height: 1.1; letter-spacing: -0.01em;
   overflow-wrap: anywhere;
 }
 .verdict-line + .line, .verdict-line + .lede { margin-top: 10px; }
@@ -301,5 +341,5 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .loadbar::after, .search-busy, .ticker::after { animation: none; }
+  .loadbar::after, .search-busy, .ticker::after, .stat-wait { animation: none; }
 }

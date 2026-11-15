@@ -27,11 +27,12 @@ describe('the verdict of a patch', () => {
     expect(patchVerdict({ ran: true, results: [], rows, loaded: true })).toEqual({ text: 'Nothing moved here', tone: 'plain' });
   });
 
-  it('before a run, says what the catalogues list and that it is not measured yet', () => {
+  it('before a run, says what the catalogues list', () => {
     expect(patchVerdict({ ran: false, results: [], rows, loaded: true }))
-      .toEqual({ text: '1 catalogued fast mover · 1 variable star · not measured yet', tone: 'signal' });
+      .toEqual({ text: '1 catalogued fast mover · 1 variable star', tone: 'signal' });
     expect(patchVerdict({ ran: false, results: [], rows: [plain], loaded: true }))
-      .toEqual({ text: 'No catalogued fast movers · not measured yet', tone: 'plain' });
+      .toEqual({ text: 'No catalogued fast movers', tone: 'plain' });
+    expect(patchVerdict({ ran: false, results: [], rows: [rdra, plain], loaded: true }).text).toBe('1 variable star');
     expect(patchVerdict({ ran: false, results: [], rows: [], loaded: false }).text).toBe('Looking up what is known here');
   });
 });
