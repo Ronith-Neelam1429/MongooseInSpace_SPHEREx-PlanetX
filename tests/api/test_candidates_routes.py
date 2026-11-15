@@ -15,6 +15,7 @@ from planetx.api.app import app
 from planetx.api.routes import candidates as candidates_route
 from planetx.api.routes.survey import get_db_path
 from planetx.api.schemas import Visit
+from planetx.classify.reliability import MotionVerdict
 from planetx.spherex import archive, cutouts
 from planetx.survey.candidates import CandidateStore
 from planetx.survey.motion import FIELD_SIZE_DEG
@@ -26,7 +27,8 @@ from survey_fakes import candidate  # noqa: E402
 
 client = TestClient(app)
 KEYS = {"id", "ra", "dec", "name", "classification", "is_variable", "pm_total", "pm_ra_cosdec", "pm_dec",
-        "significance", "position_angle_deg", "score", "nside", "ipix", "found", "kind", "field_ra", "field_dec", "ref_mjd"}
+        "significance", "position_angle_deg", "score", "nside", "ipix", "found", "kind", "field_ra", "field_dec", "ref_mjd",
+        "motion_verdict"}
 
 
 @pytest.fixture
@@ -75,6 +77,11 @@ def test_shape_and_order(filled):
         "is_variable": False, "pm_total": 10.39, "pm_ra_cosdec": -0.8, "pm_dec": 10.36, "significance": 20.8,
         "position_angle_deg": 355.6, "score": 0.15, "nside": 1, "ipix": 2, "found": "2026-11-14",
         "kind": "mover", "field_ra": 10.0, "field_dec": 20.0, "ref_mjd": 61080.0,
+        # Stored without a verdict: judged from its columns (a catalogued star moving the same way).
+        "motion_verdict": {
+            "verdict": "moving", "certainty": "confirmed", "cause": None, "decided_by": "catalogue",
+            "reason": "A catalogued star moving the same way.",
+        },
     }
 
 
@@ -86,7 +93,27 @@ def test_filter_and_pages(filled):
     assert client.get("/api/candidates?offset=3").json() == {"total": 3, "candidates": []}
 
 
-@pytest.mark.parametrize("query", ["classification=planet", "limit=0", "limit=501", "offset=-1", "sort=name"])
+def test_hide_fake_leaves_out_fake_motion_stored_or_judged(filled):
+    fake = MotionVerdict("fake_motion", "Sits on a slow Gaia star.", "catalogue", cause="saturated_halo")
+    with CandidateStore(filled) as store:
+        store.replace_patch(1, 9, [
+            dataclasses.replace(candidate(score=0.6, name="Halo"), verdict=fake),
+            dataclasses.replace(candidate(score=0.4, name="Refuted"), archive_verdict="refuted"),  # no verdict stored
+        ], found_at=1_794_614_400.0)
+    every = client.get("/api/candidates").json()
+    assert every["total"] == 5
+    halo = next(c for c in every["candidates"] if c["name"] == "Halo")
+    assert halo["motion_verdict"] == {
+        "verdict": "fake_motion", "certainty": None, "cause": "saturated_halo", "decided_by": "catalogue",
+        "reason": "Sits on a slow Gaia star.",
+    }
+    kept = client.get("/api/candidates?hide_fake=true").json()
+    assert kept["total"] == 3 and {c["name"] for c in kept["candidates"]} == {"Barnard's Star", None}
+    both = client.get("/api/candidates?hide_fake=true&classification=known_star").json()
+    assert [c["name"] for c in both["candidates"]] == ["Barnard's Star"]
+
+
+@pytest.mark.parametrize("query", ["classification=planet", "limit=0", "limit=501", "offset=-1", "sort=name", "hide_fake=maybe"])
 def test_bad_parameters(filled, query):
     assert client.get(f"/api/candidates?{query}").status_code == 422
 

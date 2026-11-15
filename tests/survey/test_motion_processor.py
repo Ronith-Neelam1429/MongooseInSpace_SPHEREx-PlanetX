@@ -252,3 +252,28 @@ def test_gaia_status_asks_again_after_a_wait(monkeypatch):
     # SPHEREx only: no catalogue check, nothing to ask.
     monkeypatch.setattr(motion, "parse_observatories", lambda: motion.SPHEREX_ONLY)
     assert gaia_status(270.0, 66.0, lambda: False) is None
+
+
+# -- verdicts with the field's context ----------------------------------------
+
+def test_stored_verdicts_know_the_rest_of_the_field(db, monkeypatch):
+    """A mover 60" from a heavily saturated star sits in its glare: the field's verdict says so,
+    which the object alone cannot (it would say "moving")."""
+    import dataclasses
+
+    from planetx.classify import reliability
+    from planetx.engine.detect import Detection
+
+    ra0, dec0 = patch_center(NEP_IPIX, NSIDE)
+    mover = field_object(ra0, dec0, pm=(0.0, 10.0))
+    star = field_object(ra0, dec0 + 60 / 3600, kind="static", classification="static", pm=(0.0, 0.0))
+    glare = Detection(frame_index=0, x=0.0, y=0.0, ra=ra0, dec=dec0, sigma_arcsec=3.0, flux=float("nan"),
+                      flux_err=float("nan"), snr=1e4, mjd=60900.0, detector=1, saturated=True, sat_area=80)
+    star = dataclasses.replace(star, tracked=dataclasses.replace(
+        star.tracked, sources=[dataclasses.replace(s, detections=[glare]) for s in star.tracked.sources]))
+    FakePatch(monkeypatch, lambda i, ra, dec: field_run([mover, star]))
+    assert reliability.object_verdict(mover).verdict == "moving"
+    assert worker.run(worker.PROCESSORS["motion"], db, max_patches=1).done == 1
+    (stored,) = _stored(db)
+    assert stored.candidate.verdict == reliability.field_verdicts([mover, star])[0]
+    assert (stored.candidate.verdict.verdict, stored.candidate.verdict.cause) == ("fake_motion", "saturated_halo")

@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi import Path as PathParam
 
 from planetx import pipeline
+from planetx.api.motion import motion_verdict
 from planetx.api.routes.survey import DbPath, cannot_open
 from planetx.api.schemas import SurveyCandidate, SurveyCandidates
 from planetx.classify.rules import CLASSIFICATIONS
@@ -60,11 +61,16 @@ def list_candidates(
     sort: Annotated[Literal["score", "date"], Query(
         description="score: best first (default); date: newest survey run first, then best",
     )] = "score",
+    hide_fake: Annotated[bool, Query(
+        description="Leave out candidates whose motion verdict is fake_motion (`motion_verdict.verdict`)",
+    )] = False,
 ) -> SurveyCandidates:
     if classification and classification not in CLASSIFICATIONS:
         raise HTTPException(422, f"classification must be one of {', '.join(CLASSIFICATIONS)} (or empty)")
     page = _stored_or_none(
-        db_path, lambda s: s.page(limit=limit, offset=offset, classification=classification or None, sort=sort)
+        db_path, lambda s: s.page(
+            limit=limit, offset=offset, classification=classification or None, sort=sort, hide_fake=hide_fake,
+        )
     )
     total, rows = page if page else (0, [])
     return SurveyCandidates(total=total, candidates=[_candidate(r) for r in rows])
@@ -77,6 +83,7 @@ def _candidate(r: StoredCandidate) -> SurveyCandidate:
         is_variable=c.is_variable, pm_total=c.pm_total, pm_ra_cosdec=c.pm_ra_cosdec, pm_dec=c.pm_dec,
         significance=c.significance, position_angle_deg=c.position_angle_deg, score=c.score,
         nside=r.nside, ipix=r.ipix, found=r.found, field_ra=c.field_ra, field_dec=c.field_dec, ref_mjd=c.ref_mjd,
+        motion_verdict=motion_verdict(r.motion_verdict),
     )
 
 

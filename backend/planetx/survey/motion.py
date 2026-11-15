@@ -39,7 +39,7 @@ from typing import Any
 import numpy as np
 
 from planetx import pipeline
-from planetx.classify import catalogs
+from planetx.classify import catalogs, reliability
 from planetx.observatories import SPHEREX_ONLY, parse_observatories
 from planetx.spherex import cutouts
 from planetx.survey import patch_frames
@@ -99,7 +99,11 @@ def nearest_field(ra: np.ndarray, dec: np.ndarray, fields: Sequence[Field]) -> n
     return np.argmax(_unit(np.asarray(ra, float), np.asarray(dec, float)) @ centres.T, axis=1)
 
 
-def _candidate(found: pipeline.FieldObject, field: Field) -> Candidate:
+def _candidate(
+    found: pipeline.FieldObject, field: Field, verdict: reliability.MotionVerdict | None = None
+) -> Candidate:
+    """`verdict`: the object's from `reliability.field_verdicts`, which knows the rest of its field
+    (without it, the object's own `object_verdict`)."""
     t, fused, known = found.tracked, found.fused, found.known
     var = t.variability if t.is_variable else None
     var_sigma = float(var["significance"]) if var else None
@@ -119,6 +123,7 @@ def _candidate(found: pipeline.FieldObject, field: Field) -> Candidate:
         score=score(known.kind, known.classification, significance=t.pm_significance,
                     variability_significance=var_sigma),
         field_ra=field.ra, field_dec=field.dec,
+        verdict=reliability.object_verdict(found) if verdict is None else verdict,
     )
 
 
@@ -141,9 +146,13 @@ def _field_outcome(
     ra = np.array([o.tracked.ra for o in run.objects])
     dec = np.array([o.tracked.dec for o in run.objects])
     mine = (patches_containing(ra, dec, patch.nside) == patch.ipix) & (nearest_field(ra, dec, fields) == i)
-    owned = [o for o, keep in zip(run.objects, mine, strict=True) if keep]
+    # With the whole field (bright-star halos, split tracks), as the website computes them.
+    frames = run.result.frames if run.result is not None else []
+    pixel = float(np.median([f.pixel_scale_arcsec for f in frames])) if frames else reliability.SPHEREX_PIXEL_ARCSEC
+    verdicts = reliability.field_verdicts(run.objects, pixel_arcsec=pixel)
+    owned = [(o, v) for o, v, keep in zip(run.objects, verdicts, mine, strict=True) if keep]
     log.debug("patch %d field %d/%d: %d objects, %d here", patch.ipix, i + 1, len(fields), len(run.objects), len(owned))
-    found = [_candidate(o, fields[i]) for o in owned if is_notable(o.known.kind, o.tracked.is_variable)]
+    found = [_candidate(o, fields[i], v) for o, v in owned if is_notable(o.known.kind, o.tracked.is_variable)]
     return len(owned), found, unchecked
 
 

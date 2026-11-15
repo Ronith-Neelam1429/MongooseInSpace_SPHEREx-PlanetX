@@ -8,6 +8,12 @@ are therefore not stable across re-processing.
 
 The score (0-1, `score`) orders the list for people: an uncatalogued mover that
 SPHEREx measures clearly comes first, catalogued stars and artifacts last.
+
+Each row also carries its motion verdict (planetx.classify.reliability: is the
+motion real?). The verdict columns came after the first survey runs: a writable
+store adds them to an older table, and a row stored without a verdict gets one
+from its other columns when read (`StoredCandidate.motion_verdict`), also inside
+SQL (the `planetx_verdict` function), so filtering on the verdict covers it too.
 """
 from __future__ import annotations
 
@@ -20,6 +26,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Self
 
+from planetx.classify.reliability import (
+    CAUSES,
+    CERTAINTIES,
+    DECIDERS,
+    VERDICTS,
+    MotionVerdict,
+    stored_verdict,
+    stored_verdict_sql,
+)
 from planetx.classify.rules import CLASSIFICATIONS
 
 KINDS = ("mover", "candidate", "static")
@@ -50,6 +65,21 @@ TIER_BONUS = 0.09
 BONUS_FROM_SIGMA = 3.0
 BONUS_FULL_SIGMA = 10.0
 
+# Motion verdict columns (planetx.classify.reliability.MotionVerdict), NULL in rows stored
+# without one. Older tables get them with ALTER TABLE, so each is nullable.
+_VERDICT_DEFINITIONS = (
+    ("verdict", f"TEXT CHECK (verdict IS NULL OR verdict IN {VERDICTS!r})"),
+    ("verdict_certainty", f"TEXT CHECK (verdict_certainty IS NULL OR verdict_certainty IN {CERTAINTIES!r})"),
+    ("verdict_cause", f"TEXT CHECK (verdict_cause IS NULL OR verdict_cause IN {CAUSES!r})"),
+    ("verdict_reason", "TEXT"),
+    ("verdict_decided_by", f"TEXT CHECK (verdict_decided_by IS NULL OR verdict_decided_by IN {DECIDERS!r})"),
+)
+VERDICT_COLUMNS = tuple(name for name, _ in _VERDICT_DEFINITIONS)
+# Every row's verdict in SQL: the stored one, else judged from the row's columns.
+_JUDGED_SQL = "planetx_verdict(kind, classification, archive_verdict, significance, track, is_variable)"
+_VERDICT_SQL = f"COALESCE(verdict, {_JUDGED_SQL})"
+_VERDICT_COLUMNS_SQL = "".join(f"\n        {name} {definition}," for name, definition in _VERDICT_DEFINITIONS)
+
 _SCHEMA = (
     f"""
     CREATE TABLE IF NOT EXISTS candidates (
@@ -74,7 +104,7 @@ _SCHEMA = (
         score              REAL    NOT NULL CHECK (score >= 0 AND score <= 1),
         field_ra           REAL    NOT NULL,  -- centre of the field the object was measured in
         field_dec          REAL    NOT NULL,
-        found_at           REAL    NOT NULL,  -- Unix seconds of the run that stored it
+        found_at           REAL    NOT NULL,  -- Unix seconds of the run that stored it{_VERDICT_COLUMNS_SQL}
         FOREIGN KEY (nside, ipix) REFERENCES patches (nside, ipix)
     )
     """,
@@ -88,6 +118,7 @@ _COLUMNS = (
     "pm_total", "pm_err", "significance", "position_angle_deg", "archive_verdict", "track", "score",
     "field_ra", "field_dec",
 )
+_ALL_COLUMNS = _COLUMNS + VERDICT_COLUMNS
 
 
 def is_notable(kind: str, is_variable: bool) -> bool:
@@ -149,6 +180,9 @@ class Candidate:
     score: float
     field_ra: float
     field_dec: float
+    # Is the motion real? From the full pipeline object (reliability.object_verdict). None
+    # stores no verdict; reading the row then judges it from its other columns.
+    verdict: MotionVerdict | None = None
 
     def _values(self) -> tuple[Any, ...]:
         track = json.dumps([vars(p) for p in self.track], allow_nan=False)
@@ -157,7 +191,9 @@ class Candidate:
                      "significance", "position_angle_deg", "score", "field_ra", "field_dec"):
             if not math.isfinite(values[name]):
                 raise ValueError(f"candidate {name} is not finite: {values[name]!r}")
-        return tuple(values[c] for c in _COLUMNS)
+        v = self.verdict
+        verdict = (v.verdict, v.certainty, v.cause, v.reason, v.decided_by) if v else (None,) * len(VERDICT_COLUMNS)
+        return (*(values[c] for c in _COLUMNS), *verdict)
 
 
 @dataclass(frozen=True)
@@ -173,13 +209,22 @@ class StoredCandidate:
         """UTC date (YYYY-MM-DD) of the run that stored it."""
         return datetime.fromtimestamp(self.found_at, UTC).date().isoformat()
 
+    @property
+    def motion_verdict(self) -> MotionVerdict:
+        """The stored verdict; for a row stored without one, a verdict judged from its other columns."""
+        c = self.candidate
+        if c.verdict is not None:
+            return c.verdict
+        return stored_verdict(c.kind, c.classification, c.archive_verdict, c.significance, len(c.track), c.is_variable)
+
 
 class CandidateStore:
     """Connection to the candidates table of a survey database. One per thread.
 
     The database must exist (FileNotFoundError otherwise): it is created by the
-    patch queue. A writable store creates the table if it is missing;
-    `readonly=True` never writes and lists nothing until the table exists.
+    patch queue. A writable store creates the table if it is missing, and adds the
+    verdict columns to a table made before them; `readonly=True` never writes, lists
+    nothing until the table exists, and reads missing verdict columns as NULL.
     """
 
     def __init__(self, path: Path | str, *, readonly: bool = False) -> None:
@@ -191,15 +236,21 @@ class CandidateStore:
         self._conn = sqlite3.connect(uri, uri=True, timeout=BUSY_TIMEOUT_S, isolation_level=None)
         try:
             self._conn.execute("PRAGMA foreign_keys = ON")
-            if not readonly and not self._has_table():
+            self._conn.create_function("planetx_verdict", 6, stored_verdict_sql, deterministic=True)
+            if not readonly and self._needs_schema():
                 self._conn.execute("BEGIN IMMEDIATE")
                 try:
-                    for statement in _SCHEMA:
-                        self._conn.execute(statement)
+                    if not self._has_table():
+                        for statement in _SCHEMA:
+                            self._conn.execute(statement)
+                    self._migrate()
                 except BaseException:
                     self._conn.execute("ROLLBACK")
                     raise
                 self._conn.execute("COMMIT")
+            present = self._columns()
+            self._select = ", ".join(c if c in present else f"NULL AS {c}" for c in _ALL_COLUMNS)
+            self._verdict_sql = _VERDICT_SQL if "verdict" in present else _JUDGED_SQL
         except BaseException:
             self._conn.close()
             raise
@@ -219,6 +270,24 @@ class CandidateStore:
         ).fetchone()
         return row is not None
 
+    def _columns(self) -> set[str]:
+        return {row[1] for row in self._conn.execute("PRAGMA table_info(candidates)")}
+
+    def _needs_schema(self) -> bool:
+        """Whether the table or any verdict column is missing (checked before taking the write lock)."""
+        return not self._has_table() or not set(VERDICT_COLUMNS) <= self._columns()
+
+    def _migrate(self) -> None:
+        """Add the verdict columns a table made before them lacks (inside the caller's transaction).
+
+        Nullable columns only, which SQLite adds without rewriting the table; a survey
+        worker still running older code keeps inserting rows (they get no verdict).
+        """
+        present = self._columns()
+        for name, definition in _VERDICT_DEFINITIONS:
+            if name not in present:
+                self._conn.execute(f"ALTER TABLE candidates ADD COLUMN {name} {definition}")
+
     def replace_patch(self, nside: int, ipix: int, candidates: Sequence[Candidate], found_at: float) -> None:
         """Make `candidates` the whole stored output of patch (nside, ipix), atomically.
 
@@ -228,12 +297,12 @@ class CandidateStore:
         if self.readonly:
             raise PermissionError("candidate store was opened read-only")
         rows = [(nside, ipix, *c._values(), found_at) for c in candidates]
-        placeholders = ", ".join("?" * (len(_COLUMNS) + 3))
+        placeholders = ", ".join("?" * (len(_ALL_COLUMNS) + 3))
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             self._conn.execute("DELETE FROM candidates WHERE nside = ? AND ipix = ?", (nside, ipix))
             self._conn.executemany(
-                f"INSERT INTO candidates (nside, ipix, {', '.join(_COLUMNS)}, found_at) VALUES ({placeholders})",
+                f"INSERT INTO candidates (nside, ipix, {', '.join(_ALL_COLUMNS)}, found_at) VALUES ({placeholders})",
                 rows,
             )
         except BaseException:
@@ -242,17 +311,29 @@ class CandidateStore:
         self._conn.execute("COMMIT")
 
     def page(
-        self, *, limit: int, offset: int = 0, classification: str | None = None, sort: str = "score"
+        self, *, limit: int, offset: int = 0, classification: str | None = None, sort: str = "score",
+        hide_fake: bool = False,
     ) -> tuple[int, list[StoredCandidate]]:
-        """(total matching, one page of them), ordered by `sort` (see SORTS), ties by id."""
+        """(total matching, one page of them), ordered by `sort` (see SORTS), ties by id.
+
+        `hide_fake` leaves out rows whose motion verdict (stored, or judged from the
+        row's columns) is fake_motion.
+        """
         if sort not in SORTS:
             raise ValueError(f"sort must be one of {', '.join(SORTS)}, got {sort!r}")
         if not self._has_table():
             return 0, []
-        where, params = ("WHERE classification = ?", [classification]) if classification else ("", [])
+        conditions: list[str] = []
+        params: list[Any] = []
+        if classification:
+            conditions.append("classification = ?")
+            params.append(classification)
+        if hide_fake:
+            conditions.append(f"{self._verdict_sql} != 'fake_motion'")
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         total = self._conn.execute(f"SELECT COUNT(*) FROM candidates {where}", params).fetchone()[0]
         cursor = self._conn.execute(
-            f"SELECT id, nside, ipix, {', '.join(_COLUMNS)}, found_at FROM candidates {where}"
+            f"SELECT id, nside, ipix, {self._select}, found_at FROM candidates {where}"
             f" ORDER BY {SORTS[sort]} LIMIT ? OFFSET ?",
             [*params, limit, offset],
         )
@@ -263,7 +344,7 @@ class CandidateStore:
         if not self._has_table():
             return None
         row = self._conn.execute(
-            f"SELECT id, nside, ipix, {', '.join(_COLUMNS)}, found_at FROM candidates WHERE id = ?", (id_,)
+            f"SELECT id, nside, ipix, {self._select}, found_at FROM candidates WHERE id = ?", (id_,)
         ).fetchone()
         return None if row is None else _stored(row)
 
@@ -272,7 +353,7 @@ class CandidateStore:
         if not self._has_table():
             return []
         cursor = self._conn.execute(
-            f"SELECT id, nside, ipix, {', '.join(_COLUMNS)}, found_at FROM candidates"
+            f"SELECT id, nside, ipix, {self._select}, found_at FROM candidates"
             " WHERE nside = ? AND ipix = ? ORDER BY score DESC, id",
             (nside, ipix),
         )
@@ -281,7 +362,12 @@ class CandidateStore:
 
 def _stored(row: tuple[Any, ...]) -> StoredCandidate:
     id_, nside, ipix, *values, found_at = row
-    fields = dict(zip(_COLUMNS, values, strict=True))
+    fields: dict[str, Any] = dict(zip(_COLUMNS, values[: len(_COLUMNS)], strict=True))
     fields["is_variable"] = bool(fields["is_variable"])
     fields["track"] = tuple(TrackPoint(**p) for p in json.loads(fields["track"]))
+    verdict, certainty, cause, reason, decided_by = values[len(_COLUMNS):]
+    if verdict is not None:
+        fields["verdict"] = MotionVerdict(
+            verdict=verdict, certainty=certainty, cause=cause, reason=reason or "", decided_by=decided_by,
+        )
     return StoredCandidate(id=id_, nside=nside, ipix=ipix, candidate=Candidate(**fields), found_at=found_at)
