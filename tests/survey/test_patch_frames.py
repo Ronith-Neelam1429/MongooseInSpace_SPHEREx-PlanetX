@@ -278,3 +278,132 @@ def test_field_run_feeds_the_field_pipeline(irsa, monkeypatch):
     with patch_frames.load(fields, lambda: False) as patch:
         assert patch.field_run(2, lambda: False) == "run"
     assert len(seen["frames"]) == 3 and seen["n_visits"] == 3 and seen["no_data"] == 0
+
+
+# -- the fast crop -------------------------------------------------------------
+
+def _cutout_file(tmp_path, variance=True):
+    """A synthetic patch cutout with stars, flag planes (bad, saturated, contaminated),
+    noisy variance, SIP and the W wavelength table, written to disk."""
+    import io
+
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    from synthetic import SHAPE, synthetic_header
+
+    rng = np.random.default_rng(3)
+    wcs = WCS(synthetic_header(RA, DEC))
+    stars = [(*wcs.pixel_to_world_values(float(x), float(y)), 50.0) for x, y in rng.uniform(5, 55, (8, 2))]
+    flags = np.zeros(SHAPE, np.int32)
+    flags[rng.integers(0, 61, 40), rng.integers(0, 61, 40)] = 1 << 3  # HOT: bad
+    flags[30, 30] |= 1 << 1  # OVERFLOW: saturated
+    flags[10:14, 40:44] |= 1 << 5  # GHOST: contaminated
+    hdul = fits.open(io.BytesIO(make_mef(RA, DEC, sources=stars, flags=flags)))
+    hdul["FLAGS"].header.update({"MSKN0001": "OVERFLOW", "MSKM0001": 2, "MSKN0003": "HOT", "MSKM0003": 8,
+                                 "MSKN0005": "GHOST", "MSKM0005": 32})
+    # Higher SIP terms, so a CRPIX the distortion is not moved with shows.
+    hdul["IMAGE"].header.update({"A_1_1": 2e-5, "B_2_0": -3e-5, "A_0_2": 1e-5})
+    hdul["IMAGE"].data = hdul["IMAGE"].data + rng.normal(0, 0.1, SHAPE).astype(np.float32)
+    hdul["VARIANCE"].data = rng.uniform(-0.01, 0.05, SHAPE).astype(np.float32)  # some <= 0: unknown
+    if not variance:
+        del hdul["VARIANCE"]
+    path = tmp_path / "cutout.fits"
+    hdul.writeto(path)
+    return path, wcs
+
+
+def _assert_same_frame(a, b):
+    for name in ("data", "variance", "saturated", "contaminated"):
+        x, y = getattr(a, name), getattr(b, name)
+        assert x.dtype == y.dtype and x.shape == y.shape
+        np.testing.assert_array_equal(x, y)
+    assert (a.mjd, a.detector, a.obs_id, a.meta) == (b.mjd, b.detector, b.obs_id, b.meta)
+    assert np.array_equal([a.psf_fwhm_arcsec, a.wavelength_um], [b.psf_fwhm_arcsec, b.wavelength_um], equal_nan=True)
+    assert np.isfinite(a.wavelength_um)
+    assert a.wcs.to_header_string(relax=True) == b.wcs.to_header_string(relax=True)
+    assert a.wcs.pixel_shape == b.wcs.pixel_shape
+    pix = np.array([[0.0, 0.0], [3.3, 7.9], [11.0, 2.5]])
+    assert a.wcs.all_pix2world(pix, 0).tobytes() == b.wcs.all_pix2world(pix, 0).tobytes()
+    assert a.pixel_scale_arcsec == b.pixel_scale_arcsec
+
+
+def test_open_cutout_frames_equal_frame_from_hdul_of_the_crop(tmp_path):
+    """The survey's fast crop is exactly what the engine builds from crop_cutout's HDUList."""
+    from astropy.io import fits
+    from planetx.engine import frame_from_hdul
+
+    path, wcs = _cutout_file(tmp_path)
+    cutout = patch_frames.OpenCutout(path)
+    compared = 0
+    try:
+        with fits.open(path) as hdul:
+            for x, y in [(30, 30), (10.4, 47.7), (1.0, 30.0), (59.6, 0.2), (45.0, 12.0)]:  # inside, then edges
+                ra, dec = (float(c) for c in wcs.pixel_to_world_values(x, y))
+                for size in (0.01, 0.03):
+                    crop = cutouts.crop_cutout(hdul, ra, dec, size)
+                    _assert_same_frame(cutout.frame(ra, dec, size, obs_id="o1"), frame_from_hdul(crop, obs_id="o1"))
+                    compared += 1
+            off = tuple(float(c) for c in wcs.pixel_to_world_values(-3.0, 30.0))
+            assert cutout.frame(*off, 0.03) is None and cutouts.crop_cutout(hdul, *off, 0.03) is None
+    finally:
+        cutout.close()
+    assert compared == 10
+
+
+def test_open_cutout_without_variance_fails_only_where_it_has_data(tmp_path):
+    path, wcs = _cutout_file(tmp_path, variance=False)
+    cutout = patch_frames.OpenCutout(path)
+    try:
+        assert cutout.frame(*(float(c) for c in wcs.pixel_to_world_values(-3.0, 30.0)), 0.03) is None
+        with pytest.raises(KeyError):
+            cutout.frame(*(float(c) for c in wcs.pixel_to_world_values(30.0, 30.0)), 0.03)
+    finally:
+        cutout.close()
+
+
+# -- fields in processes -------------------------------------------------------
+
+def test_fields_in_processes_give_what_one_process_gives(irsa, monkeypatch):
+    """The real pipeline (SPHEREx only: no network) on synthetic frames, in 2 spawned processes."""
+    monkeypatch.setenv("PLANETX_OBSERVATORIES", "spherex")  # read afresh by the field processes
+    monkeypatch.setattr(pipeline, "parse_observatories", lambda: pipeline.SPHEREX_ONLY)  # this process
+    rng = np.random.default_rng(5)
+    k = 1 / np.cos(np.radians(DEC))
+    stars = [(RA + dx * k, DEC + dy, 80.0) for dx, dy in rng.uniform(-0.03, 0.03, (15, 2))]
+    mjd = {}
+
+    def fetch(url, ra, dec, size):  # a synthetic cutout taken at its visit's time
+        import io
+
+        from astropy.io import fits
+
+        with fits.open(io.BytesIO(make_mef(ra, dec, sources=stars))) as hdul:
+            hdul["IMAGE"].header["MJD-AVG"] = mjd[url]
+            out = io.BytesIO()
+            hdul.writeto(out)
+        return out.getvalue()
+
+    monkeypatch.setattr(archive, "fetch_cutout", fetch)
+    requests = [cutouts.cutout_request(RA + dx * k, DEC + dy, 0.03) for dx, dy in ((0, 0), (0.02, 0), (0, 0.02))]
+    rows = [(_visit(10 * p + n, start + n, detector=1 + n % 3), _square(RA, DEC, 3.5))
+            for p, start in enumerate((60800.0, 61000.0, 61200.0)) for n in range(3)]
+    mjd.update({v.access_url: v.mjd for v, _ in rows})
+    monkeypatch.setattr(patch_frames, "list_footprints", lambda probes, should_stop: rows)
+    fields = [motion.Field(ra, dec) for ra, dec, _ in requests]
+    patch = motion.Patch(NSIDE, patch_containing(RA, DEC, NSIDE), 0, 0)
+    with patch_frames.load(requests, lambda: False) as frames:
+        one = motion._analyse_fields(patch, fields, frames, lambda: False, processes=1)
+        two = motion._analyse_fields(patch, fields, frames, lambda: False, processes=2)
+    assert one == two
+    assert one[1] >= 5  # the synthetic stars, each owned by the field nearest to it
+
+
+def test_a_stop_while_fields_run_in_processes_abandons_the_patch(irsa, monkeypatch):
+    monkeypatch.setenv("PLANETX_OBSERVATORIES", "spherex")
+    requests, rows = _small_patch(3)
+    monkeypatch.setattr(patch_frames, "list_footprints", lambda probes, should_stop: rows)
+    monkeypatch.setattr(motion, "STOP_POLL_S", 0.05)
+    fields = [motion.Field(ra, dec) for ra, dec, _ in requests]
+    patch = motion.Patch(NSIDE, patch_containing(RA, DEC, NSIDE), 0, 0)
+    with patch_frames.load(requests, lambda: False) as frames, pytest.raises(motion.PatchAbandoned):
+        motion._analyse_fields(patch, fields, frames, lambda: True, processes=2)

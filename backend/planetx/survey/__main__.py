@@ -8,6 +8,7 @@
 The database defaults to settings.db_path (env PLANETX_DB); `--db` overrides it.
 """
 import argparse
+import functools
 import logging
 import math
 import sys
@@ -66,9 +67,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print("error: dry-run would mark real survey patches done; pass --db with a scratch database",
               file=sys.stderr)
         return 2
+    processor = PROCESSORS[args.processor]
+    if args.processor == "motion" and args.processes is not None:
+        processor = functools.partial(processor, processes=args.processes)
     try:
         result = run(
-            PROCESSORS[args.processor],
+            processor,
             args.db,
             max_patches=args.max_patches,
             lease_s=args.lease_s,
@@ -134,6 +138,9 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--lease-s", type=_positive_float, default=DEFAULT_LEASE_S)
     p_run.add_argument("--max-attempts", type=_positive_int, default=DEFAULT_MAX_ATTEMPTS)
     p_run.add_argument("--retry-delay-s", type=_positive_float, default=DEFAULT_RETRY_DELAY_S)
+    p_run.add_argument("--processes", type=_positive_int, default=None,
+                       help="motion processor: fields analysed at once, one process each "
+                            "(default survey.motion.FIELD_PROCESSES, 4)")
     p_run.set_defaults(func=_cmd_run)
 
     p_requeue = sub.add_parser("requeue-failed", help="give failed patches a fresh set of attempts")
