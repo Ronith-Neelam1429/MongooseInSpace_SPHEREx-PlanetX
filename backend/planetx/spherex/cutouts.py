@@ -130,9 +130,8 @@ def cached_cutout(url: str, ra: float, dec: float, size_deg: float) -> Path:
     """
     archive.validate_spherex_url(url)
     ra, dec, size_deg = round(ra, 7), round(dec, 7), round(size_deg, 5)
-    digest = hashlib.sha256(f"{url}|{ra:.7f}|{dec:.7f}|{size_deg:.5f}".encode()).hexdigest()
-    path = settings.cache_dir / "cutouts" / digest[:2] / f"{digest}.fits"
-    lock = _download_locks[int(digest[:8], 16) % len(_download_locks)]
+    path = cache_path(url, ra, dec, size_deg)
+    lock = _download_locks[int(path.stem[:8], 16) % len(_download_locks)]
     if not lock.acquire(timeout=archive.TOTAL_DEADLINE_S):
         raise archive.IrsaBusy("cutout downloads are queued up; try again shortly")
     try:
@@ -144,6 +143,13 @@ def cached_cutout(url: str, ra: float, dec: float, size_deg: float) -> Path:
         lock.release()
     _evict(settings.cache_dir / "cutouts", settings.cache_max_mb * 1024 * 1024, keep=path)
     return path
+
+
+def cache_path(url: str, ra: float, dec: float, size_deg: float) -> Path:
+    """Where `cached_cutout` keeps this cutout (it may not exist yet)."""
+    ra, dec, size_deg = round(ra, 7), round(dec, 7), round(size_deg, 5)
+    digest = hashlib.sha256(f"{url}|{ra:.7f}|{dec:.7f}|{size_deg:.5f}".encode()).hexdigest()
+    return settings.cache_dir / "cutouts" / digest[:2] / f"{digest}.fits"
 
 
 def _touch(path: Path) -> None:
@@ -185,10 +191,19 @@ def _wavelength_wcs(header: fits.Header, hdul: fits.HDUList) -> WCS:
     Its table is indexed by raw pixel coordinates, so the celestial SIP
     distortion cards are dropped first (astropy would otherwise apply them).
     """
+    return WCS(without_sip(header), fobj=hdul, key="W")
+
+
+def without_sip(header: fits.Header) -> fits.Header:
+    """A copy of `header` without the celestial SIP distortion cards.
+
+    For the alternate pixel-indexed WCSs of SPHEREx files (W: wavelength, A: detector
+    pixels), which astropy would otherwise distort with the celestial SIP terms.
+    """
     header = header.copy()
     for key in [k for k in header if _SIP_CARD.fullmatch(k)]:
         del header[key]
-    return WCS(header, fobj=hdul, key="W")
+    return header
 
 
 def align(

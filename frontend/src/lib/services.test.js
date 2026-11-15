@@ -55,6 +55,35 @@ describe('runMotion', () => {
   });
 });
 
+describe('runSpectrum', () => {
+  it('polls until done and sends the motion only for a moving object', async () => {
+    const result = { bands: [] };
+    const { services, fetchMock } = await load([
+      ok({ status: 'running', stage: 'measuring', frames_done: 1, frames_total: 72 }), ok({ status: 'done', result }),
+    ]);
+    vi.useFakeTimers();
+    const seen = [];
+    const p = services.runSpectrum({ ra: 331.044, dec: -56.783, pmra: 3982, pmdec: -2466.8, epoch: 2000 }, { onProgress: (j) => seen.push(j.frames_done) });
+    await vi.runAllTimersAsync();
+    expect(await p).toBe(result);
+    expect(seen).toEqual([1]);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://api.test/api/spectrum?ra=331.044000&dec=-56.783000&pmra=3982.0&pmdec=-2466.8&epoch=2000.000');
+  });
+
+  it('leaves the motion out for a fixed object', async () => {
+    const { services, fetchMock } = await load([ok({ status: 'done', result: {} })]);
+    await services.runSpectrum({ ra: 10, dec: 20, pmra: 0, pmdec: 0, epoch: 2026 });
+    expect(fetchMock.mock.calls[0][0]).toBe('http://api.test/api/spectrum?ra=10.000000&dec=20.000000');
+  });
+
+  it('rejects with the backend reason, or when busy', async () => {
+    let { services } = await load([ok({ status: 'failed', error: 'IRSA is down' })]);
+    await expect(services.runSpectrum({ ra: 1, dec: 2 })).rejects.toThrow('IRSA is down');
+    ({ services } = await load([{ status: 503, body: {} }]));
+    await expect(services.runSpectrum({ ra: 1, dec: 2 })).rejects.toThrow(/busy/);
+  });
+});
+
 describe('fetchVisits', () => {
   it('summarises the visits as a count and the survey passes', async () => {
     const passes = [{ start: '2025-08-15', end: '2025-10-01', n_visits: 118 }, { start: '2026-03-11', end: '2026-05-05', n_visits: 122 }];
