@@ -589,8 +589,45 @@ def _brightness_epochs(sources: list[PassSource], epoch_of_pass: list[int]) -> l
     return list(merged.values())
 
 
+def _matched_pairs(
+    dets_a: list[Detection], dets_b: list[Detection], wave_tol: float
+) -> dict[str, list[tuple[float, float]]]:
+    """Independent same-wavelength pairs between two epochs' detections, per kind.
+
+    Returns kind -> [(log(flux_b / flux_a), its error)]. Closest wavelengths
+    are paired first and every detection is used at most once, so the pairs'
+    noise is independent.
+    """
+    kinds_a = [{k: (v, e) for k, v, e in _flux_kinds(d)} for d in dets_a]
+    kinds_b = [{k: (v, e) for k, v, e in _flux_kinds(d)} for d in dets_b]
+    candidates: dict[str, list[tuple[float, int, int]]] = {}
+    for i, da in enumerate(dets_a):
+        if not (np.isfinite(da.wavelength_um) and kinds_a[i]):
+            continue
+        for j, db in enumerate(dets_b):
+            if not np.isfinite(db.wavelength_um):
+                continue
+            dlam = abs(db.wavelength_um - da.wavelength_um) / da.wavelength_um
+            if dlam > wave_tol:
+                continue
+            for kind in kinds_a[i].keys() & kinds_b[j].keys():
+                candidates.setdefault(kind, []).append((dlam, i, j))
+    out: dict[str, list[tuple[float, float]]] = {}
+    for kind, cands in candidates.items():
+        used_a: set[int] = set()
+        used_b: set[int] = set()
+        for _, i, j in sorted(cands):
+            if i in used_a or j in used_b:
+                continue
+            used_a.add(i)
+            used_b.add(j)
+            (va, ea), (vb, eb) = kinds_a[i][kind], kinds_b[j][kind]
+            out.setdefault(kind, []).append((float(np.log(vb / va)), float(np.hypot(ea / va, eb / vb))))
+    return out
+
+
 def _variability(
-    obj_sources: list[PassSource], calib_frac: float, wave_tol: float = 0.01, min_pairs: int = 5
+    obj_sources: list[PassSource], calib_frac: float, wave_tol: float = 0.01, min_pairs: int = 3
 ) -> dict | None:
     """Brightness change between passes, from frames at matching wavelengths.
 
@@ -599,26 +636,17 @@ def _variability(
     are paired across passes only at the same detector, measurement kind and
     wavelength (within `wave_tol`, fractional); the median log flux ratio of
     those pairs, with a robust error, is the measured change.
+
+    Each detection takes part in at most one pair (`_matched_pairs`): pairing
+    one detection with every neighbour in wavelength would count its noise
+    several times and overstate the significance. `min_pairs` counts such
+    independent pairs (overlapping ones used to need 5, which could come from
+    as few as 2 + 3 detections).
     """
     best = None
     for a_i, a in enumerate(obj_sources):
         for b in obj_sources[a_i + 1:]:
-            logs: dict[str, list[tuple[float, float]]] = {}
-            for da in a.detections:
-                if not np.isfinite(da.wavelength_um):
-                    continue
-                for db in b.detections:
-                    if not np.isfinite(db.wavelength_um):
-                        continue
-                    if abs(db.wavelength_um - da.wavelength_um) > wave_tol * da.wavelength_um:
-                        continue
-                    kb = {k: (v, e) for k, v, e in _flux_kinds(db)}
-                    for kind, va, ea in _flux_kinds(da):
-                        if kind in kb:
-                            vb, eb = kb[kind]
-                            logs.setdefault(kind, []).append(
-                                (float(np.log(vb / va)), float(np.hypot(ea / va, eb / vb)))
-                            )
+            logs = _matched_pairs(a.detections, b.detections, wave_tol)
             for kind, pairs in logs.items():
                 if len(pairs) < min_pairs:
                     continue

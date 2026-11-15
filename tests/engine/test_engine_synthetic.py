@@ -449,3 +449,31 @@ def test_variable_seen_across_visits_cut_into_time_windows():
     assert v.variability["ratio"] == pytest.approx(2.0, rel=0.15)
     assert v.variability["n_pairs"] >= 8
     assert [o for o in r.variables] == [v]
+
+
+def test_variability_pairs_use_each_detection_once():
+    # One pass saw the star at 5 wavelengths, the other 5 times at each of them.
+    # Pairing every detection with every same-wavelength partner would reuse the
+    # first pass's 5 measurements 5 times each and overstate the significance:
+    # a constant star would then often look variable.
+    from planetx.engine.detect import Detection
+    from planetx.engine.motion import _variability
+
+    def source(pass_index, waves, fluxes):
+        dets = [
+            Detection(0, 0.0, 0.0, 150.0, 20.0, 0.1, f, 5.0, f / 5.0, 60900.0 + 180 * pass_index, 1, wavelength_um=w)
+            for w, f in zip(waves, fluxes)
+        ]
+        return PassSource(pass_index, 150.0, 20.0, 0.1, dets[0].mjd, len(dets), len(dets), 20.0, {}, dets)
+
+    rng = np.random.default_rng(17)
+    waves = [1.0, 1.1, 1.2, 1.3, 1.4]
+    signif = []
+    for _ in range(300):
+        a = source(0, waves, rng.normal(100.0, 5.0, 5))
+        b = source(1, waves * 5, rng.normal(100.0, 5.0, 25))
+        v = _variability([a, b], calib_frac=0.0)
+        assert v["n_pairs"] == 5
+        signif.append(v["significance"])
+    # Gaussian noise: |z| > 3 in ~0.3% of cases; allow for the median's heavier tails.
+    assert np.mean(np.array(signif) > 3) < 0.03
