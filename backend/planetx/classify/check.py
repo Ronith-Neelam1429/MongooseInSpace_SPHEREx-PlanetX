@@ -3,8 +3,11 @@
 `check_objects` is the only function here that reaches the network, through
 the fetchers it is given. Gaia and SIMBAD are fetched once per field and give
 every object a name; SkyBoT (slow) is asked only about movers and candidates
-that no star explains. A catalogue that cannot answer never fails the run: the
-objects it was needed for come back with `classification=None` and a note.
+that no star explains, and its geocentric positions are moved to SPHEREx's
+orbit position from JPL Horizons. A catalogue that cannot answer never fails
+the run: the objects it was needed for come back with `classification=None` and
+a note. Without Horizons the asteroid check still runs, on geocentric positions
+with a wider match radius, and says so in a note.
 """
 from __future__ import annotations
 
@@ -17,9 +20,11 @@ import numpy as np
 from planetx.engine import TrackedObject
 from planetx.observatories import FusedMotion, Verdict
 
-from . import catalogs
+from . import catalogs, observer
 from .catalogs import DAYS_PER_YEAR, CatalogError, CatalogObject, SolarSystemBody
+from .observer import SPHEREX_MAX_GEOCENTRIC_KM, mean_position, parallax_arcsec
 from .rules import (
+    BODY_MATCH_ARCSEC,
     MATCH_RADIUS_ARCSEC,
     MAX_MATCHES,
     FieldCatalog,
@@ -42,13 +47,23 @@ CANDIDATE_MIN_PASSES = 3
 # catalogued star further than this many arcsec per year of catalogue age from
 # the field cannot be one of its objects.
 MAX_PM_ARCSEC_YR = 15.0
-# Wide enough for the geocentric parallax of a body 0.1 au away.
-SKYBOT_RADIUS_ARCSEC = 120.0
+# The SkyBoT cone (geocentric) must hold a body SPHEREx sees at the cone's centre
+# down to this distance: 8' of parallax plus the match radius and the 120" of
+# position error SkyBoT is told to allow (`-filter`), about 620" in all. Nearer
+# bodies move several pixels during one SPHEREx exposure, so the engine does not
+# see them as point sources anyway.
+NEAREST_BODY_AU = 0.02
+SKYBOT_MAX_POSITION_ERR_ARCSEC = 120.0
+SKYBOT_RADIUS_ARCSEC = (
+    parallax_arcsec(SPHEREX_MAX_GEOCENTRIC_KM, NEAREST_BODY_AU) + BODY_MATCH_ARCSEC + SKYBOT_MAX_POSITION_ERR_ARCSEC
+)
 # SkyBoT takes 2-10 s per cone; a run asks at most this many.
 MAX_BODY_QUERIES = 8
 
 FetchStars = Callable[[float, float, float], list[CatalogObject]]
 FetchBodies = Callable[[float, float, float, float], list[SolarSystemBody]]
+# UTC MJDs -> SPHEREx's geocentric ICRF position (km) at each.
+FetchObserver = Callable[[Sequence[float]], Sequence[Sequence[float]]]
 
 
 @dataclass(frozen=True)
@@ -120,11 +135,13 @@ def check_objects(
     fetch_gaia: FetchStars = catalogs.fetch_gaia,
     fetch_simbad: FetchStars = catalogs.fetch_simbad,
     fetch_skybot: FetchBodies = catalogs.fetch_skybot,
+    fetch_observer: FetchObserver = observer.spherex_geocentric_km,
 ) -> CheckResult:
     """Name and classify the tracked objects of one field, and settle which of them move.
 
     `fused[i]` is the archival refit of `objects[i]`. Gaia is required: without
-    it nothing is classified. SIMBAD only adds names and object types.
+    it nothing is classified. SIMBAD only adds names and object types. Horizons
+    (`fetch_observer`) only sharpens the known-asteroid check.
     """
     if not objects:
         return CheckResult(known=[])
@@ -188,7 +205,7 @@ def check_objects(
     if on_slow_stars:
         notes.append(f"{on_slow_stars} apparent mover(s) set to static: slow Gaia stars lie at every position")
 
-    asteroids, unchecked_bodies, body_notes = _check_bodies(objects, kinds, leads, fetch_skybot)
+    asteroids, unchecked_bodies, body_notes = _check_bodies(objects, kinds, leads, fetch_skybot, fetch_observer)
     notes += body_notes
 
     known = []
@@ -220,11 +237,14 @@ def _check_bodies(
     kinds: Sequence[str],
     leads: Sequence[int | None],
     fetch_skybot: FetchBodies,
+    fetch_observer: FetchObserver,
 ) -> tuple[dict[int, Match], set[int], list[str]]:
     """Ask SkyBoT about the movers and candidates no star explains.
 
     Returns (object index -> matched body, indices whose check could not run, notes).
     Most significant objects first, so a query limit or an outage costs the least.
+    SPHEREx's position is looked up (one Horizons request per pass, for the times
+    of its frames) only when SkyBoT lists a body to compare with.
     """
     wanted = sorted(
         (i for i, kind in enumerate(kinds) if kind != "static" and leads[i] is None),
@@ -235,6 +255,9 @@ def _check_bodies(
     notes: list[str] = []
     queries = 0
     failure: str | None = None
+    horizons_failure: str | None = None
+    geocentric_passes = 0
+    geocentric_matches = 0
     for i in wanted:
         for source in body_epochs(objects[i].sources):
             if failure is not None or queries >= MAX_BODY_QUERIES:
@@ -248,9 +271,21 @@ def _check_bodies(
                 failure = str(exc)
                 unchecked_bodies.add(i)
                 break
-            match = asteroid_match(source.ra, source.dec, bodies)
+            if not bodies:
+                continue
+            spherex_km, spread_km = None, 0.0
+            if horizons_failure is None:
+                try:
+                    spherex_km, spread_km = mean_position(fetch_observer([d.mjd for d in source.detections]))
+                except CatalogError as exc:
+                    log.warning("Horizons unavailable, SkyBoT positions stay geocentric: %s", exc)
+                    horizons_failure = str(exc)
+            if spherex_km is None:
+                geocentric_passes += 1
+            match = asteroid_match(source.ra, source.dec, bodies, spherex_km, spread_km)
             if match is not None:
                 found[i] = match
+                geocentric_matches += spherex_km is None
                 break
     if failure is not None:
         notes.append(
@@ -260,5 +295,12 @@ def _check_bodies(
         notes.append(
             f"{len(unchecked_bodies)} object(s) not checked for known asteroids "
             f"(limit of {MAX_BODY_QUERIES} SkyBoT queries per run)"
+        )
+    if horizons_failure is not None:
+        notes.append(
+            f"JPL Horizons unavailable ({horizons_failure}): {geocentric_passes} position(s) compared with "
+            "geocentric SkyBoT predictions, the match radius widened by SPHEREx's largest parallax "
+            f"({parallax_arcsec(SPHEREX_MAX_GEOCENTRIC_KM, 1.0):.1f}\" divided by the distance in au); "
+            f"{geocentric_matches} known-asteroid match(es) rest on that wider radius"
         )
     return found, unchecked_bodies, notes

@@ -31,6 +31,7 @@ from typing import Protocol
 import numpy as np
 
 from .catalogs import DAYS_PER_YEAR, CatalogObject, SolarSystemBody
+from .observer import SPHEREX_MAX_GEOCENTRIC_KM, from_observer, parallax_arcsec
 
 ARCSEC_PER_RAD = 180.0 / math.pi * 3600.0
 # A catalogue object matches a SPHEREx position within this distance (about 0.7 px).
@@ -54,9 +55,11 @@ MAX_MATCHES = 4
 # asteroid crosses a pixel in minutes, a Kuiper-belt object in about two hours).
 MAX_BODY_SPAN_DAYS = 0.1
 # SkyBoT positions are geocentric; SPHEREx orbits about 7,000 km from the Earth's
-# centre, which shifts a body by up to this many arcsec at 1 au (less further away).
-SPHEREX_PARALLAX_ARCSEC_AU = 9.7
-BODY_MATCH_ARCSEC = 10.0  # on top of the parallax and the body's own position error
+# centre (see planetx.classify.observer). A body is matched within this distance of
+# where SPHEREx saw it, on top of its own position error and whatever parallax is
+# left unaccounted for.
+BODY_MATCH_ARCSEC = 10.0
+# Distance assumed for the parallax allowance when SkyBoT gives none.
 BODY_MIN_AU = 0.05
 
 CLASSIFICATIONS = ("known_star", "known_asteroid", "variable_star", "artifact", "unknown_candidate", "static")
@@ -267,13 +270,33 @@ def body_epochs(passes: Sequence) -> list[PositionLike]:
     return out
 
 
-def asteroid_match(ra: float, dec: float, bodies: Sequence[SolarSystemBody]) -> Match | None:
-    """The known body that a SPHEREx position can be, if any: the nearest one within its tolerance."""
+def asteroid_match(
+    ra: float,
+    dec: float,
+    bodies: Sequence[SolarSystemBody],
+    observer_km: Sequence[float] | None = None,
+    observer_spread_km: float = 0.0,
+) -> Match | None:
+    """The known body that a SPHEREx position can be, if any: the nearest one within its tolerance.
+
+    `bodies` are geocentric (SkyBoT). With `observer_km`, SPHEREx's geocentric
+    position at the time, each body is first moved to where SPHEREx saw it, and
+    only `observer_spread_km` (how far SPHEREx moved between the frames averaged
+    into this position) is left as parallax allowance. Without it the allowance is
+    the largest parallax SPHEREx's orbit can give at the body's distance: 24" at
+    0.4 au, 8' at 0.02 au.
+    """
     best: Match | None = None
     for body in bodies:
-        sep = float(_separation_arcsec(body.ra, body.dec, ra, dec))
-        parallax = SPHEREX_PARALLAX_ARCSEC_AU / max(body.geocentric_au or BODY_MIN_AU, BODY_MIN_AU)
-        if sep > BODY_MATCH_ARCSEC + parallax + (body.position_err_arcsec or 0.0):
+        distance = body.geocentric_au if body.geocentric_au and body.geocentric_au > 0 else None
+        if observer_km is not None and distance is not None:
+            body_ra, body_dec = from_observer(body.ra, body.dec, distance, observer_km)
+            allowance = parallax_arcsec(observer_spread_km, distance)
+        else:
+            body_ra, body_dec = body.ra, body.dec
+            allowance = parallax_arcsec(SPHEREX_MAX_GEOCENTRIC_KM, distance or BODY_MIN_AU)
+        sep = float(_separation_arcsec(body_ra, body_dec, ra, dec))
+        if sep > BODY_MATCH_ARCSEC + allowance + (body.position_err_arcsec or 0.0):
             continue
         if best is None or sep < best.sep_arcsec:
             best = Match(catalog="skybot", name=body.name, kind=body.kind, sep_arcsec=sep, magnitude=body.v_mag)

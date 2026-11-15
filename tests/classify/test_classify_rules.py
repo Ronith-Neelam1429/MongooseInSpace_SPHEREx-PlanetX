@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import pytest
 
 from planetx.classify.catalogs import CatalogObject, SolarSystemBody
+from planetx.classify.observer import from_observer
 from planetx.classify.rules import (
     MATCH_RADIUS_ARCSEC,
     FieldCatalog,
@@ -205,6 +206,33 @@ def test_asteroid_tolerance_allows_for_spherex_not_being_at_the_earths_centre():
     assert asteroid_match(ra, dec, [body(30.0, 0.4)]) is not None  # a near-Earth body shifts by 24"
     assert asteroid_match(ra, dec, [body(30.0, 3.0, err=20.0)]) is not None  # its own orbit is uncertain
     assert asteroid_match(ra, dec, []) is None
+
+
+def test_a_near_earth_object_is_matched_where_spherex_saw_it():
+    """A body 0.02 au away, seen from SPHEREx 7,000 km off the Earth's centre, is 8' from its geocentric position."""
+    geo_ra, geo_dec, au = 269.4485, -23.0, 0.02
+    spherex_km = (0.0, 0.0, 7000.0)
+    seen_ra, seen_dec = from_observer(geo_ra, geo_dec, au, spherex_km)
+    shift = math.hypot((seen_ra - geo_ra) * math.cos(math.radians(geo_dec)), seen_dec - geo_dec) * 3600.0
+    assert 400.0 < shift < 490.0
+    neo = SolarSystemBody("2026 AB", "Near-Earth asteroid", geo_ra, geo_dec, 61000.0, 18.0, au, 1.0)
+
+    match = asteroid_match(seen_ra, seen_dec, [neo], spherex_km)
+    assert match.name == "2026 AB" and match.sep_arcsec < 0.01  # corrected: exact
+    # Corrected positions keep the tolerance tight: 20" from where SPHEREx saw it is someone else.
+    assert asteroid_match(seen_ra, seen_dec + 20.0 / 3600.0, [neo], spherex_km) is None
+    # Frames averaged over SPHEREx's motion leave that motion's parallax as the allowance.
+    assert asteroid_match(seen_ra, seen_dec + 20.0 / 3600.0, [neo], spherex_km, observer_spread_km=300.0) is not None
+    # Without SPHEREx's position (Horizons down) the geocentric one is matched within the largest parallax.
+    fallback = asteroid_match(seen_ra, seen_dec, [neo])
+    assert fallback.name == "2026 AB" and fallback.sep_arcsec == pytest.approx(shift, abs=0.01)
+    # ...but not beyond it: a body at 1 au gets under 10" of allowance.
+    far = SolarSystemBody("(5) Astraea", "Main-belt asteroid", geo_ra, geo_dec, 61000.0, 12.0, 1.0, 0.0)
+    assert asteroid_match(seen_ra, seen_dec, [far]) is None
+    # A body without a distance is not moved, and gets the allowance of one 0.05 au away.
+    unknown = SolarSystemBody("C/2026 X1", "Comet", geo_ra, geo_dec, 61000.0, None, None, None)
+    assert asteroid_match(seen_ra, seen_dec, [unknown], spherex_km) is None
+    assert asteroid_match(geo_ra, geo_dec + 150.0 / 3600.0, [unknown], spherex_km) is not None
 
 
 @pytest.mark.parametrize("kind, flags, expected", [
