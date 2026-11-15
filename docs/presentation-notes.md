@@ -1,6 +1,6 @@
 # Presentation notes: SPHEREx PlanetX
 
-Running collection of material for the pitch. Last updated 2026-11-14 (about 19:45: sessions overview, engine and fusion sections added).
+Running collection of material for the pitch. Last updated 2026-11-15 about 03:30 (everything merged to main; added classification, evidence checks, survey candidates, website, CI/deploy and ideas for standing out).
 
 Tags: **[verified]** = measured by our own live tests. **[project]** = from our design
 notes (CLAUDE.md). **[check]** = general background knowledge, confirm against the source
@@ -44,7 +44,7 @@ Wording rule: always say "candidate", never "discovery". **[project]**
 
 ## 4. Headline result so far: we can see Barnard's Star move in real SPHEREx pixels **[verified]**
 
-This is the strongest proof-of-concept slide.
+This is the first proof-of-concept slide. **The headline number is now the 60× precision gain from fusion (section 8c): ±1.77 → ±0.029″/yr, matching Gaia.**
 
 - Barnard's Star has the largest proper motion of any star, about 10.4″/yr (Gaia DR3 total of about 10,393 mas/yr).
 - We downloaded a real SPHEREx DR1 cutout from **2025-08-15** and propagated
@@ -124,24 +124,43 @@ Classify: known moving star | known asteroid/comet | variable | artifact | UNKNO
 - **Bonus:** spectra on the fly (methane and water absorption suggests a brown dwarf), light curves,
   user voting on candidates.
 
-## 8a. Who is building what (status as of 2026-11-14, about 19:45)
+## 8a. Project status (updated 2026-11-15, about 03:30)
 
-| Piece | Branch / folder | How it's built | Status |
-|---|---|---|---|
-| Data connection tests | `setup/data-connections` (main folder) | live pytest against IRSA, Gaia, VizieR, SIMBAD, SkyBoT, SBIdent, HiPS | PR #1 open; 12 SPHEREx and 14 catalog tests pass |
-| Backend API | `feature/backend-api` → `planetx-worktrees/api` | FastAPI: `/api/visits`, `/api/frames`, `/api/cutout.png`, `/api/cutout.json`; every visit resampled onto one north-up grid | PR #2 open. Barnard's Star has **364 visits in 3 passes**, and on a live frame it landed **0.87 px** from its predicted position |
-| Survey crawler | `feature/survey-queue` → `planetx-worktrees/survey` | NESTED HEALPix order spiraling out from the NEP; SQLite queue with **leases + heartbeat** so a crashed worker's patch goes back in the queue; CLI `init/status/run/requeue-failed`; `/api/survey/status`, `/api/survey/coverage` (MOC for Aladin) | PR #3 open; 102 unit tests. It only does real work once the engine is plugged in |
-| Combined check | API + survey merged | | **222 offline tests and 6 live tests pass**; all 7 endpoints respond |
-| Sky map frontend | `frontend/sky-explorer` | React + Vite + Aladin Lite; click to explore, shareable URL, info panel | pushed, no PR yet |
-| **Motion engine** | `feature/motion-engine` → `planetx-worktrees/engine` | pure numpy/astropy/scipy, no network (section 8b) | about 750 lines, **not committed yet**, no engine unit tests yet |
-| **Multi-observatory fusion** | `feature/multi-observatory` → `planetx-worktrees/observatories` | refines SPHEREx motions with 2MASS / AllWISE / CatWISE / NEOWISE positions (section 8c) | about 900 lines plus a 477-line test file, **not committed yet** |
+**Everything is merged on `main`** (PRs #1–#5 merged; commit `7d05747`), and GitHub CI is green on it.
+Offline backend tests: **475 passed** (I ran this myself on `main`, 113 s). Frontend: **128 tests
+pass**, and lint and build are clean (reported by the session that merged them).
 
-Engineering detail worth a sentence: the cutout cache is capped (2 GB, least-recently-used files removed first), every request has a timeout, and cutout URLs
-are restricted to IRSA so the server can't be used to fetch arbitrary URLs.
+Code layout now: `backend/planetx/` (Python), `frontend/` (website), `tools/` (engine dev
+viewer), `tests/<part>/`. Commands are in `CLAUDE.md`.
+
+| Part | Where | What it does |
+|---|---|---|
+| SPHEREx data access | `backend/planetx/spherex/archive.py`, `cutouts.py` | SIA2 queries (DR1 + QR3), IRSA-only URL allow-list, timeouts/retries, disk cache capped at 2 GB, resampling onto one north-up grid |
+| Motion engine | `backend/planetx/engine/` | detection → passes/windows → alignment → linking → astrometric fit (+ parallax) → variability (8b) |
+| Archive fusion | `backend/planetx/observatories/` | refits motion with 2MASS/AllWISE/CatWISE/NEOWISE positions; also fetches 2MASS/WISE *images* for the evidence view (8c) |
+| Catalogue check / classification | `backend/planetx/classify/` | names and classifies every object with Gaia, SIMBAD and SkyBoT (8d) |
+| Shared field pipeline | `backend/planetx/pipeline.py` | `analyse_field`: one code path used by both the website and the survey |
+| API | `backend/planetx/api/` | `/api/visits`, `/frames`, `/cutout.*`, **`/api/motion`** (background engine runs), **`/api/motion/evidence`** (+ `/surveys`), **`/api/candidates`**, `/api/survey/*` |
+| "Is the motion real?" checks | `backend/planetx/api/evidence_checks.py` | 7 independent tests per mover (8e) |
+| Survey crawler | `backend/planetx/survey/` | HEALPix crawl from the NEP, resumable SQLite queue, **`motion` processor**, **candidates table with scores** (8f) |
+| Website | `frontend/` | SPHEREx all-sky globe, Gaia star field with animated motion, "Find what moves", evidence viewer, candidates panel, class filter (8g) |
+| CI / deploy | `.github/workflows/ci.yml`, `frontend-pages.yml`; deploy draft in an agent worktree | 8h |
+
+**Sessions that did this work:** Motion engine integration, Object movement photo verification
+(evidence plus the final merge to `main`), Mesh filter for object classification (class filter),
+UI updates and telescope imagery roadmap, ML model for movement detection (advice only, no code), and
+Next steps after dataset links (backend API and survey).
+
+**Still not done / not merged:**
+- Deploy files (`Dockerfile`, `render.yaml`, `deploy/`, `docs/DEPLOY.md`) exist **uncommitted** in agent
+  worktree `.claude/worktrees/agent-ad86a2ca8867f3b75`.
+- An uncommitted engine rewrite (+394/−203 lines in `motion.py`) sits in `agent-a236c0753aeb333a3`.
+- **GitHub Pages deploy fails** because Pages isn't enabled for the repo: Settings → Pages → Source =
+  GitHub Actions, then re-run the workflow. Only the repo owner can change this setting.
 
 ## 8b. How the motion engine works (the physics) **[verified by reading the code + our own run]**
 
-Code: `src/planetx/engine/` (`frames.py` → `detect.py` → `motion.py`). Entry point
+Code: `backend/planetx/engine/` (`frames.py` → `detect.py` → `motion.py`, plus `stack.py`). Entry point
 `find_motion(frames)`. It takes SPHEREx frames of one patch, in any order and from any detector, and
 returns tracked objects with fitted proper motion, a mover flag and a variable flag.
 
@@ -175,7 +194,8 @@ need to be resampled onto a common grid, which would blur sub-pixel positions.
 
 ### Step 2: group frames into passes
 SPHEREx revisits a spot about every 6 months, and each visit lasts up to about 7 weeks. A **gap of more than 60 days
-starts a new pass**. At Barnard's Star that gives 3 passes (Aug–Oct 2025, Mar–May 2026, Aug–Sep 2026).
+starts a new pass**. At Barnard's Star that gives 3 passes (Aug–Oct 2025, Mar–May 2026, Aug–Sep 2026). Near the poles,
+where coverage never stops, a long run is now cut into windows of 60 days or less (see "Engine upgrades" below).
 
 ### Step 3: align frames
 Small pointing and WCS errors would look like motion. The frame with the most stars is the
@@ -221,32 +241,56 @@ For each detector, take the largest change in per-pass flux between passes, with
 measurement ⊕ **5% calibration**. **Variable** = ratio ≥ 1.25 and significance ≥ 5σ.
 Each detector is compared only with itself, because each detector sees a different wavelength.
 
-### Known limits (engine doc string + our run)
-- A fast asteroid moving *within* one visit is not handled yet (only motion between passes).
-- Blended pairs collapse to one source (acceptable at 6″).
-- Parallax is not modelled.
+### Engine upgrades since the first version (all on `main`) **[verified from commits]**
+- **Time windows for the poles.** Passes used to split only at gaps of more than 60 days. Near the ecliptic poles
+  SPHEREx comes back every week or two, so everything was one pass and nothing could be measured, and that is exactly
+  where the crawler starts. Continuous coverage is now cut into equal windows of 60 days or less. That keeps the fastest
+  linked motion under 0.4 px inside a window. Real pole field (RA 270, Dec +66.56): **before, 1 pass and nothing
+  measured; after, 9 windows, 26 tracked objects, floor 0.21″/yr, no false movers.**
+- **About 3–5× faster.** Profiling showed about 2/3 of the time went to astropy coordinate transforms per source pair, so
+  the engine now does that maths in plain numpy and finds neighbours with a scipy k-d tree. Results are identical to 1e-9″.
+  54 frames: 15 s → 4.5 s. 147 frames: 37 s → 8 s.
+- **Parallax.** When a straight line fits badly, the engine adds a parallax term and keeps it only if it is
+  physical: positive and significant. Eps Indi B: **parallax 0.36 ± 0.18″** (literature 0.28″).
+- **Per-pass stacking** (`stack.py`, `find_motion(frames, stack=True)`). It co-adds each pass's 10–40 frames into one
+  deeper image to reach faint objects like WISE 0855. It's a dev/research mode; the website and the survey don't use it.
+- **Variability at matched wavelengths.** Each detector is a rainbow (linear variable filter), so brightness is
+  compared only between detections at the *same wavelength*. Brightness epochs are whole survey visits, not windows.
+- **Order independence.** `find_motion` sorts its input by time, so results don't depend on the order frames arrive in.
 
-### Engine results on our test targets: our own offline run, 2026-11-14 **[verified]**
-Run on the engine's cached cutouts (`.cache/dev`) with default settings. The engine is still in
-development, so these numbers will change.
+### Engine results on the 5 test targets (real SPHEREx data) **[verified by the engine sessions, in CLAUDE.md]**
 
-| Target | Frames / passes | Result |
-|---|---|---|
-| **Barnard's Star** | 163 frames, 3 passes, all 6 detectors | **Mover found: 10.43 ± 1.77″/yr** (µα* −0.48, µδ +10.42), 5.9σ, χ²/dof 0.99. **Gaia: 10.39″/yr (−0.80, +10.36).** About 40 s for the run |
-| WISE 0855 | 33 frames, 3 passes, detectors 5–6 | **not detected yet**: nothing within 30″ of the target |
-| R Dra | 54 frames, 3 passes, detectors 1–3 | nearest object 19″ off and not flagged variable. Probably saturation (no flux) or cutout centring; needs work |
-| RW Aur | 54 frames, 3 passes, detectors 1–3 | found within 1″, static (correct), **not flagged variable** (flux ratio 1.18, low significance) |
-| Eps Indi B | 13 frames, **1 pass** cached | cannot measure motion with one pass |
+| Target | Engine result | Reference | Verdict |
+|---|---|---|---|
+| **Barnard's Star** | **10.45″/yr, PA 358°** | Gaia 10.39″/yr, PA 356° | ✅ mover, matches Gaia |
+| **Eps Indi B** | **4.67″/yr, PA 122°**, parallax 0.36 ± 0.18″ | literature 4.7″/yr, PA 122°, parallax 0.28″ | ✅ mover + parallax |
+| **R Dra** | **variable**, flux ratio between visits 0.56–0.63 | Mira, P ≈ 245 d | ✅ variable, not a mover (dev tools, 252 frames) |
+| **RW Aur** | static; the archive refutes a fake 15″/yr fit | young variable star | ✅ no false mover |
+| **WISE 0855** | only in per-pass stacks: 8.9″/yr, PA 284°, **3.2σ** | about 8.1″/yr | ⚠️ "candidate", not a mover |
 
-**Pitch line:** "From SPHEREx alone, with 6-arcsecond pixels and 3 visits, our engine measured
-Barnard's Star moving at 10.4″/yr, the same as Gaia, and flagged it as the most significant mover in the field."
+- **No false movers** on these fields.
+- **On the website** (live, 54 frames, detectors 1–3), Barnard's Star comes out as a **9.91″/yr, PA 2°, 5.1σ mover**:
+  281 tracks, 1 candidate.
+- My own earlier run (old engine, 2026-11-14) gave Barnard 10.43 ± 1.77″/yr and missed the other four. The table
+  above supersedes it.
 
-**Honest status:** the Barnard demo works. WISE 0855, R Dra and RW Aur still need tuning. Don't promise these
-in the pitch until they're re-run.
+**Pitch line:** "With only 3 visits and 6-arcsecond pixels, our engine measured Barnard's Star at
+10.45″/yr against Gaia's 10.39. It also recovered Epsilon Indi B's motion *and its parallax*, and flagged R Draconis
+as a variable, not a mover."
+
+### Engine known problems (from CLAUDE.md; be honest if asked)
+- Crowded fields still need care with the O(n²) linking pieces. Most of that was fixed by the k-d tree.
+- **Stack mode** is order-sensitive. In time order: Eps Indi B 4.28″/yr (true 4.68), and WISE 0855 a 6.6σ mover. Both
+  real-target stack tests are *strict expected failures* until this is fixed.
+- The website samples about 76 frames per field, too few for R Dra's variability. It's flagged only with the dev tools' 252
+  frames.
+- A mover blending with a field star in one pass gets rejected.
+- Constants were tuned on 5 targets. They should be re-derived from many static stars before trusting survey-wide significances.
+- Asteroids moving *within* one visit aren't tracked yet.
 
 ## 8c. Multi-observatory fusion: "SPHEREx finds it, old surveys confirm it" **[verified by reading code]**
 
-Code: `src/planetx/observatories/` (`fusion.py`, `irsa.py`, `sources.py`). Setting
+Code: `backend/planetx/observatories/` (`fusion.py`, `catalogs.py`, `sources.py`, `images.py`). Setting
 `PLANETX_OBSERVATORIES` = `spherex` | `multi` (default) | `all`.
 
 - **Why:** SPHEREx alone has 2–4 epochs over 1–2 years, so motion errors are a few tenths of an arcsec per year, and
@@ -271,8 +315,125 @@ Code: `src/planetx/observatories/` (`fusion.py`, `irsa.py`, `sources.py`). Setti
 - Removes a common SPHEREx-minus-archive frame offset before fitting, and treats AllWISE, CatWISE and NEOWISE as one
   family, so they aren't counted as independent confirmations.
 
+**Real result: the strongest number in the project** **[verified, CLAUDE.md]**
+- Barnard's Star, SPHEREx only: (−0.48, +10.42) **± 1.77″/yr**.
+- After fusion with 2MASS: (−0.820, +10.362) **± 0.029″/yr**. **Gaia: (−0.80, +10.36).**
+- **About 60× more precise, matching Gaia to the hundredth of an arcsec per year.**
+- Barnard field: 95 tracks → 83 stationary, 11 unconfirmed, **0 false movers**. RW Aur field: 50 stationary, 2 unconfirmed, 0 movers.
+- Barnard has no usable AllWISE/CatWISE entry (saturated), so **2MASS (around 2000) does the work**: the star is about 4.5′ away in 2MASS images.
+- False movers found during development, and the guard that now stops each one:
+  - a faint bystander inside a loose search area → chance-alignment test, ranked by brightness
+  - neighbours that 2MASS/WISE resolve but SPHEREx blends into one pixel → the motion must exceed a 6.2″ total shift
+  - a single archival epoch → it confirms only if SPHEREx alone already sees ≥3σ
+
 **Pitch line:** "A candidate only reaches the 'unknown' list after it survives SPHEREx's
 own error budget *and* a check against 25 years of archival infrared data."
+
+## 8d. Catalogue check: naming and classifying every object **[verified from code + commit]**
+
+Code: `backend/planetx/classify/` (`rules.py` = pure decision rules, `catalogs.py` = thin fetchers, `check.py`).
+
+- **Why it exists:** the engine and the archive refit say *whether* something moves, not *what* it is. On the
+  Barnard field they presented **two false movers** next to Barnard's Star, and Gaia settled both:
+  - a 1.4σ track that AllWISE and CatWISE "confirmed" at 2.0″/yr actually sits on a 7 mas/yr Gaia star. Its two
+    "counterparts", 32″ and 20″ away, were two other slow Gaia stars that happened to line up.
+  - a 3.5σ candidate hopped between two faint Gaia stars 8″ apart (a blend seen in different detectors).
+- **How:** every catalogue position is moved to the SPHEREx date with its own proper motion first (Barnard's Star is
+  110″ from its Gaia 2016 position today). The match radius is 4.5″ (about 0.7 px), and only Gaia stars brighter than
+  G 19.5 count. Gaia and SIMBAD are fetched once per field. **SkyBoT** is asked only about movers no star explains,
+  and only for positions measured within hours, because no asteroid stays inside one SPHEREx pixel longer than that.
+  SPHEREx's own orbit shifts asteroid positions by up to 9.7″ at 1 au, and the code allows for that.
+- **The six classes:** `known_star` | `known_asteroid` | `variable_star` | `artifact` | **`unknown_candidate`** | `static`.
+- The numbers behind the thresholds come from the Barnard field: 281 tracked objects, 6,884 Gaia stars within 10′.
+- A catalogue outage never fails a run: the classification is left empty, with a note.
+
+## 8e. "Is the motion real?": the evidence checklist **[verified from code + commit]**
+
+Clicking a mover opens an **Evidence** view: the real SPHEREx images of that patch in every pass, blinking, with the
+measured positions marked, plus a last-minus-first difference image, position against time, and **2MASS and WISE images
+of the same sky** from decades earlier (`/api/motion/evidence/surveys`).
+
+The engine's verdict rests on one number (speed ÷ error). These **7 independent tests** look at other parts of the
+data, so they fail for different reasons (`api/evidence_checks.py`):
+1. **beyond_noise**: is the move bigger than how much the field's fixed stars appear to shift?
+2. **track_line**: are all passes on one straight line at a steady speed?
+3. **images_show_motion**: does the difference image show a dark-to-bright pair along the track, compared with
+   random spots in the same patch?
+4. **many_exposures**: is it found in many single exposures, so not a cosmic ray or glitch?
+5. **detectors_agree**: does each detector array measure the move on its own?
+6. **same_look**: is the brightness and colour the same in every pass, so one object and not two?
+7. **no_stand_in**: was nothing else sitting at the new spot before, and nothing still at the old one?
+
+**Live result on Barnard's Star: 7 of 7 decidable tests pass. The pixels alone show 9.3″ of motion against the
+engine's 9.8″. Of 280 fixed stars in the field, 277 correctly *fail* "moved beyond the noise".**
+RW Aur's fake 15″/yr, 20σ straight-line fit is explained as static: the middle pass covered the track and saw
+nothing, and the archive refutes it.
+
+**Pitch line:** "We don't ask you to trust a number. Click any mover and see the pixels, the 25-year-old
+2MASS image, and seven independent tests."
+
+## 8f. The survey: crawling the sky on its own **[verified from code + commit]**
+
+- **`motion` processor** (`survey/motion.py`): each HEALPix patch (nside 64) is tiled into **64 fields of 0.2°**, and each
+  is run through the same `analyse_field` pipeline as the website. Every object is kept once, from the field whose centre
+  is nearest.
+- **Candidates table** (`survey/candidates.py`, `GET /api/candidates`, the website's Candidates panel). Each row is scored
+  from 0 to 1, so that **an uncatalogued, significant mover comes first**:
+
+| Tier | Score |
+|---|---|
+| unknown_candidate + mover (≥5σ, no catalogue explains it) | 0.9 + up to 0.09 for significance |
+| mover, catalogues not reachable | 0.7 |
+| unknown_candidate + 3–5σ motion | 0.6 |
+| uncatalogued variable | 0.5 |
+| known asteroid / variable star / known star / artifact | 0.3 / 0.2 / 0.1 / 0 |
+
+- Processing is at-least-once and safe to repeat: re-processing a patch replaces its rows in one transaction, so no duplicates.
+- Leases with a heartbeat mean a crashed worker's patch goes back in the queue. Signals are handled so finished work is never lost.
+- **For the pitch:** have the crawler running and quote "N patches, X candidates". Even "0 unknown candidates, all known
+  movers recovered" is a strong, honest result.
+
+## 8g. The website **[verified from commits / README]**
+
+- Opens on the **SPHEREx DR1 all-sky cube** as a slowly turning orthographic globe, with a wavelength slider over the
+  100 usable frames (0.75–5.0 µm). AllWISE, 2MASS and DSS2 are alternative backgrounds.
+- **Gaia DR3 star field** on a canvas: stars sized by brightness, and **proper motion animated forward from 2016**.
+  A "Movers" toggle fades slow stars and draws the fast ones' predicted paths. The camera flies along great circles.
+- **"Find what moves"** runs the engine on the field you're looking at (about 54 frames, about 216 MB from IRSA the
+  first time, 1–2 minutes). Engine motions are drawn in **cyan** next to Gaia's catalogued motion in **red**.
+- **Plain language** (`plain.js`): compass directions instead of position angles, "crosses the full Moon in about 180
+  years", and verdicts that never say more than "candidate".
+- **Names for everything** (`names.js`): SIMBAD and Gaia merged into one row per place on the sky, with tracks matched
+  to catalogues at the right date.
+- **Class filter and legend** on the map, a Candidates panel, and the Evidence viewer (8e).
+- Reduced-motion users get no spin and instant jumps. Shareable `?ra=&dec=&fov=` URLs.
+- Design: Instrument Serif + IBM Plex Mono, black and white, with one signal colour for motion.
+
+## 8h. Engineering quality: CI and deploy **[verified]**
+- **GitHub Actions CI** on every PR and push to `main`:
+  - backend: locked dependency check, lint for real bugs only, offline tests
+  - frontend: lint, tests, build
+  - live-network tests are kept out of CI on purpose, because IRSA/CDS 5xx errors would block merges for no reason
+- **Offline-test guard:** `tests/conftest.py` stops offline tests from touching the network. Fake SPHEREx files come from
+  `tests/synthetic.py`. 475 backend tests and 128 frontend tests.
+- **Deploy plan** (drafted, not committed yet): frontend on GitHub Pages; API plus survey worker in **one Render
+  container** with a 10 GB disk. They share one container because SQLite in WAL mode can't sit on a network disk, so a
+  separate worker couldn't see the API's database.
+- Security points: IRSA host and path allow-lists for every server-side download, size caps (including after unzipping),
+  timeouts everywhere, a concurrency cap, and TLS verification kept on.
+
+## 8i. How to stand out (advice from the "ML model" session) **[project advice]**
+1. **Lead with the 60× number**: SPHEREx ± 1.77 → fused ± 0.029″/yr, matching Gaia. Other teams will only say "it moves".
+2. **Show that we checked ourselves**: the false movers we caught and the guard for each. Possible addition: an
+   **injection-recovery plot** (inject fake movers into real frames, plot the recovered fraction against speed and
+   brightness). About half a day of work; `tests/synthetic.py` is a starting point.
+3. **Show what the survey found**: N patches crawled from the NEP, X candidates, each with an evidence page.
+4. **Use the spectrum**, which only SPHEREx has: 102 bands, where a methane/water dip marks a brown dwarf (WISE 0855).
+5. **Make the demo hard to break**: pre-warm the cache for all 5 targets, put a QR code to a shareable URL on a slide,
+   and record a backup video.
+- **On ML:** use physics to *measure* motion (error bars, explainable, works for never-seen objects), and if anything use ML
+  only to *reject artifacts*. That's the same split ZTF and Rubin use. It isn't needed for the hackathon.
+- Don't add more features. Five targets with honest evidence beat twelve half-finished panels.
 
 ## 9. Demo targets (live demo slide) **[project]**
 
@@ -311,6 +472,12 @@ These are the "we handled the real world" points:
 - A distant "Planet X" would be very faint. Whether it falls within SPHEREx's depth is uncertain. **[check]**
   Frame this as "the tool flags *candidates* for follow-up", not "we will find Planet Nine".
 - Dependence on external services: IRSA lags new data by about a day, and the CDS outage happened during testing. **[project/verified]**
+- WISE 0855, the coldest brown dwarf, is too faint for single SPHEREx frames. It shows up only in per-pass stacks, at 3.2σ,
+  so we call it a "candidate". **[verified]**
+- Website-sized samples (about 76 frames per field) are too small to flag R Dra's variability. The deeper dev-tool sample (252 frames) does flag it. **[verified]**
+- Thresholds were tuned on 5 targets and should be re-calibrated on many static stars before survey-wide significances
+  are trusted. An injection-recovery test would measure this. **[project]**
+- Asteroids that move *within* one visit aren't tracked yet. Only motion between passes is. **[verified]**
 
 ## 12. Planet X angle (use carefully) **[check all]**
 
@@ -324,6 +491,9 @@ These are the "we handled the real world" points:
 ## 13. Timeline / process (team slide) **[project]**
 
 - Before the hackathon: data connections tested (done), Barnard's Star motion demo (done in tests), FastAPI and Aladin skeleton.
+- Done by 2026-11-15, about 03:30: API, engine, archive fusion, catalogue classification, evidence checklist, survey
+  processor + candidates, website with engine, CI. All merged on `main`. Built in parallel by about 8 Claude sessions in separate
+  git worktrees and merged through PRs.
 - Hours 18–22: crawler starts, **left running from about hour 20**, so the demo shows real survey output.
 - Scope rule: after hour 24, only must-have features.
 
@@ -339,8 +509,14 @@ These are the "we handled the real world" points:
 ---
 
 ## Open items to fill in as other work lands
-- [ ] Screenshot or GIF of the time-lapse player on Barnard's Star
-- [ ] Number of patches the crawler has covered, and how many candidates by class
+- [x] Motion engine on the website (cyan = engine, red = Gaia)
+- [x] Evidence view: real images per pass, difference image, 2MASS/WISE images, 7-test checklist
+- [x] Survey processor + scored candidates list
+- [ ] Screenshot/GIF of the evidence blink on Barnard's Star (the strongest visual)
+- [ ] Before/after error-bar graphic: ±1.77 → ±0.029″/yr vs Gaia
+- [ ] Number of patches the crawler has covered, and how many candidates by class (start the crawler and leave it running)
+- [ ] Injection-recovery plot (optional, about half a day)
 - [ ] One spectrum plot (WISE 0855 or Eps Indi B)
 - [ ] R Dra light curve
-- [ ] Deploy URL plus an example shareable link
+- [ ] Deploy: enable GitHub Pages (Settings → Pages → GitHub Actions), commit the Render deploy files, then add the live URL + QR code
+- [ ] Pre-warm the cache for all 5 targets before the demo
