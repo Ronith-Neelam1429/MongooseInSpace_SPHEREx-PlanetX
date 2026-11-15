@@ -210,7 +210,7 @@ def test_field_frames_match_a_direct_cutout_of_the_field(irsa, monkeypatch):
             header = hdul["IMAGE"].header.copy()
     x, y = (float(c) for c in whole.wcs.world_to_pixel_values(RA, DEC))
     cx, cy = (float(c) for c in crop.wcs.world_to_pixel_values(RA, DEC))
-    x0, _, y0, _ = cutouts.crop_box(header, whole.data.shape, *fields[1])
+    x0, _, y0, _ = cutouts.crop_box(cutouts.cutout_wcs(header), whole.data.shape, *fields[1])
     assert (cx + x0, cy + y0) == pytest.approx((x, y), abs=1e-6)
     np.testing.assert_array_equal(crop.data, whole.data[y0:y0 + crop.data.shape[0], x0:x0 + crop.data.shape[1]])
     assert crop.obs_id == r.visit.obs_id

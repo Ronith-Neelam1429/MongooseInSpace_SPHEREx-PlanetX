@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from astropy.io import fits
+from astropy.wcs import WCS
 
 from planetx import pipeline
 from planetx.engine import Frame, frame_from_hdul, group_into_passes
@@ -221,6 +222,7 @@ class PatchFrames:
         self.paths: list[Path | None] = [None] * len(plan.requests)
         self.errors: list[str | None] = [None] * len(plan.requests)  # None: downloaded or no data here
         self.no_data = [False] * len(plan.requests)
+        self._wcs: dict[int, WCS] = {}  # per request: every field crops the same cutout
 
     def download(self, should_stop: Callable[[], bool]) -> None:
         """Fetch every request, DOWNLOAD_WORKERS at a time.
@@ -299,7 +301,9 @@ class PatchFrames:
         for attempt in (1, 2):
             try:
                 with fits.open(self.paths[k]) as hdul:
-                    crop = cutouts.crop_cutout(hdul, ra, dec, size)
+                    if k not in self._wcs:
+                        self._wcs[k] = cutouts.cutout_wcs(hdul["IMAGE"].header)
+                    crop = cutouts.crop_cutout(hdul, ra, dec, size, wcs=self._wcs[k])
                     return None if crop is None else frame_from_hdul(crop, obs_id=r.visit.obs_id)
             except FileNotFoundError:
                 # Pins hold only within this process: another one sharing the cache evicted it.

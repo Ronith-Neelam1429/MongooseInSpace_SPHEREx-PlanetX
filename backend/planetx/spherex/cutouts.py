@@ -250,24 +250,32 @@ def _sip_header(header: fits.Header) -> fits.Header:
     return header
 
 
-def crop_box(header: fits.Header, shape: tuple[int, int], ra: float, dec: float, size_deg: float
-             ) -> tuple[int, int, int, int] | None:
-    """Pixel box (x0, x1, y0, y1), end-exclusive and clipped to `shape`, that an IRSA
-    request (ra, dec, size_deg) covers in the cutout with IMAGE `header`; None when
-    (ra, dec) is off the cutout (IRSA answers such a request with 422).
-
-    The box is `size_deg` at the nominal pixel scale, centred on the pixel of
-    (ra, dec): the rule that reproduced IRSA's own field cutouts in live tests.
-    """
+def cutout_wcs(header: fits.Header) -> WCS:
+    """The celestial WCS (SIP included) of a cutout's IMAGE `header`, as `crop_box` takes it."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FITSFixedWarning)
-        x, y = WCS(_sip_header(header)).celestial.world_to_pixel_values(ra, dec)
+        return WCS(_sip_header(header)).celestial
+
+
+def crop_box(wcs: WCS, shape: tuple[int, int], ra: float, dec: float, size_deg: float
+             ) -> tuple[int, int, int, int] | None:
+    """Pixel box (x0, x1, y0, y1), end-exclusive and clipped to `shape`, that an IRSA
+    request (ra, dec, size_deg) covers in the cutout of `cutout_wcs` `wcs`; None when
+    (ra, dec) is off the cutout (IRSA answers such a request with 422).
+
+    IRSA's rule, measured on 107 live field cutouts (Nov 2026; it also gave the
+    boxes of two ~1 deg cutouts): n pixels a side, the first at floor(c + 1 - n/2)
+    where c is the 0-based pixel of (ra, dec) in the full (SIP) WCS. n is
+    `size_deg` at the nominal scale, rounded (180 for a 0.2 deg field's request,
+    as IRSA returned in every case).
+    """
+    x, y = wcs.world_to_pixel_values(ra, dec)
     ny, nx = shape
     if not (np.isfinite(x) and np.isfinite(y) and -0.5 <= x < nx - 0.5 and -0.5 <= y < ny - 0.5):
         return None
     side = size_deg * 3600 / PIXEL_SCALE_ARCSEC
     n = max(1, math.floor(side + 0.5))
-    x0, y0 = math.floor(x - side / 2 + 0.5), math.floor(y - side / 2 + 0.5)
+    x0, y0 = math.floor(x + 1 - n / 2), math.floor(y + 1 - n / 2)
     return max(x0, 0), min(x0 + n, nx), max(y0, 0), min(y0 + n, ny)
 
 
@@ -282,7 +290,9 @@ def _shifted(header: fits.Header, dx: int, dy: int) -> fits.Header:
     return header
 
 
-def crop_cutout(hdul: fits.HDUList, ra: float, dec: float, size_deg: float) -> fits.HDUList | None:
+def crop_cutout(
+    hdul: fits.HDUList, ra: float, dec: float, size_deg: float, wcs: WCS | None = None
+) -> fits.HDUList | None:
     """The cutout IRSA would return for request (ra, dec, size_deg), cut from `hdul`,
     a larger cutout of the same file; None when (ra, dec) is off it.
 
@@ -290,10 +300,11 @@ def crop_cutout(hdul: fits.HDUList, ra: float, dec: float, size_deg: float) -> f
     WCS (celestial with SIP, and the W wavelength lookup) keeps describing the
     same sky and detector pixels; the PRIMARY header and WCS-WAVE are copied. The
     request must lie inside `hdul`'s own request (or the file's edge), otherwise
-    the crop comes out smaller than IRSA's cutout would be.
+    the crop comes out smaller than IRSA's cutout would be. `wcs` is
+    `cutout_wcs` of `hdul` (worth passing when cropping one cutout many times).
     """
     image = hdul["IMAGE"]
-    box = crop_box(image.header, image.data.shape, ra, dec, size_deg)
+    box = crop_box(cutout_wcs(image.header) if wcs is None else wcs, image.data.shape, ra, dec, size_deg)
     if box is None:
         return None
     x0, x1, y0, y1 = box

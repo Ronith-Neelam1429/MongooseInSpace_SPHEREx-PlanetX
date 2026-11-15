@@ -328,7 +328,7 @@ def _big_cutout(sources=(), flags=None):
 def test_crop_is_the_sub_array_with_shifted_reference_pixels():
     big = _big_cutout()
     ra, dec = _shifted(40, -25)  # 40" north, 25" west of the big cutout's centre
-    x0, x1, y0, y1 = cutouts.crop_box(big["IMAGE"].header, SHAPE, ra, dec, 0.02)
+    x0, x1, y0, y1 = cutouts.crop_box(cutouts.cutout_wcs(big["IMAGE"].header), SHAPE, ra, dec, 0.02)
     assert (x1 - x0, y1 - y0) == (12, 12)  # 0.02 deg at 6.15"/px = 11.7 -> 12 px
     crop = cutouts.crop_cutout(big, ra, dec, 0.02)
     assert [h.name for h in crop] == ["PRIMARY", "IMAGE", "FLAGS", "VARIANCE", "ZODI", "WCS-WAVE"]  # no EPSF
@@ -354,7 +354,7 @@ def test_cropped_frame_sees_the_same_sky_wavelength_and_flags():
     big["FLAGS"].header.update({"MSKN0001": "OVERFLOW", "MSKM0001": 2})
     centre = _shifted(25, 15)
     crop = cutouts.crop_cutout(big, *centre, 0.03)
-    x0, _, y0, _ = cutouts.crop_box(big["IMAGE"].header, SHAPE, *centre, 0.03)
+    x0, _, y0, _ = cutouts.crop_box(cutouts.cutout_wcs(big["IMAGE"].header), SHAPE, *centre, 0.03)
     whole, part = frame_from_hdul(big), frame_from_hdul(crop)
     # The same sky position maps to the same detector pixel, SIP distortion included.
     bx, by = (float(c) for c in whole.wcs.world_to_pixel_values(*star))
