@@ -198,10 +198,11 @@ export async function fetchVisits(ra, dec, { signal } = {}) {
  * `classification` narrows the list to one class. Returns null when the list cannot be had: no
  * backend configured, or a backend that does not serve the route yet (404).
  */
-export async function fetchCandidates({ limit = 100, offset = 0, classification, signal } = {}) {
+export async function fetchCandidates({ limit = 100, offset = 0, classification, sort, signal } = {}) {
   if (!API_BASE) return null;
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (classification) params.set('classification', classification);
+  if (sort && sort !== 'score') params.set('sort', sort);
   let j;
   try {
     j = await apiJson(`/candidates?${params}`, { signal });
@@ -214,19 +215,39 @@ export async function fetchCandidates({ limit = 100, offset = 0, classification,
 }
 
 /**
- * The offline survey so far: { status, coverage }. `status` is the API's SurveyStatus (patch
- * counts and how far the crawl has got). `coverage` is the finished patches as an Aladin MOC JSON
- * ({ "<order>": [ipix, ...] }), or null while no patch is finished. Returns null without a backend.
+ * A small SPHEREx picture of a survey candidate (GET {API_BASE}/candidates/{id}/thumbnail.png),
+ * cut from the frames the survey already downloaded; null without a backend.
+ */
+export function candidateThumbnailUrl(id) {
+  return API_BASE ? `${API_BASE}/candidates/${encodeURIComponent(id)}/thumbnail.png` : null;
+}
+
+/** How many of the patches still to search are drawn: the crawl's next stretch, not the whole sky. */
+export const QUEUED_SHOWN = 300;
+
+/**
+ * The offline survey so far: { status, coverage: { done, failed, queued } }. `status` is the API's
+ * SurveyStatus (patch counts and how far the crawl has got). Each coverage layer is an Aladin MOC
+ * JSON ({ "<order>": [ipix, ...] }), or null when it has no patch: finished, given up on after
+ * retries, and the next QUEUED_SHOWN the crawl will search (the one in progress first).
+ * Returns null without a backend.
  */
 export async function fetchSurvey({ signal } = {}) {
   if (!API_BASE) return null;
-  const [status, coverage] = await Promise.all([
+  const [status, done, failed, queued] = await Promise.all([
     apiJson('/survey/status', { signal }),
     apiJson('/survey/coverage', { signal }),
+    apiJson('/survey/coverage?status=failed', { signal }),
+    apiJson(`/survey/coverage?status=queued&limit=${QUEUED_SHOWN}`, { signal }),
   ]);
-  if (!status?.counts || !coverage || typeof coverage !== 'object') throw new Error('bad response');
-  const empty = Object.values(coverage).every((cells) => !Array.isArray(cells) || cells.length === 0);
-  return { status, coverage: empty ? null : coverage };
+  if (!status?.counts) throw new Error('bad response');
+  return { status, coverage: { done: mocOrNull(done), failed: mocOrNull(failed), queued: mocOrNull(queued) } };
+}
+
+function mocOrNull(moc) {
+  if (!moc || typeof moc !== 'object' || Array.isArray(moc)) throw new Error('bad response');
+  const empty = Object.values(moc).every((cells) => !Array.isArray(cells) || cells.length === 0);
+  return empty ? null : moc;
 }
 
 const MOTION_POLL_MS = 2500;

@@ -23,6 +23,8 @@ from typing import Any, Self
 from planetx.classify.rules import CLASSIFICATIONS
 
 KINDS = ("mover", "candidate", "static")
+# List orders: best score first, or newest run first (then best score).
+SORTS = {"score": "score DESC, id", "date": "found_at DESC, score DESC, id"}
 BUSY_TIMEOUT_S = 30.0
 
 # Score = tier + up to TIER_BONUS for significance, so a class never overtakes the
@@ -240,19 +242,30 @@ class CandidateStore:
         self._conn.execute("COMMIT")
 
     def page(
-        self, *, limit: int, offset: int = 0, classification: str | None = None
+        self, *, limit: int, offset: int = 0, classification: str | None = None, sort: str = "score"
     ) -> tuple[int, list[StoredCandidate]]:
-        """(total matching, one page of them), best score first, ties by id."""
+        """(total matching, one page of them), ordered by `sort` (see SORTS), ties by id."""
+        if sort not in SORTS:
+            raise ValueError(f"sort must be one of {', '.join(SORTS)}, got {sort!r}")
         if not self._has_table():
             return 0, []
         where, params = ("WHERE classification = ?", [classification]) if classification else ("", [])
         total = self._conn.execute(f"SELECT COUNT(*) FROM candidates {where}", params).fetchone()[0]
         cursor = self._conn.execute(
             f"SELECT id, nside, ipix, {', '.join(_COLUMNS)}, found_at FROM candidates {where}"
-            " ORDER BY score DESC, id LIMIT ? OFFSET ?",
+            f" ORDER BY {SORTS[sort]} LIMIT ? OFFSET ?",
             [*params, limit, offset],
         )
         return total, [_stored(row) for row in cursor]
+
+    def get(self, id_: int) -> StoredCandidate | None:
+        """One stored candidate by row id, or None (ids change when a patch is re-processed)."""
+        if not self._has_table():
+            return None
+        row = self._conn.execute(
+            f"SELECT id, nside, ipix, {', '.join(_COLUMNS)}, found_at FROM candidates WHERE id = ?", (id_,)
+        ).fetchone()
+        return None if row is None else _stored(row)
 
     def patch_candidates(self, nside: int, ipix: int) -> list[StoredCandidate]:
         """Everything stored for one patch, best score first."""

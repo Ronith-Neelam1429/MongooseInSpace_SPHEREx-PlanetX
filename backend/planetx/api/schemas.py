@@ -393,9 +393,10 @@ class SurveyStatus(BaseModel):
     )
 
 
-# Done patches as an Aladin Lite MOC JSON: {"<order>": [NESTED ipix, ...]}, with
-# order = log2(nside). Pass straight to `A.MOCFromJSON(coverage)`. The list is
-# empty until the first patch is done (skip drawing then).
+# Survey patches of one status (done by default) as an Aladin Lite MOC JSON:
+# {"<order>": [NESTED ipix, ...]}, with order = log2(nside). Pass straight to
+# `A.MOCFromJSON(coverage)`. The list is empty while no patch has that status
+# (skip drawing then).
 SurveyCoverage = dict[str, list[int]]
 
 
@@ -410,6 +411,7 @@ class SurveyCandidate(BaseModel):
         description="known_star | known_asteroid | variable_star | artifact | unknown_candidate | static;"
         " null when the catalogue check could not run"
     )
+    kind: str = Field(description="Engine motion class: mover | candidate (3-5 sigma) | static (a variable)")
     is_variable: bool
     pm_total: float = Field(description="SPHEREx proper motion, arcsec/yr")
     pm_ra_cosdec: float = Field(description="arcsec/yr, east positive")
@@ -420,6 +422,11 @@ class SurveyCandidate(BaseModel):
     nside: int = Field(description="HEALPix nside of the survey patch it was found in")
     ipix: int = Field(description="NESTED index of that patch")
     found: str = Field(description="UTC date (YYYY-MM-DD) of the run that stored it")
+    field_ra: float = Field(
+        description="Centre of the field it was measured in; `/api/motion` there with size_deg=0.2"
+        " repeats the survey's run (on the frames the survey already downloaded)"
+    )
+    field_dec: float
 
 
 class SurveyCandidates(BaseModel):

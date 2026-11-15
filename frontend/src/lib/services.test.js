@@ -88,6 +88,23 @@ describe('fetchCandidates', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('http://api.test/api/candidates?limit=50&offset=100&classification=unknown_candidate');
   });
 
+  it('asks for the newest first only when sorting by date', async () => {
+    const { services, fetchMock } = await load([ok({ total: 0, candidates: [] }), ok({ total: 0, candidates: [] })]);
+    await services.fetchCandidates({ sort: 'date' });
+    await services.fetchCandidates({ sort: 'score' });
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
+      'http://api.test/api/candidates?limit=100&offset=0&sort=date',
+      'http://api.test/api/candidates?limit=100&offset=0',
+    ]);
+  });
+
+  it('builds thumbnail URLs on the API, and none without a server', async () => {
+    const { services } = await load([]);
+    expect(services.candidateThumbnailUrl(7)).toBe('http://api.test/api/candidates/7/thumbnail.png');
+    const none = await load([], { apiBase: '' });
+    expect(none.services.candidateThumbnailUrl(7)).toBeNull();
+  });
+
   it('reports the list as unavailable when the server has no such route, or there is no server', async () => {
     const { services } = await load([{ status: 404, body: { detail: 'Not Found' } }]);
     expect(await services.fetchCandidates()).toBeNull();
@@ -106,20 +123,43 @@ describe('fetchCandidates', () => {
 describe('fetchSurvey', () => {
   const status = { nside: 64, moc_order: 6, total: 49152, counts: { pending: 49100, in_progress: 1, done: 50, failed: 1 }, current_radius_deg: 3.2 };
   const idle = { nside: null, moc_order: null, total: 0, counts: { pending: 0, in_progress: 0, done: 0, failed: 0 } };
-  // The two requests go out together; answer each by its URL.
+  // The requests go out together; answer each by its path and query.
   async function survey(byPath) {
     const { services, fetchMock } = await load([]);
-    fetchMock.mockImplementation(async (url) => ({ ok: true, status: 200, json: async () => byPath[new URL(url).pathname] }));
-    return services.fetchSurvey();
+    fetchMock.mockImplementation(async (url) => {
+      const u = new URL(url);
+      return { ok: true, status: 200, json: async () => byPath[u.pathname + u.search] };
+    });
+    return { result: await services.fetchSurvey(), urls: fetchMock.mock.calls.map((c) => c[0]) };
   }
 
-  it('returns the status and the finished patches as a MOC', async () => {
-    const coverage = { 6: [1, 2, 3] };
-    expect(await survey({ '/api/survey/status': status, '/api/survey/coverage': coverage })).toEqual({ status, coverage });
+  it('returns the status and the finished, failed and next patches as MOCs', async () => {
+    const { result, urls } = await survey({
+      '/api/survey/status': status,
+      '/api/survey/coverage': { 6: [1, 2, 3] },
+      '/api/survey/coverage?status=failed': { 6: [9] },
+      '/api/survey/coverage?status=queued&limit=300': { 6: [4, 5] },
+    });
+    expect(result).toEqual({ status, coverage: { done: { 6: [1, 2, 3] }, failed: { 6: [9] }, queued: { 6: [4, 5] } } });
+    expect(urls).toContain('http://api.test/api/survey/coverage?status=queued&limit=300');
   });
 
-  it('has no coverage to draw before the first patch is finished', async () => {
-    expect(await survey({ '/api/survey/status': idle, '/api/survey/coverage': { 6: [] } })).toEqual({ status: idle, coverage: null });
+  it('has no layer to draw for a status without patches', async () => {
+    const { result } = await survey({
+      '/api/survey/status': idle,
+      '/api/survey/coverage': { 6: [] },
+      '/api/survey/coverage?status=failed': { 6: [] },
+      '/api/survey/coverage?status=queued&limit=300': { 6: [] },
+    });
+    expect(result).toEqual({ status: idle, coverage: { done: null, failed: null, queued: null } });
+  });
+
+  it('rejects a malformed coverage answer', async () => {
+    const { services, fetchMock } = await load([]);
+    fetchMock.mockImplementation(async (url) => ({
+      ok: true, status: 200, json: async () => (new URL(url).pathname.endsWith('status') ? status : [1, 2]),
+    }));
+    await expect(services.fetchSurvey()).rejects.toThrow('bad response');
   });
 
   it('is unavailable without a server', async () => {

@@ -2,6 +2,8 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffec
 import SkyMap from './components/SkyMap.jsx';
 import InfoPanel from './components/InfoPanel.jsx';
 import CandidatesPanel from './components/CandidatesPanel.jsx';
+import SurveyLegend from './components/SurveyLegend.jsx';
+import { candidateField, matchCandidate } from './lib/crawl.js';
 import Search from './components/Search.jsx';
 import ClassFilter from './components/ClassFilter.jsx';
 import { SHOW_ALL, SHOW_MOVING, countClasses, engineClass, isMovingOnly, knownClass } from './lib/classes.js';
@@ -52,15 +54,11 @@ function objectFov(sel) {
 /** Short name of an engine object for the map. */
 const resultLabel = ({ o, who }) => (who.name ? shortName(who.name) : who.checked ? 'Uncatalogued' : verdict(o));
 
-function surveyLine(crawl) {
-  if (crawl.status === 'loading') return 'Loading the survey';
-  if (crawl.status === 'none') return 'The survey needs the PlanetX server, which is not connected.';
-  if (crawl.status === 'error') return `Survey unavailable: ${crawl.error}.`;
-  const s = crawl.info.status;
-  if (!s.total) return 'Our automatic survey has not started yet.';
-  const where = s.current_radius_deg != null ? `, now ${s.current_radius_deg.toFixed(1)}° from the north ecliptic pole` : '';
-  return `Our automatic survey has checked ${s.counts.done.toLocaleString('en-US')} of ${s.total.toLocaleString('en-US')} patches${where}.`;
-}
+/**
+ * The view that opens a survey candidate's field: its patch is then the survey's 0.2° field
+ * (motionSize reaches its cap), so the engine run repeats the survey's on the frames it downloaded.
+ */
+const CANDIDATE_FOV = 0.6;
 
 /** Cursor / centre readout, updated imperatively so mouse moves don't re-render the app. */
 const Readout = forwardRef(function Readout(_, ref) {
@@ -99,6 +97,7 @@ export default function App() {
   const aborts = useRef({}); // in-flight requests of the open patch, by kind
   const crawlAbort = useRef(null);
   const latest = useRef({}); // current state for the map's long-lived callbacks
+  const wanted = useRef(null); // the survey candidate whose card opens once its field's run is done
 
   const [ready, setReady] = useState(false);
   const [tilesLoading, setTilesLoading] = useState(false);
@@ -227,6 +226,7 @@ export default function App() {
     const targetFov = fov ?? nextFov(m.aladin.getFov()[0]);
     camera.current.flyTo({ ra, dec, fov: targetFov });
     const s = { ra, dec, radius: radiusFor(targetFov), label };
+    wanted.current = null;
     setSel(s);
     setFocus(null);
     setTrail([]);
@@ -240,6 +240,7 @@ export default function App() {
     load('simbad', s);
     load('gaia', s);
     load('visits', s);
+    return s;
   }, [load]);
 
   const closePanel = useCallback(() => {
@@ -435,9 +436,27 @@ export default function App() {
     });
   };
 
+  /**
+   * Open a survey candidate: its field as the patch, with the engine run started (the survey's
+   * frames are already in the server's cache), then its card once the run has found it again.
+   */
   const goCandidate = useCallback((c) => {
-    select(c.ra, c.dec, { fov: TARGET_FOV, label: c.name || `Candidate ${c.id}` });
-  }, [select]);
+    const f = candidateField(c);
+    const s = select(f.ra, f.dec, { fov: CANDIDATE_FOV, label: c.name || 'Survey candidate' });
+    if (!s || !API_BASE) return;
+    wanted.current = c;
+    load('motion', s);
+  }, [select, load]);
+
+  // The candidate's card opens when its field's run is done; a field where the run no longer finds
+  // it stays open on the patch, with the run's results listed.
+  useEffect(() => {
+    const c = wanted.current;
+    if (!c || motion.status === 'loading' || motion.status === 'idle') return;
+    wanted.current = null;
+    const o = motion.status === 'ok' ? matchCandidate(motion.result.objects, c) : null;
+    if (o) pick({ kind: 'engine', obj: o });
+  }, [motion, pick]);
 
   const pickSurvey = (id) => { setSurveyError(null); setSurvey(id); };
   const frameIdx = Math.max(0, SPHEREX_FRAMES.findIndex((x) => x.frame === frame));
@@ -519,7 +538,7 @@ export default function App() {
             </label>
           )}
           {surveyError && <span className="hud-note" role="alert">{surveyError}</span>}
-          {show.crawl && <span className="hud-note" role="status">{surveyLine(crawl)}</span>}
+          {show.crawl && <SurveyLegend crawl={crawl} />}
           <div className="zoom">
             <button type="button" className="iconbtn" aria-label="Zoom in" disabled={!ready} onClick={() => map.current?.aladin.increaseZoom()}>
               <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true"><path d="M5.5 0v11M0 5.5h11" stroke="currentColor" strokeWidth="1.25" /></svg>

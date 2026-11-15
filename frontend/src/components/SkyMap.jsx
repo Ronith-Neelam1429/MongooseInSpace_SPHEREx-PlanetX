@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import A from 'aladin-lite';
 import { resolveSurveyUrl, surveyById } from '../lib/surveys.js';
+import { COVERAGE_LAYERS } from '../lib/crawl.js';
 
 const C = 299792458;
 
@@ -38,8 +39,8 @@ function showCubeFrame(layer, frame) {
 /**
  * Aladin Lite v3 sky with its built-in UI switched off; the app draws its own controls.
  * Reports view changes, cursor moves and non-drag clicks (with canvas pixel coords).
- * `coverage` is an optional MOC JSON ({ "<order>": [ipix, ...] }) shaded on the sky: the patches
- * the offline survey has finished.
+ * `coverage` is optional { done, failed, queued }, each a MOC JSON ({ "<order>": [ipix, ...] }) or
+ * null, drawn on the sky: the offline survey's patches by status (COVERAGE_LAYERS).
  */
 export default function SkyMap({ initial, survey, frame, grid, coverage, onReady, onViewChange, onPointer, onSkyClick, onSurveyError, onLoading }) {
   const divRef = useRef(null);
@@ -151,10 +152,10 @@ export default function SkyMap({ initial, survey, frame, grid, coverage, onReady
   useEffect(() => {
     const aladin = aladinRef.current;
     if (!ready || !aladin || !coverage) return undefined;
-    // Cyan, like everything else that is PlanetX's own work.
-    const moc = A.MOCFromJSON(coverage, { name: 'PlanetX survey', color: '#5ce1ff', opacity: 0.3, fill: true, edge: true, lineWidth: 1 });
-    aladin.addMOC(moc);
-    return () => aladin.removeOverlay(moc);
+    // Drawn in this order, so finished and failed patches sit over the queued outlines.
+    const mocs = COVERAGE_LAYERS.filter((l) => coverage[l.key]).map((l) => A.MOCFromJSON(coverage[l.key], l.style));
+    mocs.forEach((moc) => aladin.addMOC(moc));
+    return () => mocs.forEach((moc) => aladin.removeOverlay(moc));
   }, [coverage, ready]);
 
   return (

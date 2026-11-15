@@ -45,9 +45,12 @@ list row, and hovering or focusing a row rings its marker. A click that misses i
 patch does nothing; a click outside the dashed circle opens a new patch there.
 
 Also: a wavelength control over the SPHEREx DR1 all-sky cube (AllWISE, 2MASS and DSS2 for
-comparison); a **Survey** layer shading the patches the offline crawler has finished, with a
-one-line status; and a **Candidates** list of what that survey has flagged, which flies to the
-one you pick. Search accepts names or coordinates. The URL (`?ra=&dec=&fov=` or `?target=`) is the
+comparison); a **Survey** layer drawing the offline crawler's patches (searched in cyan, failed
+in red, the next 300 to search outlined) with a legend and a progress line ("312 of 49,152
+patches searched"); and a **Candidates** list of what that survey has flagged, ranked by score or
+newest first, filterable by class, each row with a small SPHEREx picture (loaded only for rows in
+view, two at a time). Picking one opens its survey field as the patch, runs the engine there (on
+the frames the survey already downloaded) and opens that object's card once the run finds it again. Search accepts names or coordinates. The URL (`?ra=&dec=&fov=` or `?target=`) is the
 open patch, so a copied link reopens the same one. Shortcuts: `/` focuses search, `Esc` steps back.
 With reduced motion turned on in the OS, the globe stays still and the camera jumps instead of flying.
 
@@ -68,7 +71,8 @@ Set `VITE_API_BASE` (see `.env.example`) to the PlanetX API (`docs/API.md` in th
 - `GET /visits` for how often SPHEREx imaged the patch (IRSA's SIA service sends no CORS headers,
   so a browser can't ask it directly),
 - `GET /motion` for the engine (polled),
-- `GET /survey/status`, `GET /survey/coverage` and `GET /candidates` for the survey layer and list.
+- `GET /survey/status`, `GET /survey/coverage?status=` and `GET /candidates` (plus
+  `/candidates/{id}/thumbnail.png`) for the survey layer and list.
 
 Without it the panel says the server is not connected. A server without `/candidates` (404) shows
 the list as not available.
@@ -89,7 +93,10 @@ for this cube), and the renderer's grey clear colour is replaced with black. Re-
   proof checklist, chart, single exposures) and the hooks that fetch it
 - `src/lib/pictures.js`: which SPHEREx exposures to show, catalogue positions per date, picture views
 - `src/lib/patch.js`: the patch's one-line verdict and which objects are listed first
-- `src/components/CandidatesPanel.jsx`: the survey's candidates list
+- `src/components/CandidatesPanel.jsx`: the survey's candidates list; `SurveyLegend.jsx`: the
+  coverage layer's legend and progress line
+- `src/lib/crawl.js`: the offline survey's coverage layers, progress and candidate wording, and
+  finding a candidate again in an engine run
 - `src/components/Search.jsx`: name/coordinate combobox with target suggestions
 - `src/lib/starfield.js`: canvas layer for stars, markers, name labels and hit-testing
 - `src/lib/names.js`: known-object list and name matching for engine objects

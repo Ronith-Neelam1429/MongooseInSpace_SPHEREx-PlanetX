@@ -411,9 +411,28 @@ class PatchQueue:
 
     def done_patches(self) -> list[int]:
         """NESTED indices of all done patches, ascending (a single-order MOC)."""
+        return self.patches_with_status(("done",))
+
+    def patches_with_status(self, statuses: tuple[str, ...], limit: int | None = None) -> list[int]:
+        """NESTED indices of the patches in any of `statuses`, ascending (a single-order MOC).
+
+        With `limit`, only the `limit` lowest-ranked of them: the next ones the crawl reaches.
+        Statuses are as stored (an in_progress patch whose lease ran out stays in_progress
+        here, unlike in `stats`).
+        """
+        unknown = set(statuses) - set(STATUSES)
+        if unknown or not statuses:
+            raise ValueError(f"statuses must be a non-empty subset of {STATUSES}, got {statuses!r}")
+        if limit is not None and limit < 1:
+            raise ValueError(f"limit must be >= 1, got {limit!r}")
         if not self._has_schema():
             return []
-        return [row[0] for row in self._conn.execute("SELECT ipix FROM patches WHERE status = 'done' ORDER BY ipix")]
+        marks = ", ".join("?" * len(statuses))
+        rows = self._conn.execute(
+            f"SELECT ipix FROM patches WHERE status IN ({marks}) ORDER BY rank LIMIT ?",
+            (*statuses, -1 if limit is None else limit),
+        )
+        return sorted(row[0] for row in rows)
 
     def patch_row(self, nside: int, ipix: int) -> dict[str, Any] | None:
         """Every stored column of one patch (summary decoded), or None if absent."""
