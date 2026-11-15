@@ -94,6 +94,9 @@ class TrackedObject:
     variability: dict | None = None
     # Passes whose frames covered the predicted position but saw nothing.
     missing_passes: list[int] = field(default_factory=list)
+    # Passes where the predicted position falls on another detection, which
+    # hides the object there (a blend), so the track has no source in them.
+    blended_passes: list[int] = field(default_factory=list)
     # Fitted only when it explains a poor straight-line fit (arcsec).
     parallax: float | None = None
     parallax_err: float | None = None
@@ -780,33 +783,78 @@ def _merge_tracks(
     return [g for g, m in tracks if not m], [g for g, m in tracks if m]
 
 
-def _missing_passes(
+def _pass_source_trees(
+    per_pass: list[list[PassSource]], plane: SkyPlane
+) -> list[cKDTree | None]:
+    """Per pass, a k-d tree of its sources' offsets (same order as `per_pass`)."""
+    trees: list[cKDTree | None] = []
+    for srcs in per_pass:
+        trees.append(cKDTree(np.column_stack(_source_offsets(plane, srcs))) if srcs else None)
+    return trees
+
+
+# A source hides another in its pass only if it is about as bright or brighter:
+# the blend's flux is the sum of both, and a much fainter neighbour would leave
+# the object detected as a peak of its own.
+BLEND_MIN_FLUX_RATIO = 0.7
+
+
+def _hides(blocker: PassSource, obj: TrackedObject) -> bool:
+    """Whether `blocker` is bright enough, at the same detectors, to hide `obj`."""
+    own: dict[str, list[float]] = {}
+    for s in obj.sources:
+        for kind, (flux, _) in s.flux_by_detector.items():
+            own.setdefault(kind, []).append(flux)
+    common = blocker.flux_by_detector.keys() & own.keys()
+    # Without a like-for-like comparison nothing says the two are one blend.
+    return bool(common) and all(
+        blocker.flux_by_detector[k][0] >= BLEND_MIN_FLUX_RATIO * float(np.median(own[k])) for k in common
+    )
+
+
+def _absent_passes(
     obj: TrackedObject,
     frames: list[Frame],
     passes: list[list[int]],
     plane: SkyPlane,
     nsigma: float,
-) -> list[int]:
-    """Passes that covered the object's predicted position but didn't see it.
+    per_pass: list[list[PassSource]],
+    trees: list[cKDTree | None],
+    blend_arcsec: float,
+) -> tuple[list[int], list[int]]:
+    """Passes that covered the object's predicted position but have no source of it.
 
-    Only counts when the object is bright enough that it should have been
-    detected there (best single-detection SNR >= 2 * nsigma).
+    Returns (missing, blended). A pass is "blended" when a source of that pass
+    at least about as bright as the object (`_hides`) lies within
+    `blend_arcsec` (plus 3 sigma of the prediction) of where the object should
+    be: that source's light hides it there, so its absence says nothing
+    against the track. Otherwise the pass is "missing". Only counts when the
+    object is bright enough that it should have been detected there (best
+    single-detection SNR >= 2 * nsigma).
     """
     if max(s.snr for s in obj.sources) < 2 * nsigma:
-        return []
+        return [], []
     have = {s.pass_index for s in obj.sources}
-    missing = []
+    missing, blended = [], []
     x0, y0 = plane.offsets(obj.ra, obj.dec)
     for pi, ids in enumerate(passes):
         if pi in have:
             continue
         mjd = float(np.mean([frames[i].mjd for i in ids]))
         dt = (mjd - obj.ref_mjd) / DAYS_PER_YEAR
-        ra, dec = plane.sky(x0 + obj.pm_ra_cosdec * dt, y0 + obj.pm_dec * dt)
+        px, py = x0 + obj.pm_ra_cosdec * dt, y0 + obj.pm_dec * dt
+        ra, dec = plane.sky(px, py)
         covering = sum(bool(_covers(frames[i], ra, dec)[0]) for i in ids)
-        if covering >= max(1, 0.5 * len(ids)):
+        if covering < max(1, 0.5 * len(ids)):
+            continue
+        radius = blend_arcsec + 3 * obj.pm_err * abs(dt)
+        tree = trees[pi]
+        near = tree.query_ball_point([float(px), float(py)], radius) if tree is not None else []
+        if any(_hides(per_pass[pi][k], obj) for k in near):
+            blended.append(pi)
+        else:
             missing.append(pi)
-    return missing
+    return missing, blended
 
 
 def _caution_near_bright(objects: list[TrackedObject], plane: SkyPlane) -> None:
@@ -1082,6 +1130,10 @@ def find_motion(
     else:
         notes.append("too few static stars to measure the systematic floor")
 
+    # Two point sources closer than about a PSF FWHM make one peak.
+    fwhms = [f.psf_fwhm_arcsec for f in frames if np.isfinite(f.psf_fwhm_arcsec)]
+    blend_arcsec = float(np.median(fwhms)) if fwhms else 1.5 * pix
+    trees = _pass_source_trees(per_pass, plane)
     objects: list[TrackedObject] = []
     for g, kind in [(g, "static") for g in multi] + [(g, "mover") for g in mover_groups]:
         try:
@@ -1122,19 +1174,32 @@ def find_motion(
             parallax=fit["plx"],
             parallax_err=fit["plx_err"],
         )
-        obj.missing_passes = _missing_passes(obj, frames, passes, plane, nsigma)
+        obj.missing_passes, obj.blended_passes = _absent_passes(
+            obj, frames, passes, plane, nsigma, per_pass, trees, blend_arcsec
+        )
         obj_span_yr = (obj.sources[-1].mjd - obj.sources[0].mjd) / DAYS_PER_YEAR
         # A mover must beat its errors, shift by > ~1 px over its own baseline,
         # and not be absent from a pass that covered its predicted position
         # (that pattern is a chance pairing of unrelated sources, not a track).
+        # A pass where it would sit on another source is no evidence either
+        # way: it counts towards the passes needed, not as a measurement.
         # Two points always fit a line, so with 3+ passes a mover needs 3+;
-        # with only 2 passes, demand twice the significance instead.
+        # with only 2 measured passes, demand twice the significance instead.
+        # A track that needs its blended passes to count must at least have
+        # measured one brightness alike in all its passes: in crowded fields,
+        # pieces of two different stars (seen in different detectors) can line
+        # up next to a third star.
+        needed_passes = min(3, len(passes))
+        enough_passes = len(obj.sources) >= needed_passes or (
+            len(obj.sources) + len(obj.blended_passes) >= needed_passes
+            and bool(set.intersection(*(set(s.flux_by_detector) for s in obj.sources)))
+        )
         needed_sigma = mover_sigma if len(obj.sources) >= 3 else 2 * mover_sigma
         obj.is_mover = (
             obj.pm_significance >= needed_sigma
             and obj.pm_total * obj_span_yr >= pix
             and not obj.missing_passes
-            and len(obj.sources) >= min(3, len(passes))
+            and enough_passes
         )
         var = _variability(_brightness_epochs(obj.sources, epoch_of_pass), calib_frac)
         obj.variability = var

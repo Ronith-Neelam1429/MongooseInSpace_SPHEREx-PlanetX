@@ -5,6 +5,7 @@ motions and fluxes, so the engine's answers can be checked precisely.
 """
 from __future__ import annotations
 
+import dataclasses
 import io
 
 import astropy.units as u
@@ -449,6 +450,29 @@ def test_variable_seen_across_visits_cut_into_time_windows():
     assert v.variability["ratio"] == pytest.approx(2.0, rel=0.15)
     assert v.variability["n_pairs"] >= 8
     assert [o for o in r.variables] == [v]
+
+
+def test_mover_hidden_by_a_field_star_in_one_pass_is_still_a_mover():
+    # Half way through, the mover passes over a field star: in that pass the two
+    # make one source (the star's), so the track has nothing there. That is a
+    # blend, not evidence against the track.
+    # Fast (36"/yr), so that in the other passes it is ~3 px from the star and
+    # seen separately; slower, the two blend in every pass.
+    rng = np.random.default_rng(16)
+    stars = field_stars(rng)
+    pm_n = 36.0
+    mid_yr = (PASS_MJDS[1] - PASS_MJDS[0]) / 365.25
+    e0, n0 = clear_spot(stars, drift=(0.0, pm_n))
+    blocker = (e0, n0 + pm_n * mid_yr, 0.0, 0.0, 1500.0)
+    frames = survey(stars + [(e0, n0, 0.0, pm_n, 1500.0), blocker], rng)
+    r = find_motion(frames, max_pm_arcsec_yr=40.0)
+    (m,) = r.movers
+    assert [s.pass_index for s in m.sources] == [0, 2]
+    assert m.blended_passes == [1] and m.missing_passes == []
+    assert m.pm_dec == pytest.approx(pm_n, abs=2.0)
+    # The star itself (the mover's mean position is the same spot) is static.
+    star = nearest(dataclasses.replace(r, objects=[o for o in r.objects if o is not m]), *blocker[:2])
+    assert len(star.sources) == 3 and not star.is_mover
 
 
 def test_variability_pairs_use_each_detection_once():
