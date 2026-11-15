@@ -9,7 +9,7 @@ import { decimalYear, formatDec, formatFov, formatRa, parseCoords, propagate, se
 import { API_BASE, fetchSurvey, fetchVisits, queryGaia, querySimbad, resolveName, runMotion } from './lib/services.js';
 import { StarField, arrowYears } from './lib/starfield.js';
 import { Camera } from './lib/camera.js';
-import { FAST_ARCSEC_YR, identify, knownObjects, mapTarget, notableKnown } from './lib/names.js';
+import { FAST_ARCSEC_YR, identify, knownObjects, mapTarget, notableKnown, targetRow } from './lib/names.js';
 import { shortClaim, shortName, speed, verdict } from './lib/plain.js';
 import { DEFAULT_FRAME, SPHEREX_FRAMES, SURVEYS, surveyById } from './lib/surveys.js';
 import { TARGET_FOV, findTarget } from './lib/targets.js';
@@ -160,6 +160,14 @@ export default function App() {
     if (gaia.status !== 'ok' && simbad.status !== 'ok' && motion.status !== 'ok') return null;
     return countClasses(known.rows, gaia.status === 'ok' ? gaia.stars : [], results.map((r) => r.o));
   }, [known, gaia, simbad, motion, results]);
+  // The object a search named, once the catalogues list it: its card opens by itself (once per patch).
+  const target = useMemo(() => (sel?.label ? targetRow(known.rows, sel) : null), [sel, known]);
+  const opened = useRef(null);
+  useEffect(() => {
+    if (!target || opened.current === sel) return;
+    opened.current = sel;
+    setFocus((f) => f ?? { kind: 'known', obj: target });
+  }, [target, sel]);
   const hovered = useMemo(() => {
     if (!hover) return null;
     return hover.kind === 'engine' ? hover : { kind: 'known', obj: known.of(hover.kind, hover.obj) };
@@ -425,9 +433,9 @@ export default function App() {
   const fr = SPHEREX_FRAMES[frameIdx];
   const isCube = surveyById(survey).cube;
   const panel = listOpen ? 'list' : sel ? 'patch' : null;
-  // An engine object's card carries its evidence images, so it gets half the window; so does a
-  // catalogued object's card once a run is done (it shows the images of the tracked object there).
-  const wide = panel === 'patch' && (focus?.kind === 'engine' || (focus?.kind === 'known' && motion.status === 'ok'));
+  // An engine object's card carries its evidence images, so it gets half the window.
+  // A catalogued object's card plays its real images when the PlanetX server is there.
+  const wide = panel === 'patch' && (focus?.kind === 'engine' || (focus?.kind === 'known' && Boolean(API_BASE)));
 
   return (
     <div className={`app ${panel ? 'with-panel' : ''} ${wide ? 'wide' : ''}`}>
@@ -524,6 +532,7 @@ export default function App() {
           visits={visits}
           motion={motion}
           known={known}
+          target={target}
           results={results}
           others={others}
           onToggleOthers={() => setOthersFor(othersOpen ? null : motion.result)}

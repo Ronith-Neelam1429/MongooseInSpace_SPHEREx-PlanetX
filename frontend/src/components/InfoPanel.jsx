@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { equatorialToEcliptic, equatorialToGalactic, formatDec, formatFov, formatRa } from '../lib/coords.js';
 import { FAST_ARCSEC_YR, displayName, sameObject } from '../lib/names.js';
-import { dateSpan, monthYear, shortClaim, shortName, speed, verdict } from '../lib/plain.js';
+import { compass, dateSpan, monthYear, plainType, shortClaim, shortName, speed, verdict } from '../lib/plain.js';
 import { CLASS, engineClass, knownClass } from '../lib/classes.js';
 import ObjectCard, { CloseIcon } from './ObjectCard.jsx';
 import { ClassMark } from './ClassFilter.jsx';
@@ -9,7 +9,7 @@ import { ClassMark } from './ClassFilter.jsx';
 const signed = (v, d) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`;
 const count = (n) => n.toLocaleString('en-US');
 const plural = (n, one, many = `${one}s`) => `${count(n)} ${n === 1 ? one : many}`;
-const KNOWN_SHOWN = 8;
+const KNOWN_SHOWN = 5;
 
 function cadence(beta) {
   const b = Math.abs(beta);
@@ -182,13 +182,13 @@ function Clock({ getYear }) {
 }
 
 /** SIMBAD and Gaia as one list of already-known objects, with the control that plays catalogued motion. */
-function Known({ known, filter, simbad, gaia, hover, resume, onPick, onPoint, onRetry, playing, onTogglePlay, getYear, moversOnly, onToggleMovers }) {
+function Known({ known, target, filter, simbad, gaia, hover, resume, onPick, onPoint, onRetry, playing, onTogglePlay, getYear, moversOnly, onToggleMovers }) {
   const [all, setAll] = useState(false);
   const shown = useMemo(
-    () => known.rows.map((row) => ({ row, cls: knownClass(row) })).filter((x) => filter[x.cls]),
-    [known, filter],
+    () => known.rows.filter((row) => row !== target).map((row) => ({ row, cls: knownClass(row) })).filter((x) => filter[x.cls]),
+    [known, target, filter],
   );
-  const hidden = known.rows.length - shown.length;
+  const hidden = known.rows.length - (target ? 1 : 0) - shown.length;
   const few = shown.length <= KNOWN_SHOWN + 2; // not worth folding
   const rows = all || few ? shown : shown.slice(0, KNOWN_SHOWN);
   const fast = known.rows.filter((r) => r.pm >= FAST_ARCSEC_YR).length;
@@ -196,8 +196,8 @@ function Known({ known, filter, simbad, gaia, hover, resume, onPick, onPoint, on
   return (
     <section>
       <h3>
-        <span>Already known here</span>
-        {known.rows.length > 0 && <span className="count">{count(known.rows.length)}</span>}
+        <span>{target ? 'Also in this patch' : 'Already known here'}</span>
+        {shown.length > 0 && <span className="count">{count(shown.length)}</span>}
       </h3>
       <State state={simbad} what="named objects (SIMBAD)" onRetry={() => onRetry('simbad')} />
       <State state={gaia} what="stars (Gaia)" onRetry={() => onRetry('gaia')} />
@@ -232,7 +232,7 @@ function Known({ known, filter, simbad, gaia, hover, resume, onPick, onPoint, on
             return (
               <Row key={row.key} className="known" lit={sameObject(hover, f)} resume={sameObject(resume, f)} onPick={() => onPick(f)} onPoint={(p) => onPoint(p ? f : null)}>
                 <span className="row-name" title={`${row.name} · ${CLASS[cls].label}`}><ClassMark cls={CLASS[cls]} size={10} />{shortName(row.name)}</span>
-                <span className="row-type" title={row.type}>{row.type}</span>
+                <span className="row-type" title={row.type}>{plainType(row.type)}</span>
                 <span className={`row-pm ${isFast ? 'signal' : 'dim'}`}>{isFast ? `${speed(row.pm)}″/yr` : ''}</span>
               </Row>
             );
@@ -247,7 +247,7 @@ function Known({ known, filter, simbad, gaia, hover, resume, onPick, onPoint, on
         </p>
       )}
       {hidden > 0 && <p className="line dim">{plural(hidden, 'more object')} hidden by the map filter.</p>}
-      {loaded && known.rows.length === 0 && <p className="line dim">Nothing here has a catalogue name.</p>}
+      {loaded && known.rows.length === (target ? 1 : 0) && <p className="line dim">Nothing else here has a catalogue name.</p>}
       {loaded && fast === 0 && known.rows.length > 0 && (
         <p className="line dim">No catalogued star here moves faster than {FAST_ARCSEC_YR}″ per year.</p>
       )}
@@ -256,6 +256,28 @@ function Known({ known, filter, simbad, gaia, hover, resume, onPick, onPoint, on
           The dots on the map are {count(gaia.stars.length)}{gaia.capped ? '+' : ''} stars from the Gaia catalogue. Click any of them.
         </p>
       )}
+    </section>
+  );
+}
+
+/** The object the search named, first: what it does, and the way to its real images. */
+function Target({ row, onPick, onPoint }) {
+  const f = { kind: 'known', obj: row };
+  const fast = row.pm != null && row.pm >= FAST_ARCSEC_YR;
+  return (
+    <section className="target">
+      <h3><span><i className={`dot ${fast ? 'signal-bg' : 'plain-bg'}`} />{plainType(row.type)}</span></h3>
+      <p className="line">
+        {row.pm != null
+          ? <>{shortName(row.name)} moves <b className={fast ? 'signal' : ''}>{speed(row.pm)}″</b> per year toward the {compass(row.pa)}.</>
+          : <>{shortName(row.name)} has no catalogued motion.</>}
+      </p>
+      <button
+        type="button" className="btn" onClick={() => onPick(f)}
+        onMouseEnter={() => onPoint(f)} onMouseLeave={() => onPoint(null)} onFocus={() => onPoint(f)} onBlur={() => onPoint(null)}
+      >
+        {fast ? 'Watch it move in real images' : 'See it in real images'}
+      </button>
     </section>
   );
 }
@@ -297,7 +319,7 @@ function FieldDetails({ sel, visits }) {
  * known objects; picking any object swaps the list for that object's card, with a way back.
  */
 export default function InfoPanel({
-  sel, simbad, gaia, visits, motion, known, results, others, onToggleOthers, focus, hover, resume, onPick, onPoint, onBack, onClose, onRetry,
+  sel, simbad, gaia, visits, motion, known, target, results, others, onToggleOthers, focus, hover, resume, onPick, onPoint, onBack, onClose, onRetry,
   onCopyLink, copied, playing, onTogglePlay, getYear, filter, moversOnly, onToggleMovers,
 }) {
   if (focus) {
@@ -335,6 +357,7 @@ export default function InfoPanel({
       </header>
 
       <div className="panel-body">
+        {target && <Target row={target} onPick={onPick} onPoint={onPoint} />}
         <Results
           motion={motion}
           results={results}
@@ -351,6 +374,7 @@ export default function InfoPanel({
         />
         <Known
           known={known}
+          target={target}
           filter={filter}
           simbad={simbad}
           gaia={gaia}

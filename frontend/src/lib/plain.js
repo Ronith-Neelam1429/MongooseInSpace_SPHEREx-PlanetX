@@ -165,3 +165,30 @@ export function shortName(name) {
   const m = /^Gaia DR3 (\d{12,})$/.exec(name || '');
   return m ? `Gaia DR3 …${m[1].slice(-6)}` : name;
 }
+
+// SIMBAD's type names that mean little to most people, in plainer words (others are kept as is).
+const PLAIN_TYPES = {
+  'by dra variable': 'Spotted variable star',
+  'spectroscopic binary': 'Binary star',
+  'eclipsing binary': 'Eclipsing binary star',
+  'chemically peculiar star': 'Star (unusual chemistry)',
+  'hot subdwarf': 'Hot subdwarf star',
+  'high proper motion star': 'Fast-moving star',
+  'long-period variable': 'Slowly pulsing star',
+  'mira variable': 'Pulsing giant star (Mira)',
+  'rs cvn variable': 'Spotted binary star',
+  'infra-red source': 'Infrared source',
+  'x-ray source': 'X-ray source',
+  'red giant branch star': 'Red giant star',
+  'asymptotic giant branch star': 'Red giant star',
+  't tauri star': 'Young star (T Tauri)',
+  'young stellar object': 'Young star',
+  'low-mass star': 'Low-mass star',
+  'brown dwarf': 'Brown dwarf',
+};
+
+/** A SIMBAD object type in plain words, e.g. "BY Dra Variable" -> "Spotted variable star". */
+export function plainType(type) {
+  if (!type) return '';
+  return PLAIN_TYPES[type.trim().toLowerCase()] || type;
+}

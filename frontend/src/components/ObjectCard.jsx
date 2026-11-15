@@ -2,10 +2,11 @@ import { Component, Fragment } from 'react';
 import { formatDec, formatRa } from '../lib/coords.js';
 import { FAST_ARCSEC_YR, displayName } from '../lib/names.js';
 import {
-  archiveSentence, claim, compass, confidence, distanceText, measuredMotion, moonCrossing, motionsAgree, speed, verdict,
+  archiveSentence, claim, compass, plainType, confidence, distanceText, measuredMotion, moonCrossing, motionsAgree, speed, verdict,
 } from '../lib/plain.js';
 import { trackedAt } from '../lib/evidence.js';
 import MotionEvidence from './MotionEvidence.jsx';
+import StarTimelapse from './StarTimelapse.jsx';
 
 const n = (v, d = 2) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
 const signed = (v, d) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`;
@@ -177,7 +178,7 @@ function KnownCard({ row, measured, tracked, field, onPick, onBack, onClose }) {
   const source = [o && 'SIMBAD', s && 'Gaia'].filter(Boolean).join(' and ');
   return (
     <>
-      <Head tone={fast ? 'signal-bg' : 'plain-bg'} kicker={`In the ${source} catalogue${o && s ? 's' : ''}`} title={row.name} sub={row.type} onBack={onBack} onClose={onClose} />
+      <Head tone={fast ? 'signal-bg' : 'plain-bg'} kicker={`In the ${source} catalogue${o && s ? 's' : ''}`} title={row.name} sub={plainType(row.type)} onBack={onBack} onClose={onClose} />
       <div className="panel-body">
         <section>
           {row.pm != null ? (
@@ -186,6 +187,12 @@ function KnownCard({ row, measured, tracked, field, onPick, onBack, onClose }) {
               {fast && <span className="dim"> At that rate it crosses the width of the full Moon in {moonCrossing(row.pm)}.</span>}
             </p>
           ) : <p className="lede">The catalogue lists no motion for it.</p>}
+        </section>
+        <section className="evidence" aria-labelledby="timelapse-title">
+          <h3 id="timelapse-title">{fast ? 'Watch it move' : 'Real images'}</h3>
+          <div className="evidence-body"><EvidenceBoundary><StarTimelapse row={row} /></EvidenceBoundary></div>
+        </section>
+        <section>
           <dl className="facts">
             {row.distanceLy != null && <><dt>Distance</dt><dd>{distanceText(row.distanceLy)}</dd></>}
             {row.mag != null && <><dt>Brightness</dt><dd>magnitude {row.mag.toFixed(1)} ({row.band} band; lower is brighter)</dd></>}
@@ -202,7 +209,7 @@ function KnownCard({ row, measured, tracked, field, onPick, onBack, onClose }) {
             {!measured && tracked && <><dt>Our result</dt><dd>{claim(tracked)} in the SPHEREx images: see the evidence below.</dd></>}
           </dl>
         </section>
-        {/* Static stars are not listed as results, but their images show what "not moving" looks like. */}
+        {/* After a run, the engine's own measurement of this star, with its per-pass images. */}
         {!measured && tracked && field && <Evidence o={tracked} field={field} />}
         <details className="more">
           <summary>Details</summary>

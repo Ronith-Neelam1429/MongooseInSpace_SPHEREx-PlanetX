@@ -1,0 +1,17 @@
+/* StarTimelapse: builds on MotionEvidence.css (ev- classes). Red (--signal) is catalogued motion,
+   as on the sky map. */
+.tl-lede { margin-bottom: 14px; font-size: 13px; }
+.tl-view { max-width: 520px; }
+.tl-wait {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 24px; text-align: center; color: var(--dim); background: rgba(0, 0, 0, 0.55);
+}
+.tl-path { fill: none; stroke: var(--signal); stroke-width: 1; stroke-dasharray: 3 3; filter: drop-shadow(0 0 1px #000); }
+.ev-marks .tl-dot { fill: var(--signal); stroke: none; }
+.tl-ring { stroke: var(--signal); stroke-width: 1.75; filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000); }
+.tl-track { height: 2px; margin-top: 6px; background: var(--line); }
+.tl-track i { display: block; height: 100%; background: var(--fg); transition: width 0.25s ease; }
+.tl .ev-opt:disabled { color: var(--faint); cursor: default; }
+.tl-key-ring { border: 1.5px solid var(--signal); border-radius: 50%; }
+.tl-key-path { height: 0 !important; border-top: 1.5px dashed var(--signal); vertical-align: 3px !important; }
+@media (prefers-reduced-motion: reduce) { .tl-track i { transition: none; } }

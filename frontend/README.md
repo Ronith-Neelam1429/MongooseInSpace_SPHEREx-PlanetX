@@ -16,7 +16,12 @@ opens that patch of sky. The side panel then lists, in this order:
 
 Picking an object, in the list or on the map, opens its card: name, what it does, how sure the
 measurement is, what the catalogues say next to what we measured, and for engine results an
-**Evidence** area that holds `MotionEvidence`. "Back to the patch" (or `Esc`) returns to the list.
+**Evidence** area that holds `MotionEvidence`. A catalogued object's card plays real images of
+its patch as a time-lapse (`StarTimelapse`, logic in `lib/timelapse.js`): 2MASS (~2000), AllWISE
+(~2010) and one SPHEREx detector-3 exposure per pass, with the catalogue's position for each date
+ringed, so a fast star like Barnard's is seen crossing the field. It needs only the backend, not an
+engine run. Searching a name opens that object's card straight away; "Back to the patch" (or `Esc`)
+returns to the list, which then leads with the searched object and lists the rest as "Also in this patch".
 
 **Names.** An engine object uses the API's `name` and `matches` when the backend ran its catalogue
 check. Otherwise `lib/names.js` matches its track against the SIMBAD and Gaia lists already loaded

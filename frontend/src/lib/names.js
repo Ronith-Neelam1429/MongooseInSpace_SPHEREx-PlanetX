@@ -104,6 +104,8 @@ function knownRow(o, s, nowYear, also = []) {
     also, // other SIMBAD entries at the same position
     ra: now.ra, dec: now.dec, // today
     pm: src ? Math.hypot(src.pmra, src.pmdec) / 1000 : null, // arcsec/yr
+    // The motion itself (mas/yr, east and north) from `ra`, `dec` at `epoch`, for lib/timelapse.js.
+    pmra: src ? src.pmra : null, pmdec: src ? src.pmdec : null, epoch: nowYear,
     pa: src ? positionAngle(src.pmra, src.pmdec) : null,
     mag: o?.mag ?? s?.gmag ?? null,
     band: o?.mag != null ? o.band : s?.gmag != null ? 'G' : null,
@@ -164,6 +166,28 @@ export function knownObjects(simbad, gaia, nowYear = decimalYear()) {
       return byGaia.get(obj) || knownRow(null, obj, nowYear);
     },
   };
+}
+
+const nameKey = (s) => s.toLowerCase().replace(/[−–]/g, '-').replace(/[^a-z0-9+-]/g, '');
+/** A searched object this far from the patch centre (arcsec) is still taken to be the target. */
+const TARGET_ARCSEC = 20;
+
+/**
+ * The row of the object a search named: the row whose name (or a name sharing its place) is the
+ * patch's label, else the nearest row within TARGET_ARCSEC of the centre. Null when none fits.
+ */
+export function targetRow(rows, sel) {
+  const want = nameKey(sel.label || '');
+  if (want) {
+    const named = rows.find((r) => nameKey(r.name) === want || r.also.some((o) => nameKey(o.name) === want));
+    if (named) return named;
+  }
+  let best = null;
+  for (const r of rows) {
+    const sep = separation(sel.ra, sel.dec, r.ra, r.dec) * ARCSEC;
+    if (sep <= TARGET_ARCSEC && (!best || sep < best.sep)) best = { r, sep };
+  }
+  return best?.r ?? null;
 }
 
 /** The few known objects worth an always-visible label: fast movers, then the brightest named ones. */
