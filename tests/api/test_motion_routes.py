@@ -197,7 +197,7 @@ def test_a_dropped_archival_confirmation_is_not_reported_as_a_measurement(fakes,
     assert all(o["kind"] == "static" for o in objects)
     assert objects[0]["archive"] == {
         "verdict": "unconfirmed", "pm_ra_cosdec": None, "pm_dec": None, "pm_err": None, "baseline_yr": None,
-        "observatories": ["spherex"], "notes": [],
+        "observatories": ["spherex"], "candidate": False, "notes": [],
     }
 
 

@@ -89,6 +89,9 @@ describe('wording', () => {
     expect(a('confirmed')).toBe('Confirmed: AllWISE, CatWISE saw it somewhere else, so it has kept moving over 16 years.');
     expect(a('stationary', ['spherex', '2mass'], 26.4)).toBe('Not confirmed: 2MASS saw it in the same place over 26 years, so it is probably not moving.');
     expect(a('unconfirmed', ['spherex'], 1)).toMatch(/too little/);
+    // One survey family alone (AllWISE + CatWISE share exposures) can only make it a candidate.
+    expect(archiveSentence({ verdict: 'unconfirmed', candidate: true, observatories: ['spherex', 'allwise', 'catwise'], baseline_yr: 16.2 }))
+      .toBe('Candidate: AllWISE, CatWISE positions alone show it moving over 16 years, but a second, independent survey is needed to confirm it.');
     expect(archiveSentence(null)).toBeNull();
   });
   it('compares our motion with a catalogued one', () => {
