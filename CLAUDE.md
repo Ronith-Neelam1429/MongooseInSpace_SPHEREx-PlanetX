@@ -153,7 +153,12 @@ Work lands on `main` via feature branches (data connections, backend API, survey
 - Stack mode: one co-add across detectors dilutes red objects; stacks carry no wavelength, so no variability.
 - A mover blending with a field star in one pass is rejected via the missing-pass check.
 - Variability pairs overlap (one detection in many pairs), which overstates significance in deep fields.
-- Results depend on input order (reference frame tie-break): sort frames before calling `find_motion`.
+- `find_motion` now sorts its input by time (3e72fba), so results no longer depend on input order. That
+  exposed a stack-mode weakness: time-ordered stacks give Eps Indi B 4.28"/yr (true 4.68; 6.0" shift, just
+  under the 1 px mover bar) and make WISE 0855 a 6.6 sigma mover at 7.1"/yr. Both real-target stack tests
+  are strict xfails until stack positions are fixed. The website and survey never use stack mode.
+- The website samples ~76 frames per field: too few matching-wavelength pairs for R Dra's variability
+  (flagged only with the dev tools' 252-frame sample). Same before and after the Nov 14 merge.
 - Real-target tests resolve names via SIMBAD each run (not fully offline).
 
 ## Engine in the website (2026-11-14)
