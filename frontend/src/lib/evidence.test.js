@@ -1,8 +1,72 @@
 import { afterEach, describe as suite, expect, it, vi } from 'vitest';
 import {
   brightnessSeries, compass, dayMonthYear, describe, measure, monthYear, motionChart, otherObjects, sameObject, ticks,
-  trackedAt,
+  trackedAt, fromOffsets, toOffsets, predictAt, predictionMotion, surveyPatch, surveyMarks, scaleBar, SURVEY_MAX_ARCSEC,
 } from './evidence.js';
+
+suite('older survey images', () => {
+  const ev = () => barnardEvidence();
+  const barnard = (over = {}) => object({
+    matches: [{ catalog: 'gaia', name: 'Barnard’s Star', sep_arcsec: 0.4, pm_ra_cosdec: -0.8, pm_dec: 10.36 }], ...over,
+  });
+
+  it('turns sky offsets into positions and back on the tangent plane', () => {
+    for (const [ra0, dec0] of [[269.4459, 4.7673], [0.01, -60], [180, 89.9]]) {
+      const p = fromOffsets(ra0, dec0, 250, -130);
+      const back = toOffsets(ra0, dec0, p.ra, p.dec);
+      expect(back.east).toBeCloseTo(250, 6);
+      expect(back.north).toBeCloseTo(-130, 6);
+    }
+    expect(fromOffsets(359.999, 0, 36, 0).ra).toBeLessThan(1); // across RA 0
+  });
+
+  it('predicts with the best motion available, and keeps a static object in place', () => {
+    expect(predictionMotion(barnard()).source).toBe('the Gaia DR3 proper motion');
+    const refit = barnard({ archive: { verdict: 'confirmed', pm_ra_cosdec: -0.82, pm_dec: 10.362, pm_err: 0.029, baseline_yr: 26.6, observatories: ['spherex', '2mass'] } });
+    expect(predictionMotion(refit)).toEqual({ pmEast: -0.82, pmNorth: 10.362, err: 0.029, source: 'the motion measured with 2MASS' });
+    expect(predictionMotion(object()).source).toBe('the SPHEREx motion');
+    expect(predictionMotion(still({ pm_total: 15, significance: 20 }))).toEqual({ pmEast: 0, pmNorth: 0, err: 0, source: null });
+    // 26.2 years before the fit's reference date, 10.36″/yr north: 271″ further south.
+    const p = predictAt(barnard(), ev(), 61102.1 - 26.2 * 365.25);
+    expect(p.north).toBeCloseTo(5.2477 - 10.36 * 26.2, 6);
+    expect(p.east).toBeCloseTo(0.8868 + 0.8 * 26.2, 6);
+    expect(p.err).toBe(0);
+    expect(predictAt(object(), ev(), 61102.1 - 10 * 365.25).err).toBeCloseTo(19.507, 3);
+  });
+
+  it('requests one square holding both the SPHEREx and the 1999 position', () => {
+    const e = ev();
+    const patch = surveyPatch(barnard(), e);
+    const then = predictAt(barnard(), e, 51179);
+    expect(patch.north).toBeCloseTo((e.fit.north_arcsec + then.north) / 2, 6);
+    expect(patch.side).toBe(Math.round(Math.hypot(then.east - e.fit.east_arcsec, then.north - e.fit.north_arcsec) + 150));
+    const centre = toOffsets(e.patch_ra, e.patch_dec, patch.ra, patch.dec);
+    expect(centre.north).toBeCloseTo(patch.north, 6);
+    // A static object: the SPHEREx patch itself; a very fast one: capped.
+    expect(surveyPatch(still(), stillEvidence()).side).toBe(Math.round(e.patch_arcsec));
+    expect(surveyPatch(barnard({ matches: [{ catalog: 'gaia', name: 'x', sep_arcsec: 0, pm_ra_cosdec: 0, pm_dec: 60 }] }), e).side).toBe(SURVEY_MAX_ARCSEC);
+  });
+
+  it('marks the predicted and the SPHEREx position on the image, from its centre', () => {
+    const e = ev();
+    const patch = surveyPatch(barnard(), e);
+    const surveys = { ra: patch.ra, dec: patch.dec, patch_arcsec: patch.side, patch, images: [], unavailable: [] };
+    const image = { survey: '2mass', mjd: 51692.43, date: '2000-05-28' };
+    const m = surveyMarks(barnard(), e, surveys, image);
+    const then = predictAt(barnard(), e, image.mjd);
+    expect(m.then.north).toBeCloseTo(then.north - patch.north, 3);
+    expect(m.now.north).toBeCloseTo(e.fit.north_arcsec - patch.north, 3);
+    expect(m.years).toBeCloseTo((61102.1 - 51692.43) / 365.25, 6);
+    expect(m.inside).toBe(true);
+    expect(surveyMarks(barnard(), e, { ...surveys, patch_arcsec: 60 }, image).inside).toBe(false);
+  });
+
+  it('picks a round scale bar', () => {
+    expect(scaleBar(150)).toBe(30);
+    expect(scaleBar(432)).toBe(60);
+    expect(scaleBar(900)).toBe(180);
+  });
+});
 
 suite('objects to open the evidence of', () => {
   const objs = [

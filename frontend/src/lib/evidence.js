@@ -364,3 +364,130 @@ export function brightnessSeries(evidence) {
   }
   return out.sort((a, b) => a.band.localeCompare(b.band));
 }
+
+// ---------- older surveys (GET {API_BASE}/motion/evidence/surveys, see docs/API.md) ----------
+
+const D2R = Math.PI / 180;
+const ARCSEC_RAD = D2R / 3600;
+// Requested sky around the object's track: a few SPHEREx pixels beyond both ends.
+const SURVEY_MARGIN_ARCSEC = 75;
+export const SURVEY_MAX_ARCSEC = 900; // the backend's limit
+// The request is planned for the oldest survey: 2MASS observed 1997-2001.
+const SURVEY_PLAN_MJD = 51179; // 1999.0
+const SURVEY_TIMEOUT_MS = 90000; // two IRSA searches and cutouts, each retried on 5xx
+
+/** Sky position at (east, north) arcsec from (ra0, dec0) on the tangent plane (as the evidence grids). */
+export function fromOffsets(ra0, dec0, east, north) {
+  const xi = east * ARCSEC_RAD, eta = north * ARCSEC_RAD, d0 = dec0 * D2R;
+  const ra = ra0 + Math.atan2(xi, Math.cos(d0) - eta * Math.sin(d0)) / D2R;
+  const dec = Math.asin((Math.sin(d0) + eta * Math.cos(d0)) / Math.sqrt(1 + xi * xi + eta * eta)) / D2R;
+  return { ra: ((ra % 360) + 360) % 360, dec };
+}
+
+/** (east, north) arcsec of (ra, dec) on the tangent plane at (ra0, dec0): the inverse of fromOffsets. */
+export function toOffsets(ra0, dec0, ra, dec) {
+  const d0 = dec0 * D2R, d = dec * D2R, dra = (ra - ra0) * D2R;
+  const cosc = Math.sin(d0) * Math.sin(d) + Math.cos(d0) * Math.cos(d) * Math.cos(dra);
+  return {
+    east: (Math.cos(d) * Math.sin(dra)) / cosc / ARCSEC_RAD,
+    north: (Math.cos(d0) * Math.sin(d) - Math.sin(d0) * Math.cos(d) * Math.cos(dra)) / cosc / ARCSEC_RAD,
+  };
+}
+
+/**
+ * The motion used to say where the object was at an older survey's date, best first: the
+ * refit with older catalogues, a catalogued proper motion, then the SPHEREx fit. A static
+ * object is not moved (its fitted slope is not a motion). { pmEast, pmNorth, err, source }.
+ */
+export function predictionMotion(object) {
+  if (object.kind === 'static') return { pmEast: 0, pmNorth: 0, err: 0, source: null };
+  const archive = archiveMotion(object);
+  if (archive && archive.err != null) {
+    return { pmEast: archive.pmEast, pmNorth: archive.pmNorth, err: archive.err, source: `the motion measured with ${listText(archive.surveys)}` };
+  }
+  const catalog = catalogMotion(object);
+  if (catalog) return { pmEast: catalog.pmEast, pmNorth: catalog.pmNorth, err: 0, source: `the ${catalog.catalog} proper motion` };
+  return { pmEast: object.pm_ra_cosdec, pmNorth: object.pm_dec, err: object.pm_err, source: 'the SPHEREx motion' };
+}
+
+/**
+ * Where the object was at `mjd`, in the evidence patch's frame (arcsec), with its 1-sigma error.
+ * `motion` is an object (MotionObject) or its predictionMotion.
+ */
+export function predictAt(motion, evidence, mjd) {
+  const m = 'pmEast' in motion ? motion : predictionMotion(motion);
+  const years = (mjd - evidence.fit.ref_mjd) / DAYS_PER_YEAR;
+  return {
+    east: evidence.fit.east_arcsec + m.pmEast * years,
+    north: evidence.fit.north_arcsec + m.pmNorth * years,
+    err: Math.abs(m.err * years), years, source: m.source,
+  };
+}
+
+/**
+ * The square of sky to request from the older surveys for an object (or its predictionMotion): centred between the object's SPHEREx
+ * position and where it was in 1999, so one image holds both. { ra, dec, side, east, north }
+ * with (east, north) the centre in the evidence patch's frame.
+ */
+export function surveyPatch(motion, evidence) {
+  const now = { east: evidence.fit.east_arcsec, north: evidence.fit.north_arcsec };
+  const then = predictAt(motion, evidence, SURVEY_PLAN_MJD);
+  const east = (now.east + then.east) / 2, north = (now.north + then.north) / 2;
+  const span = Math.hypot(then.east - now.east, then.north - now.north);
+  const side = Math.min(SURVEY_MAX_ARCSEC, Math.max(evidence.patch_arcsec, span + 2 * SURVEY_MARGIN_ARCSEC));
+  return { ...fromOffsets(evidence.patch_ra, evidence.patch_dec, east, north), side: Math.round(side), east, north };
+}
+
+/**
+ * 2MASS and WISE images around the object moving by `motion` (as surveyPatch; SurveyImages, backend/planetx/api/schemas.py) with the
+ * requested patch added, or null without a backend. Throws on a failed request: the images are an
+ * extra, so callers keep showing the SPHEREx evidence.
+ */
+export async function fetchSurveyImages(motion, evidence, { signal } = {}) {
+  if (!API_BASE) return null;
+  const patch = surveyPatch(motion, evidence);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new DOMException('Request timed out', 'TimeoutError')), SURVEY_TIMEOUT_MS);
+  const onAbort = () => ctrl.abort(signal.reason);
+  if (signal?.aborted) ctrl.abort(signal.reason);
+  else signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    const url = `${API_BASE}/motion/evidence/surveys?ra=${patch.ra.toFixed(6)}&dec=${patch.dec.toFixed(6)}&side_arcsec=${patch.side}`;
+    const res = await fetch(url, { signal: ctrl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    if (!body || !Array.isArray(body.images) || !Array.isArray(body.unavailable)) throw new Error('bad response');
+    return { ...body, patch };
+  } catch (err) {
+    if (err?.name === 'TimeoutError') throw new Error('the request timed out', { cause: err });
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+/**
+ * The marks on one older survey image, in arcsec from that image's centre (east, north):
+ * `then` where the object was at the image's date (with its 1-sigma error), `now` its SPHEREx
+ * position, `years` between the two, and `inside` whether `then` lies on the image.
+ */
+export function surveyMarks(object, evidence, surveys, image) {
+  const shift = (p) => {
+    const sky = fromOffsets(evidence.patch_ra, evidence.patch_dec, p.east, p.north);
+    return toOffsets(surveys.ra, surveys.dec, sky.ra, sky.dec);
+  };
+  const predicted = predictAt(object, evidence, image.mjd);
+  const then = { ...shift(predicted), err: predicted.err };
+  const now = shift({ east: evidence.fit.east_arcsec, north: evidence.fit.north_arcsec });
+  const half = surveys.patch_arcsec / 2;
+  return {
+    then, now, years: -predicted.years, source: predicted.source,
+    inside: Math.abs(then.east) < half && Math.abs(then.north) < half,
+  };
+}
+
+/** A round scale-bar length, about a fifth of `side` arcsec. */
+export function scaleBar(side) {
+  return [10, 20, 30, 60, 120, 180, 300].reduce((best, v) => (Math.abs(v - side / 5) < Math.abs(best - side / 5) ? v : best));
+}

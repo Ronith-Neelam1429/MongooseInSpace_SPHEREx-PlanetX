@@ -3,6 +3,7 @@
 Engine data of a finished run comes from `planetx.api.motion.finished_run`; the
 images are built in `planetx.api.evidence`. See docs/API.md.
 """
+import base64
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Response
@@ -11,7 +12,9 @@ from planetx.api import evidence as proof
 from planetx.api import motion as runs
 from planetx.api.routes.motion import DEFAULT_SIZE_DEG, MAX_SIZE_DEG, MIN_SIZE_DEG
 from planetx.api.routes.sky import Dec, Ra
-from planetx.api.schemas import MotionEvidence
+from planetx.api.schemas import MotionEvidence, SurveyGap, SurveyImage, SurveyImages
+from planetx.observatories import images as older
+from planetx.spherex import archive, cutouts
 
 router = APIRouter(prefix="/motion", tags=["motion"])
 
@@ -55,3 +58,40 @@ def evidence(
         raise HTTPException(404, f"the run of this field has no object {object_id} (it tracked {len(run.tracked)})")
     response.headers["Cache-Control"] = CACHE_CONTROL
     return proof.evidence_for(run, object_id)
+
+
+MIN_SURVEY_ARCSEC = 30.0
+MAX_SURVEY_ARCSEC = 900.0  # 15': Barnard's Star's 2MASS position is ~4.5' from its SPHEREx one
+# Archive images do not change; a failure is not cached by browsers (the server retries after a while).
+SURVEY_CACHE_CONTROL = "public, max-age=86400"
+
+
+@router.get("/evidence/surveys")
+def survey_images(
+    ra: Ra,
+    dec: Dec,
+    response: Response,
+    side_arcsec: Annotated[float, Query(
+        ge=MIN_SURVEY_ARCSEC, le=MAX_SURVEY_ARCSEC, description="Side of the square patch, arcsec"
+    )],
+) -> SurveyImages:
+    """2MASS and AllWISE images of a square patch, centred and oriented as the evidence images.
+
+    Independent of any motion run. Always 200: a survey that cannot give an image
+    (service down, no coverage) is listed in ``unavailable`` with the reason.
+    """
+    images, gaps = [], []
+    for got, survey in zip(older.patch_images(ra, dec, side_arcsec), older.SURVEYS, strict=True):
+        if isinstance(got, str):
+            gaps.append(SurveyGap(survey=survey.key, label=survey.label, reason=got))
+            continue
+        n = got.data.shape[0]
+        images.append(SurveyImage(
+            survey=survey.key, label=survey.label, mjd=got.mjd, date=archive.mjd_to_date(got.mjd),
+            patch_px=n, pixel_arcsec=got.pixel_arcsec,
+            image_png_b64=base64.b64encode(cutouts.render_png(got.data)).decode("ascii"),
+        ))
+    images.sort(key=lambda image: image.mjd)
+    if not gaps:
+        response.headers["Cache-Control"] = SURVEY_CACHE_CONTROL
+    return SurveyImages(ra=ra, dec=dec, patch_arcsec=side_arcsec, images=images, unavailable=gaps)
