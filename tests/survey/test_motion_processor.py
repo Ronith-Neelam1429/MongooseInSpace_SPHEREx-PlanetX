@@ -1,11 +1,13 @@
 """Offline tests for the `motion` survey processor: tiling, de-duplication, idempotence, abort."""
+from contextlib import contextmanager
+
 import numpy as np
 import pytest
 from survey_fakes import field_object, field_run
 
 from planetx import pipeline
-from planetx.spherex import archive
-from planetx.survey import motion, worker
+from planetx.spherex import archive, cutouts
+from planetx.survey import motion, patch_frames, worker
 from planetx.survey.candidates import CandidateStore
 from planetx.survey.patches import NEP, patch_center, patch_containing, patch_corners, patches_containing
 from planetx.survey.queue import PatchQueue
@@ -67,10 +69,29 @@ def _stored(db):
         return store.patch_candidates(NSIDE, NEP_IPIX)
 
 
+class FakePatch:
+    """Stands in for `patch_frames.load`: records the requests and each field run."""
+
+    def __init__(self, monkeypatch, run, load_error=None):
+        self.requests, self.runs, self.run, self.load_error = None, [], run, load_error
+        monkeypatch.setattr(patch_frames, "load", self.load)
+
+    @contextmanager
+    def load(self, requests, should_stop):
+        self.requests = list(requests)
+        if self.load_error:
+            raise self.load_error
+        yield self
+
+    def field_run(self, i, should_stop):
+        self.runs.append(i)
+        ra, dec, _ = self.requests[i]
+        return self.run(i, ra, dec)
+
+
 @pytest.fixture
 def every_field_sees(monkeypatch):
     """Every field sees the same objects (as overlapping fields would); records the calls."""
-    calls = []
     ra0, dec0 = patch_center(NEP_IPIX, NSIDE)
     objects = [
         field_object(ra0, dec0, classification="unknown_candidate"),  # inside: kept once
@@ -79,19 +100,16 @@ def every_field_sees(monkeypatch):
         field_object(ra0, dec0 + 0.04, kind="static", classification="variable_star", is_variable=True),
         field_object(ra0 + 40.0, dec0 - 5.0),  # another patch's object
     ]
-
-    def fake(ra, dec, size_deg, *, should_stop=lambda: False, on_progress=None):
-        calls.append((ra, dec, size_deg))
-        return field_run(objects)
-
-    monkeypatch.setattr(pipeline, "analyse_field", fake)
-    return calls
+    return FakePatch(monkeypatch, lambda i, ra, dec: field_run(objects))
 
 
 def test_patch_processed_once_per_field_without_duplicates(db, every_field_sees):
     result = worker.run(worker.PROCESSORS["motion"], db, max_patches=1)
     assert result.done == 1
-    assert len(every_field_sees) == 64 and {c[2] for c in every_field_sees} == {motion.FIELD_SIZE_DEG}
+    fields = motion.patch_fields(NEP_IPIX, NSIDE)
+    # One load for the whole patch, with each field's raw cutout request; then one run per field.
+    assert every_field_sees.requests == [cutouts.cutout_request(f.ra, f.dec, motion.FIELD_SIZE_DEG) for f in fields]
+    assert every_field_sees.runs == list(range(64))
     stored = _stored(db)
     assert [(s.candidate.classification, s.candidate.name) for s in stored] == [
         ("unknown_candidate", None), ("variable_star", None), ("known_star", "HD 1")
@@ -115,16 +133,12 @@ def test_reprocessing_replaces_the_patch_output(db, every_field_sees):
 
 
 def test_fields_without_data_are_skipped(db, monkeypatch):
-    ra0, dec0 = patch_center(NEP_IPIX, NSIDE)
-    seen = []
-
-    def fake(ra, dec, size_deg, **kw):
-        seen.append(ra)
-        if len(seen) % 2:
+    def run(i, ra, dec):
+        if i % 2 == 0:
             raise pipeline.FieldFailed("SPHEREx has too few exposures")
         return field_run([field_object(ra, dec)])
 
-    monkeypatch.setattr(pipeline, "analyse_field", fake)
+    FakePatch(monkeypatch, run)
     patch = worker.Patch(NSIDE, NEP_IPIX, 0, 0)
     found, summary = motion.analyse_patch(patch, motion.patch_fields(NEP_IPIX, NSIDE), lambda: False)
     assert summary["fields_without_data"] == 32 and summary["fields_analysed"] == 32
@@ -135,22 +149,23 @@ def test_abort_between_fields_keeps_the_previous_output(db, every_field_sees):
     worker.run(worker.PROCESSORS["motion"], db, max_patches=1)
     before = [s.candidate for s in _stored(db)]
     assert before
-    every_field_sees.clear()
+    every_field_sees.runs.clear()
     stop_after = 3
     ctx = worker.PatchContext(worker.Patch(NSIDE, NEP_IPIX, 0, 0), db, *(worker.threading.Event() for _ in "ab"))
     # should_stop() turns true after three fields: the processor gives up before storing anything.
-    object.__setattr__(ctx, "should_stop", lambda: len(every_field_sees) >= stop_after)
+    object.__setattr__(ctx, "should_stop", lambda: len(every_field_sees.runs) >= stop_after)
     with pytest.raises(worker.PatchAbandoned):
         motion.process_patch(ctx)
-    assert len(every_field_sees) == stop_after
+    assert len(every_field_sees.runs) == stop_after
     assert [s.candidate for s in _stored(db)] == before
 
 
-def test_stop_inside_the_pipeline_abandons_the_patch(db, monkeypatch):
-    def stopped(*a, **kw):
+@pytest.mark.parametrize("where", ["field", "load"])
+def test_stop_inside_the_pipeline_abandons_the_patch(db, monkeypatch, where):
+    def stopped(*a):
         raise pipeline.Stopped()
 
-    monkeypatch.setattr(pipeline, "analyse_field", stopped)
+    FakePatch(monkeypatch, stopped, load_error=pipeline.Stopped() if where == "load" else None)
     result = worker.run(worker.PROCESSORS["motion"], db, max_patches=1)
     assert result.released == 1 and result.done == 0 and result.failed == 0
     with PatchQueue(db) as q:
@@ -158,11 +173,14 @@ def test_stop_inside_the_pipeline_abandons_the_patch(db, monkeypatch):
     assert _stored(db) == []
 
 
-def test_irsa_outage_fails_the_patch_for_a_retry(db, monkeypatch):
-    def down(*a, **kw):
-        raise archive.UpstreamError("IRSA 503", status=503)
+@pytest.mark.parametrize("where", ["field", "load"])
+def test_irsa_outage_fails_the_patch_for_a_retry(db, monkeypatch, where):
+    outage = archive.UpstreamError("IRSA 503", status=503)
 
-    monkeypatch.setattr(pipeline, "analyse_field", down)
+    def down(*a):
+        raise outage
+
+    FakePatch(monkeypatch, down, load_error=outage if where == "load" else None)
     result = worker.run(worker.PROCESSORS["motion"], db, max_patches=1)
     assert result.failed == 1
     with PatchQueue(db) as q:

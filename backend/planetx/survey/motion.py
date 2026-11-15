@@ -9,6 +9,9 @@ A patch (nside 64, about 0.92 deg) is far larger than one pipeline field
     reach at least FIELD_REACH_DEG from its centre in every direction (the raw
     cutout is 1.5x the field, whatever its rotation), so the fields cover the
     patch with margin.
+  * The fields' frames come from one raw cutout per SPHEREx visit for the whole
+    patch, cropped locally (`planetx.survey.patch_frames`), then go through the
+    same per-field pipeline as the website's (`pipeline.analyse_frames`).
   * Neighbouring fields overlap, so the same star is tracked more than once.
     Each object belongs to the field whose centre is nearest to it, and to the
     patch that contains it; every other copy is dropped. That keeps exactly
@@ -31,6 +34,8 @@ from typing import Any
 import numpy as np
 
 from planetx import pipeline
+from planetx.spherex import cutouts
+from planetx.survey import patch_frames
 from planetx.survey.candidates import Candidate, CandidateStore, TrackPoint, is_notable, score
 from planetx.survey.patches import centers, children, patches_containing, validate_nside
 from planetx.survey.queue import Patch
@@ -96,18 +101,10 @@ def _candidate(found: pipeline.FieldObject, field: Field) -> Candidate:
     )
 
 
-def analyse_patch(
-    patch: Patch, fields: Sequence[Field], should_stop: Callable[[], bool]
-) -> tuple[list[Candidate], dict[str, Any]]:
-    """Run the pipeline on each field; (the patch's notable objects, a JSON summary).
-
-    Raises PatchAbandoned when `should_stop()` turns true, and lets
-    `archive.UpstreamError` (IRSA down after the pipeline's own retries)
-    through, so the queue retries the patch later. A field with too little
-    data (`pipeline.FieldFailed`) is counted and skipped.
-    """
-    if not fields:
-        raise ValueError("a patch needs at least one field")
+def _analyse_fields(
+    patch: Patch, fields: Sequence[Field], frames: patch_frames.PatchFrames, should_stop: Callable[[], bool]
+) -> tuple[list[Candidate], int, int]:
+    """(notable objects owned by the patch, objects owned, fields without data)."""
     found: list[Candidate] = []
     owned_objects = 0
     no_data = 0
@@ -115,7 +112,7 @@ def analyse_patch(
         if should_stop():
             raise PatchAbandoned(f"stopped before field {i + 1} of {len(fields)}")
         try:
-            run = pipeline.analyse_field(field.ra, field.dec, field.size_deg, should_stop=should_stop)
+            run = frames.field_run(i, should_stop)
         except pipeline.Stopped:
             raise PatchAbandoned(f"stopped during field {i + 1} of {len(fields)}") from None
         except pipeline.FieldFailed as exc:
@@ -134,6 +131,29 @@ def analyse_patch(
         log.info("patch %d field %d/%d: %d objects, %d here, %d notable",
                  patch.ipix, i + 1, len(fields), len(run.objects), len(owned), len(found))
 
+    return found, owned_objects, no_data
+
+
+def analyse_patch(
+    patch: Patch, fields: Sequence[Field], should_stop: Callable[[], bool]
+) -> tuple[list[Candidate], dict[str, Any]]:
+    """Run the pipeline on each field; (the patch's notable objects, a JSON summary).
+
+    Raises PatchAbandoned when `should_stop()` turns true, and lets
+    `archive.UpstreamError` (IRSA down after the retries) through, so the
+    queue retries the patch later. A field with too little data
+    (`pipeline.FieldFailed`) is counted and skipped.
+    """
+    if not fields:
+        raise ValueError("a patch needs at least one field")
+    started = time.monotonic()
+    requests = [cutouts.cutout_request(f.ra, f.dec, f.size_deg) for f in fields]
+    try:
+        with patch_frames.load(requests, should_stop) as frames:
+            found, owned_objects, no_data = _analyse_fields(patch, fields, frames, should_stop)
+    except pipeline.Stopped:
+        raise PatchAbandoned("stopped while listing or downloading the patch's cutouts") from None
+    log.info("patch %d: %d fields analysed in %.0fs", patch.ipix, len(fields), time.monotonic() - started)
     found.sort(key=lambda c: -c.score)
     summary = {
         "processor": "motion",

@@ -225,7 +225,32 @@ def mjd_to_date(mjd: float) -> str:
     return Time(mjd, format="mjd", scale="utc").iso[:10]
 
 
-def _query_collection(collection: str, ra: float, dec: float, radius_deg: float) -> list[Visit]:
+def parse_s_region(text: str) -> np.ndarray:
+    """Vertices (n, 2: ra, dec in degrees) of an SIA ``s_region`` such as
+    ``POLYGON ICRS ra1 dec1 ra2 dec2 ...``; a closing vertex repeating the first is dropped.
+
+    SPHEREx footprints are convex quadrilaterals (verified live). Raises
+    UpstreamError for anything else IRSA might send.
+    """
+    words = str(text).split()
+    if not words or words[0].upper() != "POLYGON":
+        raise UpstreamError(f"SIA s_region is not a POLYGON: {str(text)[:80]!r}")
+    numbers = words[2:] if len(words) > 1 and words[1].upper() == "ICRS" else words[1:]
+    try:
+        values = np.array([float(w) for w in numbers])
+    except ValueError:
+        raise UpstreamError(f"SIA s_region has a non-numeric vertex: {str(text)[:80]!r}") from None
+    if len(values) % 2 or not np.isfinite(values).all() or np.abs(values[1::2]).max(initial=0) > 90:
+        raise UpstreamError(f"SIA s_region has malformed vertices: {str(text)[:80]!r}")
+    vertices = values.reshape(-1, 2)
+    if len(vertices) > 3 and np.allclose(vertices[0], vertices[-1]):
+        vertices = vertices[:-1]
+    if len(vertices) < 3:
+        raise UpstreamError(f"SIA s_region has fewer than 3 vertices: {str(text)[:80]!r}")
+    return vertices
+
+
+def _query_table(collection: str, ra: float, dec: float, radius_deg: float) -> Table:
     pos = f"CIRCLE {ra:.7f} {dec:.7f} {radius_deg:.7f}"
     params = {"COLLECTION": collection, "POS": pos, "MAXREC": SIA_MAXREC}
     table = _get(SIA_URL, params, f"SIA query {collection}", parse_sia_votable)
@@ -234,7 +259,28 @@ def _query_collection(collection: str, ra: float, dec: float, radius_deg: float)
             f"SIA query {collection} hit the {SIA_MAXREC}-row limit; results would be "
             "truncated, use a smaller radius"
         )
-    return visits_from_table(table)
+    return table
+
+
+def _query_collection(collection: str, ra: float, dec: float, radius_deg: float) -> list[Visit]:
+    return visits_from_table(_query_table(collection, ra, dec, radius_deg))
+
+
+def query_footprints(ra: float, dec: float, radius_arcsec: float) -> list[tuple[Visit, np.ndarray]]:
+    """Like `query_visits` (same rows, order and errors) with each image's footprint
+    (`parse_s_region` vertices), and not cached."""
+    found: list[tuple[Visit, np.ndarray]] = []
+    seen: set[str] = set()
+    for collection in COLLECTIONS:
+        table = _query_table(collection, ra, dec, radius_arcsec / 3600)
+        if len(table) and "s_region" not in table.colnames:
+            raise UpstreamError(f"SIA query {collection} returned no s_region column")
+        for visit, region in zip(visits_from_table(table), table["s_region"] if len(table) else [], strict=True):
+            if visit.access_url not in seen:
+                seen.add(visit.access_url)
+                found.append((visit, parse_s_region(region)))
+    found.sort(key=lambda vf: (vf[0].mjd, vf[0].detector or 0, vf[0].access_url))
+    return found
 
 
 def query_visits(ra: float, dec: float, radius_arcsec: float) -> list[Visit]:
