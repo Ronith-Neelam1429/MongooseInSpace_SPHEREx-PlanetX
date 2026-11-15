@@ -80,6 +80,23 @@ def test_page_filters_and_paginates(db):
         assert store.page(limit=10, offset=10) == (4, [])
 
 
+def test_page_by_date_and_get(db):
+    with CandidateStore(db) as store:
+        store.replace_patch(NSIDE, 0, [candidate(score=0.9), candidate(score=0.1)], found_at=0.0)
+        store.replace_patch(NSIDE, 1, [candidate(score=0.2)], found_at=86400.0)
+        _, rows = store.page(limit=10, sort="date")
+        assert [(r.ipix, r.candidate.score) for r in rows] == [(1, 0.2), (0, 0.9), (0, 0.1)]
+        with pytest.raises(ValueError):
+            store.page(limit=10, sort="name")
+        assert store.get(rows[1].id) == rows[1]
+        assert store.get(10_000) is None
+
+
+def test_get_before_the_table_exists(db):
+    with CandidateStore(db, readonly=True) as store:
+        assert store.get(1) is None
+
+
 def test_failed_replace_keeps_previous_output(db):
     with CandidateStore(db) as store:
         store.replace_patch(NSIDE, 0, [candidate(score=0.4)], found_at=0.0)

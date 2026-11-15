@@ -133,6 +133,24 @@ def test_complete(db, clock):
             q.complete(p, {})  # already done
 
 
+def test_patches_with_status(db, clock):
+    order = [int(i) for i in crawl_order(NSIDE)]
+    with open_queue(db, clock) as q:
+        q.complete(q.claim_next(), {})
+        running = q.claim_next()
+        assert q.patches_with_status(("done",)) == q.done_patches() == [order[0]]
+        assert q.patches_with_status(("in_progress",)) == [running.ipix] == [order[1]]
+        assert q.patches_with_status(("pending", "in_progress")) == sorted(order[1:])
+        # A limit keeps the lowest crawl ranks, returned in ipix order.
+        assert q.patches_with_status(("pending",), limit=4) == sorted(order[2:6])
+        assert q.patches_with_status(("failed",)) == []
+        for bad in [(), ("queued",)]:
+            with pytest.raises(ValueError):
+                q.patches_with_status(bad)
+        with pytest.raises(ValueError):
+            q.patches_with_status(("done",), limit=0)
+
+
 @pytest.mark.parametrize("summary, exc", [
     ([1, 2], TypeError),
     ({"x": float("nan")}, ValueError),

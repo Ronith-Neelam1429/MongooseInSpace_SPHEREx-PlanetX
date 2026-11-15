@@ -186,18 +186,24 @@ is nearest. It stores the notable objects (movers, motion candidates and brightn
 variables) in the `candidates` table of the survey database (`PLANETX_DB`).
 Re-processing a patch replaces its rows, so ids are not stable across runs.
 
-### `GET /api/candidates?limit=100&offset=0&classification=`
+### `GET /api/candidates?limit=100&offset=0&classification=&sort=score`
 `SurveyCandidates` in `schemas.py`, best score first (ties by id):
 
 ```json
 { "total": 1,
   "candidates": [{ "id": 1, "ra": 269.45, "dec": 4.74, "name": "Barnard's Star",
-    "classification": "known_star", "is_variable": false,
+    "classification": "known_star", "kind": "mover", "is_variable": false,
     "pm_total": 10.4, "pm_ra_cosdec": -0.5, "pm_dec": 10.4, "significance": 6.1,
     "position_angle_deg": 357.0, "score": 0.13, "nside": 64, "ipix": 23456,
-    "found": "2026-11-14" }] }
+    "found": "2026-11-14", "field_ra": 269.4727, "field_dec": 4.7053 }] }
 ```
 
+- `sort`: `score` (default) or `date` (newest survey run first, then best score).
+- `kind` is the engine's motion class (`mover | candidate | static`, the last for variables).
+- `field_ra`/`field_dec`: centre of the 0.2 deg field the object was measured in.
+  `/api/motion?ra=<field_ra>&dec=<field_dec>&size_deg=0.2` repeats the survey's run, on the
+  frames the survey already downloaded when the crawler shares the API's cache; the website
+  does this to open a candidate's card.
 - `limit` 1-500 (default 100), `offset` >= 0. `classification` is one of
   `known_star | known_asteroid | variable_star | artifact | unknown_candidate | static`
   or empty for all (anything else is 422). Stored objects whose catalogue check could
@@ -223,4 +229,32 @@ Re-processing a patch replaces its rows, so ids are not stable across runs.
 
 ```sh
 curl 'http://127.0.0.1:8000/api/candidates?limit=20&classification=unknown_candidate'
+```
+
+### `GET /api/candidates/{id}/thumbnail.png`
+A small SPHEREx picture centred on one candidate (0.03 deg, ~18 px, grey + alpha, north up,
+east left): the newest detector 1-3 exposure the survey's own visit sample uses, cut from that
+field's raw cutout, so it downloads nothing when the crawler shares the API's cache (else one
+~4 MB download; tries up to 3 exposures). 404 for an unknown id (ids change when a patch is
+re-processed) or when no exposure has data there; 502/503 as for `/api/cutout.png`.
+`Cache-Control` one hour. Load these lazily: the website asks only for rows in view, two at once.
+
+## Survey progress and coverage
+
+### `GET /api/survey/status`
+`SurveyStatus`: patch counts by status (`pending | in_progress | done | failed`), `total`,
+`nside`/`moc_order`, and the crawl frontier (`current_rank`, its centre and its distance from
+the north ecliptic pole). All zero before the queue exists.
+
+### `GET /api/survey/coverage?status=done&limit=`
+The patches of one status as an Aladin Lite MOC JSON, `{"<order>": [NESTED ipix, ...]}`
+(order = log2(nside), ipix ascending), for `A.MOCFromJSON`:
+- `status`: `done` (default), `failed` (given up after retries), or `queued` (in progress or
+  waiting). Anything else is 422.
+- `limit` 1-50000 (optional): only that many, the next the crawl reaches first (lowest rank).
+  Use it with `queued`, which is nearly the whole sky early on; the website draws the next 300.
+- An empty list while no patch has that status, or before the queue exists.
+
+```sh
+curl 'http://127.0.0.1:8000/api/survey/coverage?status=queued&limit=300'
 ```
