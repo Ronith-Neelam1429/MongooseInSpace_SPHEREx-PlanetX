@@ -688,6 +688,16 @@ def test_faint_track_seen_in_few_of_the_passes_covering_it_is_not_a_mover():
     assert len(o.sources) == 3 and o.pm_significance >= motion_sigma() and o.pm_total * span >= PIX
     assert o.missing_passes == [] and o.unseen_passes == [1, 2, 4, 5]
     assert not o.is_mover
+    # Seen in 4 of 7: more than half, but at SNR ~9 a real source is missed in
+    # 3 passes far less often than once in a thousand.
+    rng = np.random.default_rng(5)
+    stars = field_stars(rng, flux=(400, 2000))
+    e5, n5 = clear_spot(stars, drift=(-8.0, 0.0))
+    r = find_motion(_seven_window_frames(rng, stars, (e5 + 4, n5), {0, 2, 4, 6}, 24.5))
+    o = nearest(r, e5, n5)
+    assert len(o.sources) == 4 and o.unseen_passes == [1, 3, 5] and o.missing_passes == []
+    assert o.pm_significance >= motion_sigma()
+    assert not o.is_mover
     # The same object in every pass is a mover, though at this brightness it
     # may drop out of a pass or so.
     rng = np.random.default_rng(7)

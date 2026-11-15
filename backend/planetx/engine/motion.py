@@ -34,7 +34,7 @@ import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 from scipy.spatial import cKDTree
-from scipy.special import chdtrc, chdtri
+from scipy.special import bdtrc, chdtrc, chdtri, ndtr
 
 from .detect import Detection, detect_sources, frame_background
 from .frames import Frame
@@ -1068,6 +1068,23 @@ def _absent_passes(
     return (list(unseen) if bright else []), blended, unseen
 
 
+def _absence_pvalue(obj: TrackedObject, nsigma: float) -> float:
+    """Chance that a real source as bright as this track goes undetected in its unseen passes.
+
+    Each pass detects it unless noise pulls it under `nsigma`. Its true SNR is
+    taken as the median of its passes' measured SNRs less one sigma (passes
+    that caught a faint source caught it bright), so a source seen at SNR 6
+    may well vanish from a few passes, while one seen at SNR 9 is missed in 3
+    of 6 passes about once in 10^5.
+    """
+    unseen = len(obj.unseen_passes)
+    if unseen == 0:
+        return 1.0
+    p_miss = float(ndtr(nsigma - (float(np.median([s.snr for s in obj.sources])) - 1.0)))
+    covered = len(obj.sources) + len(obj.blended_passes) + unseen
+    return float(bdtrc(unseen - 1, covered, p_miss))  # P(at least `unseen` misses)
+
+
 def _caution_near_bright(objects: list[TrackedObject], plane: SkyPlane) -> None:
     """Annotate variables close to very bright (heavily saturated) stars.
 
@@ -1430,17 +1447,18 @@ def find_motion(
             and bool(set.intersection(*(set(s.flux_by_detector) for s in obj.sources)))
         )
         needed_sigma = mover_sigma if len(obj.sources) >= 3 else 2 * mover_sigma
-        # A faint object is allowed to drop out of some passes, but not out of
-        # most of those that observed its path: noise peaks and faint stars in a
-        # field of many passes (9 near the ecliptic poles) line up by chance in
-        # 3 of them far more often than a real source at >= 5 sigma is missed
-        # in 6 (stack "movers" at SNR ~6 with no Gaia star under any pass).
+        # A faint object may drop out of a few passes, but not out of most of
+        # those that observed its path, nor out of more than its brightness
+        # allows: in fields of many passes (7-9 near the ecliptic poles) noise
+        # peaks and faint stars line up by chance in 3 of them (stack "movers"
+        # at SNR ~6-9, no Gaia star under any position, seen in 3 of 6-9 passes).
         seen = len(obj.sources) + len(obj.blended_passes)
         obj.is_mover = (
             obj.pm_significance >= needed_sigma
             and obj.pm_total * obj_span_yr >= pix
             and not obj.missing_passes
             and len(obj.unseen_passes) <= seen
+            and _absence_pvalue(obj, nsigma) >= CALIB_OUTLIER_PVALUE
             and enough_passes
             and not (len(obj.sources) < 3 and any(_weak(s) for s in obj.sources))
         )
