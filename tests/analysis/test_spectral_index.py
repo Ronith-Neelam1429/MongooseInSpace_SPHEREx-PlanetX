@@ -66,7 +66,13 @@ def test_missing_bands_leave_methane_unmeasured():
     bands = [b for b in _spectrum(_star) if b.band.center_um < 1.5]
     ix = si.measure_index(bands)
     assert ix.methane_depth is None and ix.methane_err is None
-    assert si.flag(ix) == ("too_faint", "The bands needed to measure methane were not measured with enough signal.")
+    assert len(ix.methane_windows_missing) == 3
+    flag, reason = si.flag(ix)
+    assert flag == "too_faint" and "No exposure covers this position at the methane wavelengths" in reason
+    # Methane bands measured but their continuum too faint: a different reason.
+    faint = si.measure_index(_spectrum(lambda lam: 0.0 if lam > 1.5 else _star(lam), floor=1.0))
+    assert faint.methane_depth is None and faint.methane_windows_missing == []
+    assert si.flag(faint)[1].startswith("The bands needed to measure methane")
 
 
 def test_monte_carlo_error_follows_the_band_errors_and_is_reproducible():

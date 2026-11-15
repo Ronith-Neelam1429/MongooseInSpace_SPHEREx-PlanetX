@@ -70,6 +70,8 @@ class SpectralIndex:
     contamination_at_um: float | None  # where it is largest
     website_suggestion: str  # spectrum.interpret's code for the same bands
     neighbours: list[sp.Neighbour] = field(default_factory=list)
+    # Methane windows with no band measured at all (SPHEREx has not yet looked there at those wavelengths).
+    methane_windows_missing: list[tuple[float, float]] = field(default_factory=list)
 
 
 def _in_windows(lam: float, windows=INDEX_WINDOWS_UM) -> bool:
@@ -153,6 +155,8 @@ def measure_index(
         contamination_max=float(worst.fraction) if worst else 0.0,
         contamination_at_um=float(worst.band.center_um) if worst and worst.fraction > 0 else None,
         website_suggestion=code,
+        methane_windows_missing=[fd.window_um for fd in sp.FEATURES if fd.molecule == "CH4"
+                                 and sp.window_flux(bands, *fd.window_um) is None],
         neighbours=sorted(neighbours, key=lambda n: n.separation_px),
     )
 
@@ -182,6 +186,11 @@ def flag(ix: SpectralIndex, error_scale: float = 1.0) -> tuple[str, str]:
         )
     if m is not None and me is not None and m + 2 * me < METHANE_BROWN_DWARF:
         return "star_like", f"Methane depth {m:.2f} +- {me:.2f}: shallower than a T dwarf's ({METHANE_BROWN_DWARF})."
+    if (m is None or me is None) and len(ix.methane_windows_missing) == 3:
+        return "too_faint", (
+            "No exposure covers this position at the methane wavelengths (1.6, 2.2, 3.3 um) yet, so methane "
+            "cannot be measured."
+        )
     if m is None or me is None:
         return "too_faint", "The bands needed to measure methane were not measured with enough signal."
     if _detected(m, me):

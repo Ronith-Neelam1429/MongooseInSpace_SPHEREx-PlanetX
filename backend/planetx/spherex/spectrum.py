@@ -186,7 +186,12 @@ class FrameMeasurer:
             return Measurement("no_wavelength", detector, mjd)
         common = {"detector": detector, "mjd": mjd, "wavelength_um": wave, "bandwidth_um": width if np.isfinite(width) else None}
 
-        flags, variance, bad, xx, yy = self.flags, self.variance, self.bad, self.xx, self.yy
+        # Only the pixels out to the annulus matter: work on that box (survey cutouts are ~1000 px wide).
+        half = int(math.ceil(r_out)) + 1
+        box = (slice(max(0, int(y) - half), int(y) + half + 2), slice(max(0, int(x) - half), int(x) + half + 2))
+        data = data[box]
+        flags, bad, xx, yy = self.flags[box], self.bad[box], self.xx[box], self.yy[box]
+        variance = self.variance[box] if self.variance is not None else None
         r = np.hypot(xx - x, yy - y)
         aperture = r <= APERTURE_PX
         if ((flags[aperture] & flag_mask(SATURATION_FLAGS)) != 0).any():
@@ -549,21 +554,39 @@ def _aperture_shares(dx: float, dy: float, fwhm_px: float) -> np.ndarray:
     return np.array(shares)
 
 
-@functools.lru_cache(maxsize=4096)
+def _neighbour_share_exact(separation_px: float, fwhm_px: float) -> float:
+    centred = _aperture_shares(0.0, 0.0, fwhm_px)
+    angles = np.linspace(0, math.pi / 2, 9)  # the pixel grid repeats every 90 deg
+    ratios = [_aperture_shares(separation_px * math.cos(t), separation_px * math.sin(t), fwhm_px) / centred
+              for t in angles]
+    return float(np.mean(ratios))
+
+
+_SHARE_STEP_PX = 0.05
+
+
+@functools.lru_cache(maxsize=32)
+def _share_table(fwhm_px: float) -> np.ndarray:
+    seps = np.arange(0.0, NEIGHBOUR_SEARCH_PX + 2 * _SHARE_STEP_PX, _SHARE_STEP_PX)
+    return np.array([_neighbour_share_exact(s, fwhm_px) for s in seps])
+
+
 def neighbour_share(separation_px: float, fwhm_px: float) -> float:
     """Flux a neighbour adds to the object's aperture-corrected total flux, per unit neighbour flux.
 
     Each exposure's aperture correction divides by the share of the object's own (centred) PSF
     in the aperture at that exposure's sub-pixel phase, so a neighbour adds
     share(at its offset) / share(centred), averaged over phases and directions (the field
-    rotates between exposures)."""
+    rotates between exposures). Tabulated every 0.05 px per FWHM and interpolated (crowded
+    fields ask for it thousands of times); 0 beyond NEIGHBOUR_SEARCH_PX."""
     if not separation_px >= 0:
         raise ValueError(f"separation must be >= 0, got {separation_px}")
-    centred = _aperture_shares(0.0, 0.0, fwhm_px)
-    angles = np.linspace(0, math.pi / 2, 9)  # the pixel grid repeats every 90 deg
-    ratios = [_aperture_shares(separation_px * math.cos(t), separation_px * math.sin(t), fwhm_px) / centred
-              for t in angles]
-    return float(np.mean(ratios))
+    table = _share_table(round(float(fwhm_px), 3))
+    pos = separation_px / _SHARE_STEP_PX
+    if pos >= len(table) - 1:
+        return 0.0 if separation_px > NEIGHBOUR_SEARCH_PX else float(table[-1])
+    i = int(pos)
+    return float(table[i] + (pos - i) * (table[i + 1] - table[i]))
 
 
 @dataclass(frozen=True)

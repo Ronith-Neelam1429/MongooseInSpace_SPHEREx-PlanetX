@@ -1,0 +1,2815 @@
+{
+ "name": "light_curve_r_dra",
+ "version": 1,
+ "generated_at": "2026-11-15T08:18:54Z",
+ "command": "uv run python tools/brown_dwarf_search.py --light-curve --budget-mb 0",
+ "notes": [
+  "R Draconis saturates SPHEREx at every wavelength measured, so its brightness is the flux in an annulus 7-11 px around it (PSF wings), which is a fixed fraction of the total only at one wavelength and detector position.",
+  "flux is relative: each point divided by the fitted mean level of its own wavelength bin (0.5% wide, per detector), so points from different wavelengths can share one curve. flux_err includes a 2% calibration floor.",
+  "Detectors 1, 2, 3 (0.75-2.42 um); only wavelength bins seen at two or more epochs over 30 days apart are used.",
+  "Model: ln F = bin level + per-detector sinusoid with a common period and phase. Points more than 4x the robust residual scatter from the model are marked outlier and left out of the fit; period_err_days is scaled by the reduced chi^2.",
+  "Reduced chi^2 of the best fit: 279.5: the wing fluxes scatter much more than their photon noise (exposures minutes apart in the same band can differ by tens of percent), so the curve shows the trend, not small wiggles.",
+  "The SPHEREx data span 426 days, 1.7 cycles of the literature period: enough to see the star vary, too short to pin a period down.",
+  "The best period moves between 207 and 287 days when the wavelength bins change (0.2%, 0.5%, 1.0%, 2.0%); that spread, not period_err_days, is the honest uncertainty. The literature period (~245 d) lies inside it."
+ ],
+ "n_outliers": 0,
+ "points": [
+  {
+   "mjd": 60811.9565,
+   "flux": 0.8046,
+   "flux_err": 0.0161,
+   "wavelength": 1.6553,
+   "detector": 3,
+   "band": 34,
+   "wavelength_bin": 30101,
+   "wing_flux_mjy": 1198.9106,
+   "outlier": false
+  },
+  {
+   "mjd": 60811.958,
+   "flux": 0.811,
+   "flux_err": 0.0162,
+   "wavelength": 1.6932,
+   "detector": 3,
+   "band": 35,
+   "wavelength_bin": 30105,
+   "wing_flux_mjy": 2112.5547,
+   "outlier": false
+  },
+  {
+   "mjd": 60815.6933,
+   "flux": 1.3581,
+   "flux_err": 0.0272,
+   "wavelength": 1.8124,
+   "detector": 3,
+   "band": 38,
+   "wavelength_bin": 30119,
+   "wing_flux_mjy": 1330.2526,
+   "outlier": false
+  },
+  {
+   "mjd": 60815.6948,
+   "flux": 1.3489,
+   "flux_err": 0.027,
+   "wavelength": 1.8549,
+   "detector": 3,
+   "band": 39,
+   "wavelength_bin": 30123,
+   "wing_flux_mjy": 1257.5854,
+   "outlier": false
+  },
+  {
+   "mjd": 60832.4775,
+   "flux": 0.8424,
+   "flux_err": 0.0169,
+   "wavelength": 0.9892,
+   "detector": 1,
+   "band": 12,
+   "wavelength_bin": 9997,
+   "wing_flux_mjy": 575.1399,
+   "outlier": false
+  },
+  {
+   "mjd": 60832.479,
+   "flux": 1.253,
+   "flux_err": 0.0251,
+   "wavelength": 1.0127,
+   "detector": 1,
+   "band": 13,
+   "wavelength_bin": 10002,
+   "wing_flux_mjy": 1450.4359,
+   "outlier": false
+  },
+  {
+   "mjd": 60834.7884,
+   "flux": 1.2511,
+   "flux_err": 0.0253,
+   "wavelength": 1.4047,
+   "detector": 2,
+   "band": 27,
+   "wavelength_bin": 20068,
+   "wing_flux_mjy": 292.3504,
+   "outlier": false
+  },
+  {
+   "mjd": 60834.7914,
+   "flux": 1.371,
+   "flux_err": 0.0276,
+   "wavelength": 1.4734,
+   "detector": 2,
+   "band": 29,
+   "wavelength_bin": 20077,
+   "wing_flux_mjy": 404.6856,
+   "outlier": false
+  },
+  {
+   "mjd": 60834.7929,
+   "flux": 1.0708,
+   "flux_err": 0.0215,
+   "wavelength": 1.5091,
+   "detector": 2,
+   "band": 30,
+   "wavelength_bin": 20082,
+   "wing_flux_mjy": 580.0075,
+   "outlier": false
+  },
+  {
+   "mjd": 60835.5358,
+   "flux": 1.3208,
+   "flux_err": 0.0265,
+   "wavelength": 1.5457,
+   "detector": 2,
+   "band": 31,
+   "wavelength_bin": 20087,
+   "wing_flux_mjy": 489.8225,
+   "outlier": false
+  },
+  {
+   "mjd": 60835.5373,
+   "flux": 2.0936,
+   "flux_err": 0.0419,
+   "wavelength": 1.5829,
+   "detector": 2,
+   "band": 32,
+   "wavelength_bin": 20092,
+   "wing_flux_mjy": 2167.1512,
+   "outlier": false
+  },
+  {
+   "mjd": 60835.5388,
+   "flux": 1.9994,
+   "flux_err": 0.0401,
+   "wavelength": 1.6212,
+   "detector": 2,
+   "band": 33,
+   "wavelength_bin": 20096,
+   "wing_flux_mjy": 1325.9702,
+   "outlier": false
+  },
+  {
+   "mjd": 60836.0127,
+   "flux": 2.8728,
+   "flux_err": 0.0576,
+   "wavelength": 1.1906,
+   "detector": 2,
+   "band": 20,
+   "wavelength_bin": 20034,
+   "wing_flux_mjy": 1208.7466,
+   "outlier": false
+  },
+  {
+   "mjd": 60836.0142,
+   "flux": 2.0896,
+   "flux_err": 0.0419,
+   "wavelength": 1.2192,
+   "detector": 2,
+   "band": 21,
+   "wavelength_bin": 20039,
+   "wing_flux_mjy": 861.02,
+   "outlier": false
+  },
+  {
+   "mjd": 60836.0157,
+   "flux": 1.8739,
+   "flux_err": 0.0382,
+   "wavelength": 1.2482,
+   "detector": 2,
+   "band": 22,
+   "wavelength_bin": 20044,
+   "wing_flux_mjy": 900.9669,
+   "outlier": false
+  },
+  {
+   "mjd": 60837.3026,
+   "flux": 1.776,
+   "flux_err": 0.0356,
+   "wavelength": 2.0396,
+   "detector": 3,
+   "band": 43,
+   "wavelength_bin": 30142,
+   "wing_flux_mjy": 1663.4763,
+   "outlier": false
+  },
+  {
+   "mjd": 60838.2535,
+   "flux": 1.0653,
+   "flux_err": 0.0213,
+   "wavelength": 1.8189,
+   "detector": 3,
+   "band": 38,
+   "wavelength_bin": 30119,
+   "wing_flux_mjy": 1043.5033,
+   "outlier": false
+  },
+  {
+   "mjd": 60838.2565,
+   "flux": 1.7241,
+   "flux_err": 0.0346,
+   "wavelength": 1.905,
+   "detector": 3,
+   "band": 40,
+   "wavelength_bin": 30129,
+   "wing_flux_mjy": 928.131,
+   "outlier": false
+  },
+  {
+   "mjd": 60838.258,
+   "flux": 1.6178,
+   "flux_err": 0.0324,
+   "wavelength": 1.949,
+   "detector": 3,
+   "band": 41,
+   "wavelength_bin": 30133,
+   "wing_flux_mjy": 1264.4082,
+   "outlier": false
+  },
+  {
+   "mjd": 60838.6609,
+   "flux": 1.595,
+   "flux_err": 0.0319,
+   "wavelength": 1.6597,
+   "detector": 3,
+   "band": 34,
+   "wavelength_bin": 30101,
+   "wing_flux_mjy": 2376.7137,
+   "outlier": false
+  },
+  {
+   "mjd": 60838.6624,
+   "flux": 1.0809,
+   "flux_err": 0.0217,
+   "wavelength": 1.6976,
+   "detector": 3,
+   "band": 35,
+   "wavelength_bin": 30106,
+   "wing_flux_mjy": 925.7584,
+   "outlier": false
+  },
+  {
+   "mjd": 60838.6654,
+   "flux": 1.8324,
+   "flux_err": 0.0367,
+   "wavelength": 1.777,
+   "detector": 3,
+   "band": 37,
+   "wavelength_bin": 30115,
+   "wing_flux_mjy": 1045.2704,
+   "outlier": false
+  },
+  {
+   "mjd": 60841.4495,
+   "flux": 1.7008,
+   "flux_err": 0.0342,
+   "wavelength": 1.3402,
+   "detector": 2,
+   "band": 25,
+   "wavelength_bin": 20058,
+   "wing_flux_mjy": 429.0945,
+   "outlier": false
+  },
+  {
+   "mjd": 60841.451,
+   "flux": 2.3982,
+   "flux_err": 0.0481,
+   "wavelength": 1.3723,
+   "detector": 2,
+   "band": 26,
+   "wavelength_bin": 20063,
+   "wing_flux_mjy": 783.575,
+   "outlier": false
+  },
+  {
+   "mjd": 60848.6492,
+   "flux": 3.4149,
+   "flux_err": 0.0684,
+   "wavelength": 1.1097,
+   "detector": 2,
+   "band": 17,
+   "wavelength_bin": 20020,
+   "wing_flux_mjy": 1136.4167,
+   "outlier": false
+  },
+  {
+   "mjd": 60848.6507,
+   "flux": 1.7457,
+   "flux_err": 0.035,
+   "wavelength": 1.1354,
+   "detector": 2,
+   "band": 18,
+   "wavelength_bin": 20025,
+   "wing_flux_mjy": 830.8884,
+   "outlier": false
+  },
+  {
+   "mjd": 60857.6839,
+   "flux": 1.8782,
+   "flux_err": 0.0378,
+   "wavelength": 1.1093,
+   "detector": 2,
+   "band": 17,
+   "wavelength_bin": 20020,
+   "wing_flux_mjy": 625.0375,
+   "outlier": false
+  },
+  {
+   "mjd": 60857.6854,
+   "flux": 1.9203,
+   "flux_err": 0.0385,
+   "wavelength": 1.1349,
+   "detector": 2,
+   "band": 18,
+   "wavelength_bin": 20025,
+   "wing_flux_mjy": 914.0284,
+   "outlier": false
+  },
+  {
+   "mjd": 60858.9052,
+   "flux": 1.8005,
+   "flux_err": 0.0361,
+   "wavelength": 1.1895,
+   "detector": 2,
+   "band": 20,
+   "wavelength_bin": 20034,
+   "wing_flux_mjy": 757.5738,
+   "outlier": false
+  },
+  {
+   "mjd": 60858.9067,
+   "flux": 2.6065,
+   "flux_err": 0.0522,
+   "wavelength": 1.218,
+   "detector": 2,
+   "band": 21,
+   "wavelength_bin": 20039,
+   "wing_flux_mjy": 1074.0084,
+   "outlier": false
+  },
+  {
+   "mjd": 60858.9082,
+   "flux": 1.9116,
+   "flux_err": 0.0384,
+   "wavelength": 1.2468,
+   "detector": 2,
+   "band": 22,
+   "wavelength_bin": 20044,
+   "wing_flux_mjy": 919.1122,
+   "outlier": false
+  },
+  {
+   "mjd": 60858.9097,
+   "flux": 2.5949,
+   "flux_err": 0.052,
+   "wavelength": 1.2766,
+   "detector": 2,
+   "band": 23,
+   "wavelength_bin": 20048,
+   "wing_flux_mjy": 1341.4407,
+   "outlier": false
+  },
+  {
+   "mjd": 60861.9643,
+   "flux": 0.6872,
+   "flux_err": 0.0138,
+   "wavelength": 1.0874,
+   "detector": 1,
+   "band": 16,
+   "wavelength_bin": 10016,
+   "wing_flux_mjy": 419.7628,
+   "outlier": false
+  },
+  {
+   "mjd": 60863.4577,
+   "flux": 1.4724,
+   "flux_err": 0.0295,
+   "wavelength": 0.963,
+   "detector": 1,
+   "band": 11,
+   "wavelength_bin": 9992,
+   "wing_flux_mjy": 970.8553,
+   "outlier": false
+  },
+  {
+   "mjd": 60870.7282,
+   "flux": 1.6781,
+   "flux_err": 0.0344,
+   "wavelength": 0.7445,
+   "detector": 1,
+   "band": 0,
+   "wavelength_bin": 9940,
+   "wing_flux_mjy": 127.3606,
+   "outlier": false
+  },
+  {
+   "mjd": 60870.7297,
+   "flux": 1.5155,
+   "flux_err": 0.0314,
+   "wavelength": 0.762,
+   "detector": 1,
+   "band": 0,
+   "wavelength_bin": 9945,
+   "wing_flux_mjy": 94.3407,
+   "outlier": false
+  },
+  {
+   "mjd": 60870.7312,
+   "flux": 1.8249,
+   "flux_err": 0.0378,
+   "wavelength": 0.7798,
+   "detector": 1,
+   "band": 1,
+   "wavelength_bin": 9950,
+   "wing_flux_mjy": 93.9328,
+   "outlier": false
+  },
+  {
+   "mjd": 60873.4444,
+   "flux": 1.5466,
+   "flux_err": 0.0313,
+   "wavelength": 0.856,
+   "detector": 1,
+   "band": 5,
+   "wavelength_bin": 9968,
+   "wing_flux_mjy": 208.0912,
+   "outlier": false
+  },
+  {
+   "mjd": 60873.4459,
+   "flux": 1.1641,
+   "flux_err": 0.0236,
+   "wavelength": 0.8766,
+   "detector": 1,
+   "band": 6,
+   "wavelength_bin": 9973,
+   "wing_flux_mjy": 262.8975,
+   "outlier": false
+  },
+  {
+   "mjd": 60873.4474,
+   "flux": 1.2986,
+   "flux_err": 0.0261,
+   "wavelength": 0.8973,
+   "detector": 1,
+   "band": 7,
+   "wavelength_bin": 9978,
+   "wing_flux_mjy": 503.811,
+   "outlier": false
+  },
+  {
+   "mjd": 60873.4489,
+   "flux": 1.717,
+   "flux_err": 0.0344,
+   "wavelength": 0.9188,
+   "detector": 1,
+   "band": 9,
+   "wavelength_bin": 9983,
+   "wing_flux_mjy": 773.022,
+   "outlier": false
+  },
+  {
+   "mjd": 60874.6672,
+   "flux": 1.5048,
+   "flux_err": 0.0307,
+   "wavelength": 0.7983,
+   "detector": 1,
+   "band": 2,
+   "wavelength_bin": 9954,
+   "wing_flux_mjy": 154.0631,
+   "outlier": false
+  },
+  {
+   "mjd": 60874.6687,
+   "flux": 1.5541,
+   "flux_err": 0.0313,
+   "wavelength": 0.8171,
+   "detector": 1,
+   "band": 3,
+   "wavelength_bin": 9959,
+   "wing_flux_mjy": 315.3838,
+   "outlier": false
+  },
+  {
+   "mjd": 60874.6702,
+   "flux": 1.5457,
+   "flux_err": 0.0313,
+   "wavelength": 0.8365,
+   "detector": 1,
+   "band": 4,
+   "wavelength_bin": 9964,
+   "wing_flux_mjy": 229.823,
+   "outlier": false
+  },
+  {
+   "mjd": 60874.8705,
+   "flux": 0.934,
+   "flux_err": 0.0188,
+   "wavelength": 0.9406,
+   "detector": 1,
+   "band": 10,
+   "wavelength_bin": 9987,
+   "wing_flux_mjy": 311.2228,
+   "outlier": false
+  },
+  {
+   "mjd": 60876.7748,
+   "flux": 1.3307,
+   "flux_err": 0.0267,
+   "wavelength": 1.0961,
+   "detector": 1,
+   "band": 16,
+   "wavelength_bin": 10018,
+   "wing_flux_mjy": 1366.9735,
+   "outlier": false
+  },
+  {
+   "mjd": 60878.6089,
+   "flux": 1.392,
+   "flux_err": 0.0279,
+   "wavelength": 1.0705,
+   "detector": 1,
+   "band": 15,
+   "wavelength_bin": 10013,
+   "wing_flux_mjy": 1399.5433,
+   "outlier": false
+  },
+  {
+   "mjd": 60965.6152,
+   "flux": 0.5772,
+   "flux_err": 0.0134,
+   "wavelength": 0.7808,
+   "detector": 1,
+   "band": 1,
+   "wavelength_bin": 9950,
+   "wing_flux_mjy": 29.7125,
+   "outlier": false
+  },
+  {
+   "mjd": 60965.6182,
+   "flux": 0.5564,
+   "flux_err": 0.0114,
+   "wavelength": 0.8184,
+   "detector": 1,
+   "band": 3,
+   "wavelength_bin": 9959,
+   "wing_flux_mjy": 112.9163,
+   "outlier": false
+  },
+  {
+   "mjd": 60965.6197,
+   "flux": 0.5698,
+   "flux_err": 0.0118,
+   "wavelength": 0.8378,
+   "detector": 1,
+   "band": 4,
+   "wavelength_bin": 9964,
+   "wing_flux_mjy": 84.7267,
+   "outlier": false
+  },
+  {
+   "mjd": 60966.9721,
+   "flux": 0.7476,
+   "flux_err": 0.0152,
+   "wavelength": 0.8777,
+   "detector": 1,
+   "band": 6,
+   "wavelength_bin": 9973,
+   "wing_flux_mjy": 168.8357,
+   "outlier": false
+  },
+  {
+   "mjd": 60967.0391,
+   "flux": 0.67,
+   "flux_err": 0.0135,
+   "wavelength": 0.9197,
+   "detector": 1,
+   "band": 9,
+   "wavelength_bin": 9983,
+   "wing_flux_mjy": 301.6512,
+   "outlier": false
+  },
+  {
+   "mjd": 60967.0405,
+   "flux": 0.7108,
+   "flux_err": 0.0144,
+   "wavelength": 0.9416,
+   "detector": 1,
+   "band": 10,
+   "wavelength_bin": 9987,
+   "wing_flux_mjy": 236.8499,
+   "outlier": false
+  },
+  {
+   "mjd": 60967.0435,
+   "flux": 0.9014,
+   "flux_err": 0.0181,
+   "wavelength": 0.9869,
+   "detector": 1,
+   "band": 12,
+   "wavelength_bin": 9997,
+   "wing_flux_mjy": 615.4278,
+   "outlier": false
+  },
+  {
+   "mjd": 60967.4481,
+   "flux": 0.6042,
+   "flux_err": 0.0121,
+   "wavelength": 1.0101,
+   "detector": 1,
+   "band": 13,
+   "wavelength_bin": 10002,
+   "wing_flux_mjy": 699.3679,
+   "outlier": false
+  },
+  {
+   "mjd": 60967.4511,
+   "flux": 1.0523,
+   "flux_err": 0.0211,
+   "wavelength": 1.0588,
+   "detector": 1,
+   "band": 15,
+   "wavelength_bin": 10011,
+   "wing_flux_mjy": 966.4532,
+   "outlier": false
+  },
+  {
+   "mjd": 60967.4526,
+   "flux": 1.431,
+   "flux_err": 0.0287,
+   "wavelength": 1.0841,
+   "detector": 1,
+   "band": 16,
+   "wavelength_bin": 10016,
+   "wing_flux_mjy": 874.1257,
+   "outlier": false
+  },
+  {
+   "mjd": 60997.7334,
+   "flux": 0.7545,
+   "flux_err": 0.0153,
+   "wavelength": 1.4096,
+   "detector": 2,
+   "band": 27,
+   "wavelength_bin": 20068,
+   "wing_flux_mjy": 176.3129,
+   "outlier": false
+  },
+  {
+   "mjd": 61007.5842,
+   "flux": 0.7882,
+   "flux_err": 0.0158,
+   "wavelength": 1.5886,
+   "detector": 2,
+   "band": 32,
+   "wavelength_bin": 20092,
+   "wing_flux_mjy": 815.9104,
+   "outlier": false
+  },
+  {
+   "mjd": 61009.4839,
+   "flux": 1.0609,
+   "flux_err": 0.0214,
+   "wavelength": 1.108,
+   "detector": 2,
+   "band": 17,
+   "wavelength_bin": 20020,
+   "wing_flux_mjy": 353.0685,
+   "outlier": false
+  },
+  {
+   "mjd": 61009.4854,
+   "flux": 1.3532,
+   "flux_err": 0.0272,
+   "wavelength": 1.1339,
+   "detector": 2,
+   "band": 18,
+   "wavelength_bin": 20025,
+   "wing_flux_mjy": 644.1109,
+   "outlier": false
+  },
+  {
+   "mjd": 61010.0248,
+   "flux": 0.8586,
+   "flux_err": 0.0173,
+   "wavelength": 1.1889,
+   "detector": 2,
+   "band": 20,
+   "wavelength_bin": 20034,
+   "wing_flux_mjy": 361.2651,
+   "outlier": false
+  },
+  {
+   "mjd": 61010.0262,
+   "flux": 0.768,
+   "flux_err": 0.0155,
+   "wavelength": 1.2174,
+   "detector": 2,
+   "band": 21,
+   "wavelength_bin": 20039,
+   "wing_flux_mjy": 316.4622,
+   "outlier": false
+  },
+  {
+   "mjd": 61010.0277,
+   "flux": 1.172,
+   "flux_err": 0.0235,
+   "wavelength": 1.2465,
+   "detector": 2,
+   "band": 22,
+   "wavelength_bin": 20044,
+   "wing_flux_mjy": 563.5212,
+   "outlier": false
+  },
+  {
+   "mjd": 61011.2463,
+   "flux": 0.9452,
+   "flux_err": 0.019,
+   "wavelength": 1.276,
+   "detector": 2,
+   "band": 23,
+   "wavelength_bin": 20048,
+   "wing_flux_mjy": 488.6444,
+   "outlier": false
+  },
+  {
+   "mjd": 61011.2493,
+   "flux": 1.2947,
+   "flux_err": 0.0261,
+   "wavelength": 1.3374,
+   "detector": 2,
+   "band": 25,
+   "wavelength_bin": 20058,
+   "wing_flux_mjy": 326.6325,
+   "outlier": false
+  },
+  {
+   "mjd": 61011.2508,
+   "flux": 0.9158,
+   "flux_err": 0.0185,
+   "wavelength": 1.3694,
+   "detector": 2,
+   "band": 26,
+   "wavelength_bin": 20063,
+   "wing_flux_mjy": 299.2334,
+   "outlier": false
+  },
+  {
+   "mjd": 61019.8727,
+   "flux": 2.1298,
+   "flux_err": 0.0428,
+   "wavelength": 1.4057,
+   "detector": 2,
+   "band": 27,
+   "wavelength_bin": 20068,
+   "wing_flux_mjy": 497.7045,
+   "outlier": false
+  },
+  {
+   "mjd": 61019.8757,
+   "flux": 1.8143,
+   "flux_err": 0.0365,
+   "wavelength": 1.4739,
+   "detector": 2,
+   "band": 29,
+   "wavelength_bin": 20077,
+   "wing_flux_mjy": 535.5291,
+   "outlier": false
+  },
+  {
+   "mjd": 61019.8772,
+   "flux": 2.3208,
+   "flux_err": 0.0465,
+   "wavelength": 1.5098,
+   "detector": 2,
+   "band": 30,
+   "wavelength_bin": 20082,
+   "wing_flux_mjy": 1257.1417,
+   "outlier": false
+  },
+  {
+   "mjd": 61021.2309,
+   "flux": 0.899,
+   "flux_err": 0.0181,
+   "wavelength": 1.1051,
+   "detector": 2,
+   "band": 17,
+   "wavelength_bin": 20020,
+   "wing_flux_mjy": 299.1607,
+   "outlier": false
+  },
+  {
+   "mjd": 61021.3644,
+   "flux": 1.2831,
+   "flux_err": 0.0258,
+   "wavelength": 1.1851,
+   "detector": 2,
+   "band": 20,
+   "wavelength_bin": 20034,
+   "wing_flux_mjy": 539.8766,
+   "outlier": false
+  },
+  {
+   "mjd": 61021.4985,
+   "flux": 1.2524,
+   "flux_err": 0.0251,
+   "wavelength": 1.2714,
+   "detector": 2,
+   "band": 23,
+   "wavelength_bin": 20048,
+   "wing_flux_mjy": 647.4094,
+   "outlier": false
+  },
+  {
+   "mjd": 61021.6378,
+   "flux": 1.3034,
+   "flux_err": 0.0261,
+   "wavelength": 1.6207,
+   "detector": 2,
+   "band": 33,
+   "wavelength_bin": 20096,
+   "wing_flux_mjy": 864.4132,
+   "outlier": false
+  },
+  {
+   "mjd": 61022.7892,
+   "flux": 2.0166,
+   "flux_err": 0.0405,
+   "wavelength": 1.5461,
+   "detector": 2,
+   "band": 31,
+   "wavelength_bin": 20087,
+   "wing_flux_mjy": 747.9011,
+   "outlier": false
+  },
+  {
+   "mjd": 61022.7907,
+   "flux": 1.6291,
+   "flux_err": 0.0326,
+   "wavelength": 1.5833,
+   "detector": 2,
+   "band": 32,
+   "wavelength_bin": 20092,
+   "wing_flux_mjy": 1686.3451,
+   "outlier": false
+  },
+  {
+   "mjd": 61035.2217,
+   "flux": 1.2571,
+   "flux_err": 0.0252,
+   "wavelength": 1.7186,
+   "detector": 3,
+   "band": 36,
+   "wavelength_bin": 30108,
+   "wing_flux_mjy": 1590.3506,
+   "outlier": false
+  },
+  {
+   "mjd": 61035.5567,
+   "flux": 0.8451,
+   "flux_err": 0.0169,
+   "wavelength": 1.7581,
+   "detector": 3,
+   "band": 37,
+   "wavelength_bin": 30113,
+   "wing_flux_mjy": 908.6933,
+   "outlier": false
+  },
+  {
+   "mjd": 61035.5596,
+   "flux": 1.0875,
+   "flux_err": 0.0218,
+   "wavelength": 1.8414,
+   "detector": 3,
+   "band": 39,
+   "wavelength_bin": 30122,
+   "wing_flux_mjy": 602.5345,
+   "outlier": false
+  },
+  {
+   "mjd": 61039.1527,
+   "flux": 1.1095,
+   "flux_err": 0.0222,
+   "wavelength": 1.895,
+   "detector": 3,
+   "band": 40,
+   "wavelength_bin": 30128,
+   "wing_flux_mjy": 1067.0218,
+   "outlier": false
+  },
+  {
+   "mjd": 61039.1542,
+   "flux": 1.9862,
+   "flux_err": 0.0398,
+   "wavelength": 1.9388,
+   "detector": 3,
+   "band": 41,
+   "wavelength_bin": 30132,
+   "wing_flux_mjy": 1475.2498,
+   "outlier": false
+  },
+  {
+   "mjd": 61039.1557,
+   "flux": 1.3168,
+   "flux_err": 0.0264,
+   "wavelength": 1.9837,
+   "detector": 3,
+   "band": 42,
+   "wavelength_bin": 30137,
+   "wing_flux_mjy": 1123.4564,
+   "outlier": false
+  },
+  {
+   "mjd": 61039.8996,
+   "flux": 0.7269,
+   "flux_err": 0.0146,
+   "wavelength": 1.928,
+   "detector": 3,
+   "band": 41,
+   "wavelength_bin": 30131,
+   "wing_flux_mjy": 592.1703,
+   "outlier": false
+  },
+  {
+   "mjd": 61040.5823,
+   "flux": 1.0362,
+   "flux_err": 0.0208,
+   "wavelength": 2.1741,
+   "detector": 3,
+   "band": 46,
+   "wavelength_bin": 30155,
+   "wing_flux_mjy": 1779.2196,
+   "outlier": false
+  },
+  {
+   "mjd": 61040.5838,
+   "flux": 1.1122,
+   "flux_err": 0.0223,
+   "wavelength": 2.2248,
+   "detector": 3,
+   "band": 47,
+   "wavelength_bin": 30160,
+   "wing_flux_mjy": 1629.8474,
+   "outlier": false
+  },
+  {
+   "mjd": 61041.1897,
+   "flux": 0.8692,
+   "flux_err": 0.0174,
+   "wavelength": 2.2759,
+   "detector": 3,
+   "band": 48,
+   "wavelength_bin": 30164,
+   "wing_flux_mjy": 1026.3679,
+   "outlier": false
+  },
+  {
+   "mjd": 61041.1912,
+   "flux": 1.4396,
+   "flux_err": 0.0288,
+   "wavelength": 2.3282,
+   "detector": 3,
+   "band": 49,
+   "wavelength_bin": 30169,
+   "wing_flux_mjy": 1748.2683,
+   "outlier": false
+  },
+  {
+   "mjd": 61043.568,
+   "flux": 2.0019,
+   "flux_err": 0.0401,
+   "wavelength": 2.0764,
+   "detector": 3,
+   "band": 44,
+   "wavelength_bin": 30146,
+   "wing_flux_mjy": 2433.4382,
+   "outlier": false
+  },
+  {
+   "mjd": 61043.5695,
+   "flux": 1.9259,
+   "flux_err": 0.0386,
+   "wavelength": 2.1248,
+   "detector": 3,
+   "band": 45,
+   "wavelength_bin": 30151,
+   "wing_flux_mjy": 1948.1042,
+   "outlier": false
+  },
+  {
+   "mjd": 61043.571,
+   "flux": 1.1917,
+   "flux_err": 0.0239,
+   "wavelength": 2.1743,
+   "detector": 3,
+   "band": 46,
+   "wavelength_bin": 30155,
+   "wing_flux_mjy": 2046.2494,
+   "outlier": false
+  },
+  {
+   "mjd": 61053.4123,
+   "flux": 1.3661,
+   "flux_err": 0.0274,
+   "wavelength": 1.6709,
+   "detector": 3,
+   "band": 35,
+   "wavelength_bin": 30102,
+   "wing_flux_mjy": 1035.4891,
+   "outlier": false
+  },
+  {
+   "mjd": 61152.3317,
+   "flux": 1.0638,
+   "flux_err": 0.0213,
+   "wavelength": 1.8979,
+   "detector": 3,
+   "band": 40,
+   "wavelength_bin": 30128,
+   "wing_flux_mjy": 1022.9949,
+   "outlier": false
+  },
+  {
+   "mjd": 61152.3332,
+   "flux": 0.5862,
+   "flux_err": 0.0118,
+   "wavelength": 1.9415,
+   "detector": 3,
+   "band": 41,
+   "wavelength_bin": 30133,
+   "wing_flux_mjy": 458.1245,
+   "outlier": false
+  },
+  {
+   "mjd": 61152.3347,
+   "flux": 0.6654,
+   "flux_err": 0.0134,
+   "wavelength": 1.9859,
+   "detector": 3,
+   "band": 42,
+   "wavelength_bin": 30137,
+   "wing_flux_mjy": 567.6816,
+   "outlier": false
+  },
+  {
+   "mjd": 61152.8095,
+   "flux": 0.5165,
+   "flux_err": 0.0104,
+   "wavelength": 2.0784,
+   "detector": 3,
+   "band": 44,
+   "wavelength_bin": 30146,
+   "wing_flux_mjy": 627.812,
+   "outlier": false
+  },
+  {
+   "mjd": 61152.8109,
+   "flux": 0.5876,
+   "flux_err": 0.0118,
+   "wavelength": 2.1268,
+   "detector": 3,
+   "band": 45,
+   "wavelength_bin": 30151,
+   "wing_flux_mjy": 594.3899,
+   "outlier": false
+  },
+  {
+   "mjd": 61152.8124,
+   "flux": 0.9136,
+   "flux_err": 0.0183,
+   "wavelength": 2.1756,
+   "detector": 3,
+   "band": 46,
+   "wavelength_bin": 30155,
+   "wing_flux_mjy": 1568.6489,
+   "outlier": false
+  },
+  {
+   "mjd": 61152.8139,
+   "flux": 0.8209,
+   "flux_err": 0.0164,
+   "wavelength": 2.2259,
+   "detector": 3,
+   "band": 47,
+   "wavelength_bin": 30160,
+   "wing_flux_mjy": 1202.8506,
+   "outlier": false
+  },
+  {
+   "mjd": 61154.6391,
+   "flux": 0.8686,
+   "flux_err": 0.0174,
+   "wavelength": 2.2763,
+   "detector": 3,
+   "band": 48,
+   "wavelength_bin": 30164,
+   "wing_flux_mjy": 1025.6315,
+   "outlier": false
+  },
+  {
+   "mjd": 61154.6406,
+   "flux": 0.6104,
+   "flux_err": 0.0122,
+   "wavelength": 2.3286,
+   "detector": 3,
+   "band": 49,
+   "wavelength_bin": 30169,
+   "wing_flux_mjy": 741.3016,
+   "outlier": false
+  },
+  {
+   "mjd": 61166.2539,
+   "flux": 0.6026,
+   "flux_err": 0.0121,
+   "wavelength": 1.6552,
+   "detector": 3,
+   "band": 34,
+   "wavelength_bin": 30101,
+   "wing_flux_mjy": 898.0036,
+   "outlier": false
+  },
+  {
+   "mjd": 61166.2554,
+   "flux": 0.6842,
+   "flux_err": 0.0137,
+   "wavelength": 1.693,
+   "detector": 3,
+   "band": 35,
+   "wavelength_bin": 30105,
+   "wing_flux_mjy": 1782.31,
+   "outlier": false
+  },
+  {
+   "mjd": 61169.9896,
+   "flux": 0.5543,
+   "flux_err": 0.0111,
+   "wavelength": 1.8124,
+   "detector": 3,
+   "band": 38,
+   "wavelength_bin": 30119,
+   "wing_flux_mjy": 542.9864,
+   "outlier": false
+  },
+  {
+   "mjd": 61170.8012,
+   "flux": 0.4265,
+   "flux_err": 0.0086,
+   "wavelength": 1.8547,
+   "detector": 3,
+   "band": 39,
+   "wavelength_bin": 30123,
+   "wing_flux_mjy": 397.6507,
+   "outlier": false
+  },
+  {
+   "mjd": 61170.8027,
+   "flux": 0.4369,
+   "flux_err": 0.0088,
+   "wavelength": 1.8975,
+   "detector": 3,
+   "band": 40,
+   "wavelength_bin": 30128,
+   "wing_flux_mjy": 420.1698,
+   "outlier": false
+  },
+  {
+   "mjd": 61170.938,
+   "flux": 0.3772,
+   "flux_err": 0.0076,
+   "wavelength": 1.9411,
+   "detector": 3,
+   "band": 41,
+   "wavelength_bin": 30132,
+   "wing_flux_mjy": 280.1956,
+   "outlier": false
+  },
+  {
+   "mjd": 61171.2757,
+   "flux": 0.4529,
+   "flux_err": 0.0091,
+   "wavelength": 2.0313,
+   "detector": 3,
+   "band": 43,
+   "wavelength_bin": 30142,
+   "wing_flux_mjy": 424.218,
+   "outlier": false
+  },
+  {
+   "mjd": 61171.2772,
+   "flux": 0.5271,
+   "flux_err": 0.0106,
+   "wavelength": 2.0779,
+   "detector": 3,
+   "band": 44,
+   "wavelength_bin": 30146,
+   "wing_flux_mjy": 640.6794,
+   "outlier": false
+  },
+  {
+   "mjd": 61171.2787,
+   "flux": 0.4814,
+   "flux_err": 0.0097,
+   "wavelength": 2.1264,
+   "detector": 3,
+   "band": 45,
+   "wavelength_bin": 30151,
+   "wing_flux_mjy": 486.9875,
+   "outlier": false
+  },
+  {
+   "mjd": 61173.2449,
+   "flux": 0.6288,
+   "flux_err": 0.0126,
+   "wavelength": 2.1751,
+   "detector": 3,
+   "band": 46,
+   "wavelength_bin": 30155,
+   "wing_flux_mjy": 1079.6643,
+   "outlier": false
+  },
+  {
+   "mjd": 61173.2463,
+   "flux": 0.57,
+   "flux_err": 0.0114,
+   "wavelength": 2.2254,
+   "detector": 3,
+   "band": 47,
+   "wavelength_bin": 30160,
+   "wing_flux_mjy": 835.3284,
+   "outlier": false
+  },
+  {
+   "mjd": 61173.2479,
+   "flux": 0.6811,
+   "flux_err": 0.0137,
+   "wavelength": 2.276,
+   "detector": 3,
+   "band": 48,
+   "wavelength_bin": 30164,
+   "wing_flux_mjy": 804.2719,
+   "outlier": false
+  },
+  {
+   "mjd": 61176.3674,
+   "flux": 0.5579,
+   "flux_err": 0.0112,
+   "wavelength": 1.7215,
+   "detector": 3,
+   "band": 36,
+   "wavelength_bin": 30108,
+   "wing_flux_mjy": 705.7566,
+   "outlier": false
+  },
+  {
+   "mjd": 61182.1332,
+   "flux": 0.836,
+   "flux_err": 0.0168,
+   "wavelength": 1.761,
+   "detector": 3,
+   "band": 37,
+   "wavelength_bin": 30113,
+   "wing_flux_mjy": 898.9201,
+   "outlier": false
+  },
+  {
+   "mjd": 61182.1362,
+   "flux": 0.6501,
+   "flux_err": 0.0131,
+   "wavelength": 1.8438,
+   "detector": 3,
+   "band": 39,
+   "wavelength_bin": 30122,
+   "wing_flux_mjy": 360.175,
+   "outlier": false
+  },
+  {
+   "mjd": 61183.4912,
+   "flux": 1.0391,
+   "flux_err": 0.0208,
+   "wavelength": 1.93,
+   "detector": 3,
+   "band": 41,
+   "wavelength_bin": 30131,
+   "wing_flux_mjy": 846.5604,
+   "outlier": false
+  },
+  {
+   "mjd": 61199.5804,
+   "flux": 0.726,
+   "flux_err": 0.0146,
+   "wavelength": 1.6653,
+   "detector": 3,
+   "band": 34,
+   "wavelength_bin": 30102,
+   "wing_flux_mjy": 550.2961,
+   "outlier": false
+  },
+  {
+   "mjd": 61199.5819,
+   "flux": 0.8341,
+   "flux_err": 0.0167,
+   "wavelength": 1.7033,
+   "detector": 3,
+   "band": 35,
+   "wavelength_bin": 30106,
+   "wing_flux_mjy": 714.3388,
+   "outlier": false
+  },
+  {
+   "mjd": 61199.5849,
+   "flux": 0.49,
+   "flux_err": 0.0099,
+   "wavelength": 1.7829,
+   "detector": 3,
+   "band": 37,
+   "wavelength_bin": 30115,
+   "wing_flux_mjy": 279.5431,
+   "outlier": false
+  },
+  {
+   "mjd": 61203.8601,
+   "flux": 0.543,
+   "flux_err": 0.0109,
+   "wavelength": 1.9113,
+   "detector": 3,
+   "band": 40,
+   "wavelength_bin": 30129,
+   "wing_flux_mjy": 292.3228,
+   "outlier": false
+  },
+  {
+   "mjd": 61227.4882,
+   "flux": 0.5993,
+   "flux_err": 0.012,
+   "wavelength": 1.0569,
+   "detector": 1,
+   "band": 15,
+   "wavelength_bin": 10011,
+   "wing_flux_mjy": 550.4385,
+   "outlier": false
+  },
+  {
+   "mjd": 61229.7263,
+   "flux": 0.836,
+   "flux_err": 0.0168,
+   "wavelength": 0.9619,
+   "detector": 1,
+   "band": 11,
+   "wavelength_bin": 9992,
+   "wing_flux_mjy": 551.2276,
+   "outlier": false
+  },
+  {
+   "mjd": 61230.9471,
+   "flux": 1.3926,
+   "flux_err": 0.028,
+   "wavelength": 0.9396,
+   "detector": 1,
+   "band": 10,
+   "wavelength_bin": 9987,
+   "wing_flux_mjy": 464.0628,
+   "outlier": false
+  },
+  {
+   "mjd": 61230.9486,
+   "flux": 0.842,
+   "flux_err": 0.0169,
+   "wavelength": 0.9619,
+   "detector": 1,
+   "band": 11,
+   "wavelength_bin": 9992,
+   "wing_flux_mjy": 555.2347,
+   "outlier": false
+  },
+  {
+   "mjd": 61232.3733,
+   "flux": 0.7064,
+   "flux_err": 0.0153,
+   "wavelength": 0.7449,
+   "detector": 1,
+   "band": 0,
+   "wavelength_bin": 9940,
+   "wing_flux_mjy": 53.6147,
+   "outlier": false
+  },
+  {
+   "mjd": 61232.3748,
+   "flux": 0.7901,
+   "flux_err": 0.0174,
+   "wavelength": 0.7624,
+   "detector": 1,
+   "band": 0,
+   "wavelength_bin": 9945,
+   "wing_flux_mjy": 49.182,
+   "outlier": false
+  },
+  {
+   "mjd": 61232.3763,
+   "flux": 0.8203,
+   "flux_err": 0.018,
+   "wavelength": 0.7802,
+   "detector": 1,
+   "band": 1,
+   "wavelength_bin": 9950,
+   "wing_flux_mjy": 42.2267,
+   "outlier": false
+  },
+  {
+   "mjd": 61232.442,
+   "flux": 0.9436,
+   "flux_err": 0.019,
+   "wavelength": 0.8978,
+   "detector": 1,
+   "band": 7,
+   "wavelength_bin": 9978,
+   "wing_flux_mjy": 366.0931,
+   "outlier": false
+  },
+  {
+   "mjd": 61232.4435,
+   "flux": 0.7992,
+   "flux_err": 0.0161,
+   "wavelength": 0.9193,
+   "detector": 1,
+   "band": 9,
+   "wavelength_bin": 9983,
+   "wing_flux_mjy": 359.8126,
+   "outlier": false
+  },
+  {
+   "mjd": 61232.445,
+   "flux": 0.8672,
+   "flux_err": 0.0175,
+   "wavelength": 0.9412,
+   "detector": 1,
+   "band": 10,
+   "wavelength_bin": 9987,
+   "wing_flux_mjy": 288.9684,
+   "outlier": false
+  },
+  {
+   "mjd": 61234.0696,
+   "flux": 0.8274,
+   "flux_err": 0.0172,
+   "wavelength": 0.7987,
+   "detector": 1,
+   "band": 2,
+   "wavelength_bin": 9954,
+   "wing_flux_mjy": 84.7051,
+   "outlier": false
+  },
+  {
+   "mjd": 61234.071,
+   "flux": 1.0869,
+   "flux_err": 0.022,
+   "wavelength": 0.8175,
+   "detector": 1,
+   "band": 3,
+   "wavelength_bin": 9959,
+   "wing_flux_mjy": 220.5703,
+   "outlier": false
+  },
+  {
+   "mjd": 61234.0725,
+   "flux": 1.0624,
+   "flux_err": 0.0216,
+   "wavelength": 0.837,
+   "detector": 1,
+   "band": 4,
+   "wavelength_bin": 9964,
+   "wing_flux_mjy": 157.9721,
+   "outlier": false
+  },
+  {
+   "mjd": 61234.074,
+   "flux": 0.8023,
+   "flux_err": 0.0165,
+   "wavelength": 0.8566,
+   "detector": 1,
+   "band": 5,
+   "wavelength_bin": 9968,
+   "wing_flux_mjy": 107.9381,
+   "outlier": false
+  },
+  {
+   "mjd": 61235.9039,
+   "flux": 0.8731,
+   "flux_err": 0.0175,
+   "wavelength": 0.9636,
+   "detector": 1,
+   "band": 11,
+   "wavelength_bin": 9992,
+   "wing_flux_mjy": 575.6856,
+   "outlier": false
+  },
+  {
+   "mjd": 61236.2418,
+   "flux": 1.0988,
+   "flux_err": 0.0222,
+   "wavelength": 0.8771,
+   "detector": 1,
+   "band": 6,
+   "wavelength_bin": 9973,
+   "wing_flux_mjy": 248.1542,
+   "outlier": false
+  },
+  {
+   "mjd": 61237.8709,
+   "flux": 0.9398,
+   "flux_err": 0.0188,
+   "wavelength": 1.0712,
+   "detector": 1,
+   "band": 15,
+   "wavelength_bin": 10013,
+   "wing_flux_mjy": 944.9252,
+   "outlier": false
+  },
+  {
+   "mjd": 61237.8724,
+   "flux": 0.98,
+   "flux_err": 0.0196,
+   "wavelength": 1.0968,
+   "detector": 1,
+   "band": 16,
+   "wavelength_bin": 10018,
+   "wing_flux_mjy": 1006.698,
+   "outlier": false
+  }
+ ],
+ "period_days_fit": 206.6,
+ "period_err_days": 8.7,
+ "period_constrained": true,
+ "period_days_literature": 245.0,
+ "period_days_by_binning": [
+  {
+   "bin_frac": 0.002,
+   "n_points": 68,
+   "period_days": 218.2,
+   "period_err_days": 10.1,
+   "reduced_chi2": 171.1
+  },
+  {
+   "bin_frac": 0.005,
+   "n_points": 138,
+   "period_days": 206.6,
+   "period_err_days": 8.7,
+   "reduced_chi2": 279.5
+  },
+  {
+   "bin_frac": 0.01,
+   "n_points": 183,
+   "period_days": 220.6,
+   "period_err_days": 10.0,
+   "reduced_chi2": 330.0
+  },
+  {
+   "bin_frac": 0.02,
+   "n_points": 233,
+   "period_days": 287.2,
+   "period_err_days": 13.9,
+   "reduced_chi2": 377.5
+  }
+ ],
+ "delta_chi2_at_literature_period": 7.27,
+ "amplitude_mag_by_detector": {
+  "1": 0.746,
+  "2": 1.601,
+  "3": 1.18
+ },
+ "chi2_constant": 51460.0,
+ "chi2_best": 21524.6,
+ "dof": 77,
+ "other_minima": [
+  {
+   "period_days": 206.6,
+   "delta_chi2_scaled": 0.0
+  },
+  {
+   "period_days": 455.2,
+   "delta_chi2_scaled": 11.36
+  },
+  {
+   "period_days": 96.9,
+   "delta_chi2_scaled": 13.28
+  },
+  {
+   "period_days": 74.6,
+   "delta_chi2_scaled": 33.0
+  },
+  {
+   "period_days": 62.0,
+   "delta_chi2_scaled": 52.14
+  },
+  {
+   "period_days": 131.9,
+   "delta_chi2_scaled": 52.91
+  }
+ ],
+ "baseline_days": 425.9,
+ "n_points": 138,
+ "n_wavelength_bins": 55,
+ "mjd_range": [
+  60811.96,
+  61237.87
+ ],
+ "periodogram": [
+  {
+   "period_days": 60.0,
+   "delta_chi2_scaled": 69.28
+  },
+  {
+   "period_days": 60.65,
+   "delta_chi2_scaled": 60.1
+  },
+  {
+   "period_days": 61.3,
+   "delta_chi2_scaled": 53.66
+  },
+  {
+   "period_days": 61.96,
+   "delta_chi2_scaled": 52.14
+  },
+  {
+   "period_days": 62.63,
+   "delta_chi2_scaled": 53.05
+  },
+  {
+   "period_days": 63.31,
+   "delta_chi2_scaled": 55.18
+  },
+  {
+   "period_days": 63.99,
+   "delta_chi2_scaled": 57.95
+  },
+  {
+   "period_days": 64.68,
+   "delta_chi2_scaled": 60.98
+  },
+  {
+   "period_days": 65.38,
+   "delta_chi2_scaled": 63.88
+  },
+  {
+   "period_days": 66.09,
+   "delta_chi2_scaled": 66.12
+  },
+  {
+   "period_days": 66.8,
+   "delta_chi2_scaled": 66.95
+  },
+  {
+   "period_days": 67.52,
+   "delta_chi2_scaled": 65.76
+  },
+  {
+   "period_days": 68.25,
+   "delta_chi2_scaled": 62.49
+  },
+  {
+   "period_days": 68.98,
+   "delta_chi2_scaled": 57.94
+  },
+  {
+   "period_days": 69.73,
+   "delta_chi2_scaled": 53.3
+  },
+  {
+   "period_days": 70.48,
+   "delta_chi2_scaled": 49.57
+  },
+  {
+   "period_days": 71.24,
+   "delta_chi2_scaled": 47.69
+  },
+  {
+   "period_days": 72.01,
+   "delta_chi2_scaled": 46.84
+  },
+  {
+   "period_days": 72.79,
+   "delta_chi2_scaled": 41.68
+  },
+  {
+   "period_days": 73.57,
+   "delta_chi2_scaled": 35.65
+  },
+  {
+   "period_days": 74.37,
+   "delta_chi2_scaled": 33.11
+  },
+  {
+   "period_days": 75.17,
+   "delta_chi2_scaled": 33.7
+  },
+  {
+   "period_days": 75.98,
+   "delta_chi2_scaled": 36.51
+  },
+  {
+   "period_days": 76.8,
+   "delta_chi2_scaled": 40.82
+  },
+  {
+   "period_days": 77.63,
+   "delta_chi2_scaled": 45.96
+  },
+  {
+   "period_days": 78.47,
+   "delta_chi2_scaled": 51.37
+  },
+  {
+   "period_days": 79.31,
+   "delta_chi2_scaled": 56.58
+  },
+  {
+   "period_days": 80.17,
+   "delta_chi2_scaled": 61.29
+  },
+  {
+   "period_days": 81.03,
+   "delta_chi2_scaled": 65.44
+  },
+  {
+   "period_days": 81.91,
+   "delta_chi2_scaled": 69.02
+  },
+  {
+   "period_days": 82.79,
+   "delta_chi2_scaled": 71.63
+  },
+  {
+   "period_days": 83.69,
+   "delta_chi2_scaled": 72.49
+  },
+  {
+   "period_days": 84.59,
+   "delta_chi2_scaled": 70.89
+  },
+  {
+   "period_days": 85.5,
+   "delta_chi2_scaled": 66.7
+  },
+  {
+   "period_days": 86.42,
+   "delta_chi2_scaled": 60.44
+  },
+  {
+   "period_days": 87.36,
+   "delta_chi2_scaled": 53.12
+  },
+  {
+   "period_days": 88.3,
+   "delta_chi2_scaled": 46.15
+  },
+  {
+   "period_days": 89.25,
+   "delta_chi2_scaled": 41.5
+  },
+  {
+   "period_days": 90.22,
+   "delta_chi2_scaled": 37.91
+  },
+  {
+   "period_days": 91.19,
+   "delta_chi2_scaled": 30.53
+  },
+  {
+   "period_days": 92.17,
+   "delta_chi2_scaled": 23.88
+  },
+  {
+   "period_days": 93.17,
+   "delta_chi2_scaled": 19.31
+  },
+  {
+   "period_days": 94.17,
+   "delta_chi2_scaled": 16.3
+  },
+  {
+   "period_days": 95.19,
+   "delta_chi2_scaled": 14.44
+  },
+  {
+   "period_days": 96.22,
+   "delta_chi2_scaled": 13.48
+  },
+  {
+   "period_days": 97.26,
+   "delta_chi2_scaled": 13.31
+  },
+  {
+   "period_days": 98.3,
+   "delta_chi2_scaled": 13.94
+  },
+  {
+   "period_days": 99.37,
+   "delta_chi2_scaled": 15.39
+  },
+  {
+   "period_days": 100.44,
+   "delta_chi2_scaled": 17.6
+  },
+  {
+   "period_days": 101.52,
+   "delta_chi2_scaled": 20.42
+  },
+  {
+   "period_days": 102.62,
+   "delta_chi2_scaled": 23.7
+  },
+  {
+   "period_days": 103.72,
+   "delta_chi2_scaled": 27.35
+  },
+  {
+   "period_days": 104.84,
+   "delta_chi2_scaled": 31.31
+  },
+  {
+   "period_days": 105.97,
+   "delta_chi2_scaled": 35.58
+  },
+  {
+   "period_days": 107.12,
+   "delta_chi2_scaled": 40.17
+  },
+  {
+   "period_days": 108.27,
+   "delta_chi2_scaled": 45.09
+  },
+  {
+   "period_days": 109.44,
+   "delta_chi2_scaled": 50.39
+  },
+  {
+   "period_days": 110.62,
+   "delta_chi2_scaled": 56.09
+  },
+  {
+   "period_days": 111.82,
+   "delta_chi2_scaled": 62.18
+  },
+  {
+   "period_days": 113.02,
+   "delta_chi2_scaled": 68.61
+  },
+  {
+   "period_days": 114.24,
+   "delta_chi2_scaled": 75.12
+  },
+  {
+   "period_days": 115.48,
+   "delta_chi2_scaled": 81.13
+  },
+  {
+   "period_days": 116.72,
+   "delta_chi2_scaled": 85.76
+  },
+  {
+   "period_days": 117.98,
+   "delta_chi2_scaled": 88.12
+  },
+  {
+   "period_days": 119.26,
+   "delta_chi2_scaled": 86.67
+  },
+  {
+   "period_days": 120.54,
+   "delta_chi2_scaled": 78.12
+  },
+  {
+   "period_days": 121.84,
+   "delta_chi2_scaled": 67.53
+  },
+  {
+   "period_days": 123.16,
+   "delta_chi2_scaled": 62.02
+  },
+  {
+   "period_days": 124.49,
+   "delta_chi2_scaled": 59.21
+  },
+  {
+   "period_days": 125.83,
+   "delta_chi2_scaled": 57.24
+  },
+  {
+   "period_days": 127.19,
+   "delta_chi2_scaled": 55.65
+  },
+  {
+   "period_days": 128.56,
+   "delta_chi2_scaled": 54.36
+  },
+  {
+   "period_days": 129.95,
+   "delta_chi2_scaled": 53.43
+  },
+  {
+   "period_days": 131.35,
+   "delta_chi2_scaled": 52.95
+  },
+  {
+   "period_days": 132.77,
+   "delta_chi2_scaled": 52.99
+  },
+  {
+   "period_days": 134.2,
+   "delta_chi2_scaled": 53.32
+  },
+  {
+   "period_days": 135.65,
+   "delta_chi2_scaled": 53.64
+  },
+  {
+   "period_days": 137.11,
+   "delta_chi2_scaled": 53.97
+  },
+  {
+   "period_days": 138.59,
+   "delta_chi2_scaled": 54.42
+  },
+  {
+   "period_days": 140.09,
+   "delta_chi2_scaled": 55.01
+  },
+  {
+   "period_days": 141.6,
+   "delta_chi2_scaled": 55.75
+  },
+  {
+   "period_days": 143.13,
+   "delta_chi2_scaled": 56.61
+  },
+  {
+   "period_days": 144.67,
+   "delta_chi2_scaled": 57.57
+  },
+  {
+   "period_days": 146.23,
+   "delta_chi2_scaled": 58.59
+  },
+  {
+   "period_days": 147.81,
+   "delta_chi2_scaled": 59.65
+  },
+  {
+   "period_days": 149.41,
+   "delta_chi2_scaled": 60.69
+  },
+  {
+   "period_days": 151.02,
+   "delta_chi2_scaled": 61.65
+  },
+  {
+   "period_days": 152.65,
+   "delta_chi2_scaled": 62.48
+  },
+  {
+   "period_days": 154.29,
+   "delta_chi2_scaled": 63.06
+  },
+  {
+   "period_days": 155.96,
+   "delta_chi2_scaled": 63.3
+  },
+  {
+   "period_days": 157.64,
+   "delta_chi2_scaled": 63.12
+  },
+  {
+   "period_days": 159.34,
+   "delta_chi2_scaled": 62.58
+  },
+  {
+   "period_days": 161.06,
+   "delta_chi2_scaled": 61.95
+  },
+  {
+   "period_days": 162.8,
+   "delta_chi2_scaled": 61.72
+  },
+  {
+   "period_days": 164.56,
+   "delta_chi2_scaled": 62.08
+  },
+  {
+   "period_days": 166.33,
+   "delta_chi2_scaled": 62.49
+  },
+  {
+   "period_days": 168.13,
+   "delta_chi2_scaled": 61.92
+  },
+  {
+   "period_days": 169.94,
+   "delta_chi2_scaled": 59.67
+  },
+  {
+   "period_days": 171.78,
+   "delta_chi2_scaled": 55.75
+  },
+  {
+   "period_days": 173.63,
+   "delta_chi2_scaled": 50.85
+  },
+  {
+   "period_days": 175.5,
+   "delta_chi2_scaled": 45.94
+  },
+  {
+   "period_days": 177.4,
+   "delta_chi2_scaled": 41.81
+  },
+  {
+   "period_days": 179.31,
+   "delta_chi2_scaled": 38.01
+  },
+  {
+   "period_days": 181.25,
+   "delta_chi2_scaled": 32.35
+  },
+  {
+   "period_days": 183.2,
+   "delta_chi2_scaled": 24.56
+  },
+  {
+   "period_days": 185.18,
+   "delta_chi2_scaled": 17.43
+  },
+  {
+   "period_days": 187.18,
+   "delta_chi2_scaled": 12.18
+  },
+  {
+   "period_days": 189.2,
+   "delta_chi2_scaled": 8.5
+  },
+  {
+   "period_days": 191.24,
+   "delta_chi2_scaled": 5.88
+  },
+  {
+   "period_days": 193.3,
+   "delta_chi2_scaled": 3.98
+  },
+  {
+   "period_days": 195.39,
+   "delta_chi2_scaled": 2.58
+  },
+  {
+   "period_days": 197.5,
+   "delta_chi2_scaled": 1.57
+  },
+  {
+   "period_days": 199.63,
+   "delta_chi2_scaled": 0.86
+  },
+  {
+   "period_days": 201.78,
+   "delta_chi2_scaled": 0.38
+  },
+  {
+   "period_days": 203.96,
+   "delta_chi2_scaled": 0.11
+  },
+  {
+   "period_days": 206.16,
+   "delta_chi2_scaled": 0.0
+  },
+  {
+   "period_days": 208.39,
+   "delta_chi2_scaled": 0.04
+  },
+  {
+   "period_days": 210.63,
+   "delta_chi2_scaled": 0.19
+  },
+  {
+   "period_days": 212.91,
+   "delta_chi2_scaled": 0.43
+  },
+  {
+   "period_days": 215.2,
+   "delta_chi2_scaled": 0.76
+  },
+  {
+   "period_days": 217.53,
+   "delta_chi2_scaled": 1.15
+  },
+  {
+   "period_days": 219.87,
+   "delta_chi2_scaled": 1.59
+  },
+  {
+   "period_days": 222.25,
+   "delta_chi2_scaled": 2.08
+  },
+  {
+   "period_days": 224.65,
+   "delta_chi2_scaled": 2.59
+  },
+  {
+   "period_days": 227.07,
+   "delta_chi2_scaled": 3.13
+  },
+  {
+   "period_days": 229.52,
+   "delta_chi2_scaled": 3.69
+  },
+  {
+   "period_days": 232.0,
+   "delta_chi2_scaled": 4.27
+  },
+  {
+   "period_days": 234.5,
+   "delta_chi2_scaled": 4.85
+  },
+  {
+   "period_days": 237.03,
+   "delta_chi2_scaled": 5.44
+  },
+  {
+   "period_days": 239.59,
+   "delta_chi2_scaled": 6.03
+  },
+  {
+   "period_days": 242.17,
+   "delta_chi2_scaled": 6.62
+  },
+  {
+   "period_days": 244.79,
+   "delta_chi2_scaled": 7.21
+  },
+  {
+   "period_days": 247.43,
+   "delta_chi2_scaled": 7.8
+  },
+  {
+   "period_days": 250.1,
+   "delta_chi2_scaled": 8.38
+  },
+  {
+   "period_days": 252.8,
+   "delta_chi2_scaled": 8.94
+  },
+  {
+   "period_days": 255.53,
+   "delta_chi2_scaled": 9.49
+  },
+  {
+   "period_days": 258.28,
+   "delta_chi2_scaled": 10.01
+  },
+  {
+   "period_days": 261.07,
+   "delta_chi2_scaled": 10.5
+  },
+  {
+   "period_days": 263.89,
+   "delta_chi2_scaled": 10.93
+  },
+  {
+   "period_days": 266.73,
+   "delta_chi2_scaled": 11.33
+  },
+  {
+   "period_days": 269.61,
+   "delta_chi2_scaled": 11.69
+  },
+  {
+   "period_days": 272.52,
+   "delta_chi2_scaled": 12.06
+  },
+  {
+   "period_days": 275.46,
+   "delta_chi2_scaled": 12.47
+  },
+  {
+   "period_days": 278.44,
+   "delta_chi2_scaled": 12.98
+  },
+  {
+   "period_days": 281.44,
+   "delta_chi2_scaled": 13.61
+  },
+  {
+   "period_days": 284.48,
+   "delta_chi2_scaled": 14.36
+  },
+  {
+   "period_days": 287.55,
+   "delta_chi2_scaled": 15.23
+  },
+  {
+   "period_days": 290.65,
+   "delta_chi2_scaled": 16.22
+  },
+  {
+   "period_days": 293.79,
+   "delta_chi2_scaled": 17.31
+  },
+  {
+   "period_days": 296.96,
+   "delta_chi2_scaled": 18.52
+  },
+  {
+   "period_days": 300.16,
+   "delta_chi2_scaled": 19.85
+  },
+  {
+   "period_days": 303.4,
+   "delta_chi2_scaled": 21.31
+  },
+  {
+   "period_days": 306.67,
+   "delta_chi2_scaled": 22.93
+  },
+  {
+   "period_days": 309.98,
+   "delta_chi2_scaled": 24.73
+  },
+  {
+   "period_days": 313.33,
+   "delta_chi2_scaled": 26.74
+  },
+  {
+   "period_days": 316.71,
+   "delta_chi2_scaled": 28.97
+  },
+  {
+   "period_days": 320.13,
+   "delta_chi2_scaled": 31.46
+  },
+  {
+   "period_days": 323.58,
+   "delta_chi2_scaled": 34.21
+  },
+  {
+   "period_days": 327.07,
+   "delta_chi2_scaled": 37.21
+  },
+  {
+   "period_days": 330.6,
+   "delta_chi2_scaled": 40.39
+  },
+  {
+   "period_days": 334.17,
+   "delta_chi2_scaled": 43.63
+  },
+  {
+   "period_days": 337.78,
+   "delta_chi2_scaled": 46.73
+  },
+  {
+   "period_days": 341.42,
+   "delta_chi2_scaled": 49.42
+  },
+  {
+   "period_days": 345.11,
+   "delta_chi2_scaled": 51.39
+  },
+  {
+   "period_days": 348.83,
+   "delta_chi2_scaled": 52.4
+  },
+  {
+   "period_days": 352.59,
+   "delta_chi2_scaled": 52.31
+  },
+  {
+   "period_days": 356.4,
+   "delta_chi2_scaled": 51.06
+  },
+  {
+   "period_days": 360.24,
+   "delta_chi2_scaled": 48.47
+  },
+  {
+   "period_days": 364.13,
+   "delta_chi2_scaled": 44.29
+  },
+  {
+   "period_days": 368.06,
+   "delta_chi2_scaled": 38.74
+  },
+  {
+   "period_days": 372.03,
+   "delta_chi2_scaled": 32.81
+  },
+  {
+   "period_days": 376.05,
+   "delta_chi2_scaled": 27.59
+  },
+  {
+   "period_days": 380.11,
+   "delta_chi2_scaled": 23.48
+  },
+  {
+   "period_days": 384.21,
+   "delta_chi2_scaled": 20.42
+  },
+  {
+   "period_days": 388.35,
+   "delta_chi2_scaled": 18.16
+  },
+  {
+   "period_days": 392.54,
+   "delta_chi2_scaled": 16.47
+  },
+  {
+   "period_days": 396.78,
+   "delta_chi2_scaled": 15.21
+  },
+  {
+   "period_days": 401.06,
+   "delta_chi2_scaled": 14.25
+  },
+  {
+   "period_days": 405.39,
+   "delta_chi2_scaled": 13.51
+  },
+  {
+   "period_days": 409.76,
+   "delta_chi2_scaled": 12.95
+  },
+  {
+   "period_days": 414.19,
+   "delta_chi2_scaled": 12.52
+  },
+  {
+   "period_days": 418.66,
+   "delta_chi2_scaled": 12.18
+  },
+  {
+   "period_days": 423.17,
+   "delta_chi2_scaled": 11.93
+  },
+  {
+   "period_days": 427.74,
+   "delta_chi2_scaled": 11.74
+  },
+  {
+   "period_days": 432.35,
+   "delta_chi2_scaled": 11.6
+  },
+  {
+   "period_days": 437.02,
+   "delta_chi2_scaled": 11.5
+  },
+  {
+   "period_days": 441.74,
+   "delta_chi2_scaled": 11.43
+  },
+  {
+   "period_days": 446.5,
+   "delta_chi2_scaled": 11.39
+  },
+  {
+   "period_days": 451.32,
+   "delta_chi2_scaled": 11.36
+  },
+  {
+   "period_days": 456.19,
+   "delta_chi2_scaled": 11.36
+  },
+  {
+   "period_days": 461.11,
+   "delta_chi2_scaled": 11.37
+  },
+  {
+   "period_days": 466.09,
+   "delta_chi2_scaled": 11.39
+  },
+  {
+   "period_days": 471.12,
+   "delta_chi2_scaled": 11.42
+  },
+  {
+   "period_days": 476.2,
+   "delta_chi2_scaled": 11.46
+  },
+  {
+   "period_days": 481.34,
+   "delta_chi2_scaled": 11.51
+  },
+  {
+   "period_days": 486.54,
+   "delta_chi2_scaled": 11.56
+  },
+  {
+   "period_days": 491.79,
+   "delta_chi2_scaled": 11.61
+  },
+  {
+   "period_days": 497.09,
+   "delta_chi2_scaled": 11.67
+  },
+  {
+   "period_days": 502.46,
+   "delta_chi2_scaled": 11.73
+  },
+  {
+   "period_days": 507.88,
+   "delta_chi2_scaled": 11.79
+  },
+  {
+   "period_days": 513.36,
+   "delta_chi2_scaled": 11.85
+  },
+  {
+   "period_days": 518.9,
+   "delta_chi2_scaled": 11.92
+  },
+  {
+   "period_days": 524.5,
+   "delta_chi2_scaled": 11.98
+  },
+  {
+   "period_days": 530.16,
+   "delta_chi2_scaled": 12.05
+  },
+  {
+   "period_days": 535.88,
+   "delta_chi2_scaled": 12.11
+  },
+  {
+   "period_days": 541.66,
+   "delta_chi2_scaled": 12.18
+  },
+  {
+   "period_days": 547.51,
+   "delta_chi2_scaled": 12.24
+  },
+  {
+   "period_days": 553.42,
+   "delta_chi2_scaled": 12.31
+  },
+  {
+   "period_days": 559.39,
+   "delta_chi2_scaled": 12.37
+  },
+  {
+   "period_days": 565.42,
+   "delta_chi2_scaled": 12.44
+  },
+  {
+   "period_days": 571.53,
+   "delta_chi2_scaled": 12.5
+  },
+  {
+   "period_days": 577.69,
+   "delta_chi2_scaled": 12.56
+  },
+  {
+   "period_days": 583.93,
+   "delta_chi2_scaled": 12.62
+  },
+  {
+   "period_days": 590.23,
+   "delta_chi2_scaled": 12.69
+  },
+  {
+   "period_days": 596.6,
+   "delta_chi2_scaled": 12.75
+  },
+  {
+   "period_days": 603.03,
+   "delta_chi2_scaled": 12.8
+  },
+  {
+   "period_days": 609.54,
+   "delta_chi2_scaled": 12.86
+  },
+  {
+   "period_days": 616.12,
+   "delta_chi2_scaled": 12.92
+  },
+  {
+   "period_days": 622.77,
+   "delta_chi2_scaled": 12.98
+  },
+  {
+   "period_days": 629.49,
+   "delta_chi2_scaled": 13.03
+  },
+  {
+   "period_days": 636.28,
+   "delta_chi2_scaled": 13.09
+  },
+  {
+   "period_days": 643.15,
+   "delta_chi2_scaled": 13.14
+  },
+  {
+   "period_days": 650.09,
+   "delta_chi2_scaled": 13.19
+  },
+  {
+   "period_days": 657.1,
+   "delta_chi2_scaled": 13.24
+  },
+  {
+   "period_days": 664.19,
+   "delta_chi2_scaled": 13.29
+  },
+  {
+   "period_days": 671.36,
+   "delta_chi2_scaled": 13.34
+  },
+  {
+   "period_days": 678.61,
+   "delta_chi2_scaled": 13.39
+  },
+  {
+   "period_days": 685.93,
+   "delta_chi2_scaled": 13.44
+  },
+  {
+   "period_days": 693.33,
+   "delta_chi2_scaled": 13.49
+  },
+  {
+   "period_days": 700.81,
+   "delta_chi2_scaled": 13.53
+  },
+  {
+   "period_days": 708.37,
+   "delta_chi2_scaled": 13.58
+  },
+  {
+   "period_days": 716.02,
+   "delta_chi2_scaled": 13.62
+  },
+  {
+   "period_days": 723.74,
+   "delta_chi2_scaled": 13.67
+  },
+  {
+   "period_days": 731.55,
+   "delta_chi2_scaled": 13.71
+  },
+  {
+   "period_days": 739.45,
+   "delta_chi2_scaled": 13.75
+  },
+  {
+   "period_days": 747.43,
+   "delta_chi2_scaled": 13.79
+  },
+  {
+   "period_days": 755.49,
+   "delta_chi2_scaled": 13.83
+  },
+  {
+   "period_days": 763.65,
+   "delta_chi2_scaled": 13.87
+  },
+  {
+   "period_days": 771.89,
+   "delta_chi2_scaled": 13.91
+  },
+  {
+   "period_days": 780.22,
+   "delta_chi2_scaled": 13.94
+  },
+  {
+   "period_days": 788.64,
+   "delta_chi2_scaled": 13.98
+  },
+  {
+   "period_days": 797.15,
+   "delta_chi2_scaled": 14.02
+  },
+  {
+   "period_days": 805.75,
+   "delta_chi2_scaled": 14.05
+  },
+  {
+   "period_days": 814.44,
+   "delta_chi2_scaled": 14.09
+  },
+  {
+   "period_days": 823.23,
+   "delta_chi2_scaled": 14.12
+  },
+  {
+   "period_days": 832.11,
+   "delta_chi2_scaled": 14.15
+  },
+  {
+   "period_days": 841.09,
+   "delta_chi2_scaled": 14.18
+  },
+  {
+   "period_days": 850.17,
+   "delta_chi2_scaled": 14.22
+  },
+  {
+   "period_days": 859.34,
+   "delta_chi2_scaled": 14.25
+  },
+  {
+   "period_days": 868.62,
+   "delta_chi2_scaled": 14.28
+  },
+  {
+   "period_days": 877.99,
+   "delta_chi2_scaled": 14.31
+  },
+  {
+   "period_days": 887.46,
+   "delta_chi2_scaled": 14.33
+  },
+  {
+   "period_days": 897.04,
+   "delta_chi2_scaled": 14.36
+  },
+  {
+   "period_days": 906.72,
+   "delta_chi2_scaled": 14.39
+  },
+  {
+   "period_days": 916.51,
+   "delta_chi2_scaled": 14.42
+  },
+  {
+   "period_days": 926.4,
+   "delta_chi2_scaled": 14.44
+  },
+  {
+   "period_days": 936.39,
+   "delta_chi2_scaled": 14.47
+  },
+  {
+   "period_days": 946.5,
+   "delta_chi2_scaled": 14.5
+  },
+  {
+   "period_days": 956.71,
+   "delta_chi2_scaled": 14.52
+  },
+  {
+   "period_days": 967.03,
+   "delta_chi2_scaled": 14.54
+  },
+  {
+   "period_days": 977.47,
+   "delta_chi2_scaled": 14.57
+  },
+  {
+   "period_days": 988.02,
+   "delta_chi2_scaled": 14.59
+  },
+  {
+   "period_days": 998.68,
+   "delta_chi2_scaled": 14.61
+  },
+  {
+   "period_days": 1009.46,
+   "delta_chi2_scaled": 14.64
+  },
+  {
+   "period_days": 1020.35,
+   "delta_chi2_scaled": 14.66
+  },
+  {
+   "period_days": 1031.36,
+   "delta_chi2_scaled": 14.68
+  },
+  {
+   "period_days": 1042.49,
+   "delta_chi2_scaled": 14.7
+  },
+  {
+   "period_days": 1053.74,
+   "delta_chi2_scaled": 14.72
+  },
+  {
+   "period_days": 1065.11,
+   "delta_chi2_scaled": 14.74
+  },
+  {
+   "period_days": 1076.6,
+   "delta_chi2_scaled": 14.76
+  },
+  {
+   "period_days": 1088.22,
+   "delta_chi2_scaled": 14.78
+  },
+  {
+   "period_days": 1099.96,
+   "delta_chi2_scaled": 14.8
+  },
+  {
+   "period_days": 1111.83,
+   "delta_chi2_scaled": 14.82
+  },
+  {
+   "period_days": 1123.83,
+   "delta_chi2_scaled": 14.83
+  },
+  {
+   "period_days": 1135.96,
+   "delta_chi2_scaled": 14.85
+  },
+  {
+   "period_days": 1148.22,
+   "delta_chi2_scaled": 14.87
+  },
+  {
+   "period_days": 1160.61,
+   "delta_chi2_scaled": 14.89
+  },
+  {
+   "period_days": 1173.13,
+   "delta_chi2_scaled": 14.9
+  },
+  {
+   "period_days": 1185.79,
+   "delta_chi2_scaled": 14.92
+  },
+  {
+   "period_days": 1198.59,
+   "delta_chi2_scaled": 14.93
+  },
+  {
+   "period_days": 1211.52,
+   "delta_chi2_scaled": 14.95
+  },
+  {
+   "period_days": 1224.59,
+   "delta_chi2_scaled": 14.97
+  },
+  {
+   "period_days": 1237.81,
+   "delta_chi2_scaled": 14.98
+  },
+  {
+   "period_days": 1251.16,
+   "delta_chi2_scaled": 14.99
+  },
+  {
+   "period_days": 1264.67,
+   "delta_chi2_scaled": 15.01
+  },
+  {
+   "period_days": 1278.31,
+   "delta_chi2_scaled": 15.02
+  },
+  {
+   "period_days": 1292.11,
+   "delta_chi2_scaled": 15.04
+  },
+  {
+   "period_days": 1306.05,
+   "delta_chi2_scaled": 15.05
+  },
+  {
+   "period_days": 1320.14,
+   "delta_chi2_scaled": 15.06
+  },
+  {
+   "period_days": 1334.39,
+   "delta_chi2_scaled": 15.07
+  },
+  {
+   "period_days": 1348.79,
+   "delta_chi2_scaled": 15.09
+  },
+  {
+   "period_days": 1363.34,
+   "delta_chi2_scaled": 15.1
+  },
+  {
+   "period_days": 1378.06,
+   "delta_chi2_scaled": 15.11
+  },
+  {
+   "period_days": 1392.93,
+   "delta_chi2_scaled": 15.12
+  },
+  {
+   "period_days": 1407.96,
+   "delta_chi2_scaled": 15.13
+  },
+  {
+   "period_days": 1423.15,
+   "delta_chi2_scaled": 15.15
+  },
+  {
+   "period_days": 1438.51,
+   "delta_chi2_scaled": 15.16
+  },
+  {
+   "period_days": 1454.03,
+   "delta_chi2_scaled": 15.17
+  },
+  {
+   "period_days": 1469.72,
+   "delta_chi2_scaled": 15.18
+  },
+  {
+   "period_days": 1485.58,
+   "delta_chi2_scaled": 15.19
+  }
+ ],
+ "downloaded_mb": 0.0
+}

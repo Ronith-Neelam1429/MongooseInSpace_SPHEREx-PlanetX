@@ -92,6 +92,7 @@ NEP_FIELD_DEG = 0.3
 REF_KS = (9.5, 13.0)
 REF_PER_FIELD = 25
 REF_EDGE_PX = 10
+REF_MAX_PM = 0.3  # arcsec/yr
 LIGHT_CURVE_DETECTORS = (1, 2, 3)
 
 
@@ -380,7 +381,15 @@ def cluster(targets: list[Target], radius_deg: float) -> list[list[Target]]:
 
 def choose_visits(fld: Field, maps: WavelengthMaps, per_window: int) -> list[tuple[archive.Visit, float]]:
     """Visits whose predicted wavelength at the field centre falls in each window, PER_WINDOW
-    per window, spread over the survey (evenly in time among the candidates)."""
+    per window, spread over the survey (evenly in time among the candidates).
+
+    The choice is saved under TRIM_CACHE, so a rerun downloads nothing and needs no SIA query
+    (IRSA's SIA answered 502 for long stretches on 2026-11-15)."""
+    saved = TRIM_CACHE / f"chosen_{fld.key}_{fld.ra:.4f}_{fld.dec:.4f}_{fld.size_deg:.3f}_{per_window}.json"
+    if saved.exists():
+        rows = json.loads(saved.read_text())
+        log(f"{fld.key}: {len(rows)} exposures chosen by an earlier run")
+        return [(archive.Visit.model_validate(r["visit"]), r["wavelength_um"]) for r in rows]
     found = archive.query_footprints(fld.ra, fld.dec, 10.0)
     by_window: dict[tuple[float, float], list[tuple[archive.Visit, float]]] = defaultdict(list)
     n_pred = 0
@@ -408,6 +417,8 @@ def choose_visits(fld: Field, maps: WavelengthMaps, per_window: int) -> list[tup
         for i in idx:
             picked[cands[i][0].access_url] = cands[i]
     log(f"{fld.key}: {len(found)} visits, {n_pred} with a predicted wavelength, {len(picked)} chosen")
+    TRIM_CACHE.mkdir(parents=True, exist_ok=True)
+    saved.write_text(json.dumps([{"visit": v.model_dump(), "wavelength_um": lam} for v, lam in picked.values()]))
     return list(picked.values())
 
 
@@ -489,6 +500,7 @@ def analyse(t: Target, ms: list[sp.Measurement], used: list[FrameFile], stars: l
         "neighbours": [{"name": n.name, "separation_arcsec": _r(n.separation_px * PIXEL_SCALE_ARCSEC, 2)}
                        for n in ix.neighbours[:3]],
         "website_suggestion": ix.website_suggestion,
+        "methane_windows_missing": [list(w) for w in ix.methane_windows_missing],
         "aperture_correction": "epsf" if all(f.epsf for f in used) else ("gaussian" if not any(f.epsf for f in used) else "mixed"),
         "detectors": sorted({m.detector for m in ok}),
         "_index": ix,
@@ -526,13 +538,19 @@ def engine_movers(fld: Field) -> list[Target]:
 
 
 def reference_stars(fld: Field, stars: list[si.CatalogStar], frames: list[FrameFile], n: int) -> list[Target]:
-    """Isolated 2MASS stars (J, H, Ks all measured; Ks in REF_KS) inside the cutouts, spread in J-Ks."""
+    """Isolated 2MASS stars (J, H, Ks all measured; Ks in REF_KS) inside the cutouts, spread in J-Ks.
+    Not the field's own targets (Eps Ind B is in Gaia and 2MASS) and no fast movers (> REF_MAX_PM)."""
     if not frames:
         return []
     probe = max(frames, key=lambda f: f.shape[0] * f.shape[1])
+    targets = [t.at(MID_MJD) for t in fld.targets]
     cands = []
     for s in stars:
         if s.j is None or s.h is None or s.ks is None or not REF_KS[0] <= s.ks <= REF_KS[1]:
+            continue
+        if s.pm_ra is not None and math.hypot(s.pm_ra, s.pm_dec) > REF_MAX_PM:
+            continue
+        if any(si.separation_arcsec(*s.position_at(MID_MJD), *t) < 3 * PIXEL_SCALE_ARCSEC for t in targets):
             continue
         ra, dec = s.position_at(MID_MJD)
         if not probe.covers(ra, dec, REF_EDGE_PX):
@@ -576,6 +594,7 @@ def brown_dwarf_search(args) -> None:
     shared = scan(SHARED_CACHE / "cutouts", "shared")
     survey = scan(SURVEY_CACHE, "survey")
     dev = scan(DEV_CACHE, "dev")
+    trim = scan(TRIM_CACHE, "trim")
     maps = WavelengthMaps([f for f in shared if f.epsf] + survey)
     log(f"wavelength maps for detectors {sorted(maps.maps)}")
 
@@ -610,13 +629,22 @@ def brown_dwarf_search(args) -> None:
         log(f"--- field {fld.key} at {fld.ra:.4f} {fld.dec:+.4f}")
         mine: list[FrameFile] = []
         if fld.detectors:
-            try:
-                chosen = choose_visits(fld, maps, PER_WINDOW if not fld.key.startswith("survey") else 3)
-            except archive.UpstreamError as exc:
-                fld.notes.append(f"SIA failed: {exc}")
-                log(f"{fld.key}: SIA failed: {exc}")
-                chosen = []
+            chosen = []
+            for attempt in range(4):  # IRSA's SIA answered 502 for minutes at a time on 2026-11-15
+                try:
+                    chosen = choose_visits(fld, maps, PER_WINDOW if not fld.key.startswith("survey") else 3)
+                    break
+                except archive.UpstreamError as exc:
+                    log(f"{fld.key}: SIA failed (attempt {attempt + 1}): {str(exc)[:120]}")
+                    if attempt == 3:
+                        fld.notes.append(f"SIA failed: {str(exc).splitlines()[0][:120]}")
+                    else:
+                        time.sleep(30 * (attempt + 1))
             mine = download_field(fld, chosen, dl)
+            if not chosen:  # SIA down: use what an earlier run downloaded for this field
+                mine = [f for f in trim if f.covers(fld.ra, fld.dec, 0) and f.shape[0] >= 0.9 * fld.size_deg * 3600 / PIXEL_SCALE_ARCSEC]
+                if mine:
+                    fld.notes.append(f"used {len(mine)} exposures downloaded by an earlier run")
         local = [f for f in shared + survey + dev + mine if f.covers(fld.ra, fld.dec, 0)]
         fld.frames = local
         fld.engine_frames = mine if mine else [f for f in dev if f.covers(fld.ra, fld.dec, 0)]
