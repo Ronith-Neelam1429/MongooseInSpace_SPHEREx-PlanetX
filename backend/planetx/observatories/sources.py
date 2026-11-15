@@ -41,8 +41,9 @@ _PRESETS = {
 _WISE_FAMILY = frozenset({Observatory.ALLWISE, Observatory.CATWISE, Observatory.NEOWISE})
 
 
-def same_family(a: Observatory, b: Observatory) -> bool:
-    return a == b or (a in _WISE_FAMILY and b in _WISE_FAMILY)
+def family(o: Observatory) -> str:
+    """Name of the group of observatories whose detections are not independent of `o`'s."""
+    return "wise" if o in _WISE_FAMILY else o.value
 
 
 def parse_observatories(value: str | Iterable[str] | None = None) -> frozenset[Observatory]:

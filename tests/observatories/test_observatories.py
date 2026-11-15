@@ -595,3 +595,99 @@ def test_truncated_catalog_response_is_an_error(monkeypatch):
     )
     with pytest.raises(ArchiveError, match="smaller radius"):
         catalogs.fetch_catalog(Observatory.TWOMASS, 269.45, 4.69, 40.0)
+
+
+# --- weak SPHEREx tracks: the archive alone must establish the motion ---------
+# Found live on Barnard's Star (54 frames, detectors 1-3): a track SPHEREx puts
+# at 1.4 sigma was "confirmed" at 2.0"/yr by one AllWISE and one CatWISE entry,
+# both unrelated stars in Barnard's crowded, halo-ridden field.
+
+HALO_PM = (-1.3, -1.5)  # the false track's fused motion, arcsec/yr
+
+
+def weak_track(jitter=()):
+    """SPHEREx track with 1" centroid errors: its motion is only ~1.4 sigma."""
+    track = spherex_track((0, 0), HALO_PM, jitter=jitter)
+    for e in track.sources:
+        e.sigma_arcsec = 1.0
+    return track
+
+
+def test_wise_alone_cannot_confirm_a_track_spherex_does_not_see_moving():
+    track = weak_track()
+    assert fuse_track(track.sources, {}).pm_significance < 3
+    wise = {
+        Observatory.ALLWISE: [archival(Observatory.ALLWISE, MJD_ALLWISE, (0, 0), HALO_PM)],
+        Observatory.CATWISE: [archival(Observatory.CATWISE, MJD_CATWISE, (0, 0), HALO_PM)],
+    }
+    f = fuse_track(track.sources, wise)
+    # AllWISE and CatWISE share exposures: one survey, not two independent epochs.
+    assert len(f.matched) == 2
+    assert f.verdict is Verdict.UNCONFIRMED and f.is_mover is None
+    assert any("one survey family" in n for n in f.notes)
+
+    # 2MASS, an independent survey, on the same line: now the archive alone shows it.
+    wise[Observatory.TWOMASS] = [archival(Observatory.TWOMASS, MJD_2MASS, (0, 0), HALO_PM)]
+    assert fuse_track(track.sources, wise).verdict is Verdict.CONFIRMED
+
+
+def test_chance_link_plus_one_secure_epoch_does_not_confirm():
+    """The first link is a faint CatWISE star that chance often puts that close;
+    a 2MASS star on the line it implies is one secure epoch, not two."""
+    # Centroid errors bias the SPHEREx-only motion, so the CatWISE source lies
+    # ~8" from the SPHEREx-only prediction: a typical chance distance here.
+    track = weak_track(jitter=[(0.4, 0.0), (0.0, 0.0), (-0.4, 0.0)])
+    decoy = ArchivalSource(
+        Observatory.CATWISE, *position((0, 0), HALO_PM, MJD_CATWISE), MJD_CATWISE, 0.2, 17.2, "W1"
+    )
+    field = [s for s in crowd(Observatory.CATWISE, MJD_CATWISE)
+             if math.hypot(*[v[0] for v in _project(s.ra, s.dec, decoy.ra, decoy.dec)]) > 60]
+    archive = {
+        Observatory.CATWISE: field + [decoy],
+        Observatory.TWOMASS: [archival(Observatory.TWOMASS, MJD_2MASS, (0, 0), HALO_PM)],
+    }
+    f = fuse_track(track.sources, archive)
+    assert decoy in f.matched and len(f.matched) == 2
+    assert f.verdict is Verdict.UNCONFIRMED and f.is_mover is None
+
+    # A secure AllWISE epoch as well: two independent surveys agree.
+    archive[Observatory.ALLWISE] = [archival(Observatory.ALLWISE, MJD_ALLWISE, (0, 0), HALO_PM)]
+    assert fuse_track(track.sources, archive).verdict is Verdict.CONFIRMED
+
+
+def barnard_with_faint_rival(n_epochs=3):
+    """Barnard's Star in 2MASS and a faint star equally far from the loose
+    SPHEREx-only prediction (as on the real field), plus faint field stars."""
+    pm = (-0.80, 10.36)
+    track = spherex_track((0, 0), pm, jitter=[(0.5, 0.0), (0.0, 0.0), (-0.5, 0.0)])
+    track.sources = track.sources[:n_epochs]
+    alone = fuse_track(track.sources, {})
+    dt = (MJD_2MASS - alone.ref_mjd) / 365.25
+    px, py = _project(alone.ra, alone.dec, RA0, DEC0)
+    guess = (px[0] + alone.pm_ra_cosdec * dt, py[0] + alone.pm_dec * dt)
+    tx, ty = _project(*position((0, 0), pm, MJD_2MASS), RA0, DEC0)
+    star = ArchivalSource(Observatory.TWOMASS, *sky(tx[0], ty[0]), MJD_2MASS, 0.06, 4.5, "Ks")
+    mirror = (2 * guess[0] - tx[0], 2 * guess[1] - ty[0])
+    rival = ArchivalSource(Observatory.TWOMASS, *sky(*mirror), MJD_2MASS, 0.1, 14.5, "Ks")
+    field = [s for s in crowd(Observatory.TWOMASS, MJD_2MASS, mag=14.0)
+             if math.hypot(*[v[0] for v in _project(s.ra, s.dec, *sky(*guess))]) > 120]
+    return track, pm, star, {Observatory.TWOMASS: field + [star, rival]}
+
+
+def test_bright_star_wins_an_equal_distance_tie():
+    """Barnard's Star had no archival match on the real field: 2MASS showed it
+    and a faint star equally far from the prediction, so the epoch was skipped."""
+    track, pm, star, archive = barnard_with_faint_rival()
+    f = fuse_track(track.sources, archive)
+    assert f.matched == [star]
+    assert f.verdict is Verdict.CONFIRMED
+    assert (f.pm_ra_cosdec, f.pm_dec) == pytest.approx(pm, abs=0.03)
+
+
+def test_two_epoch_track_does_not_break_ties_by_brightness():
+    """Two SPHEREx epochs always fit a line (the Eps Indi B field has such a
+    link next to the real mover): it must not adopt a bright neighbour."""
+    track, _, star, archive = barnard_with_faint_rival(n_epochs=2)
+    f = fuse_track(track.sources, archive)
+    assert star not in f.matched
+    assert any("none preferred" in n for n in f.notes)
