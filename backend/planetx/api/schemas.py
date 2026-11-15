@@ -114,7 +114,7 @@ class Variability(BaseModel):
 class ArchiveCheck(BaseModel):
     """The SPHEREx track refitted together with archival positions (2MASS, AllWISE, CatWISE)."""
 
-    verdict: str = Field(description="confirmed | stationary | refuted | unconfirmed | spherex_only")
+    verdict: str = Field(description="confirmed | stationary | refuted | absent | unconfirmed | spherex_only")
     pm_ra_cosdec: float | None = None
     pm_dec: float | None = None
     pm_err: float | None = None

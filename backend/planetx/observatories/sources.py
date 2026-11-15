@@ -90,3 +90,8 @@ class ArchivalSource:
     # Sources with the same (observatory, visit) are alternatives for ONE epoch
     # of an object; different visits of one observatory are separate epochs.
     visit: int = 0
+    # The catalog's own proper motion (arcsec/yr, east and north; error = the larger per-axis
+    # error), where it measures one (CatWISE2020 does, from 2010-2018 WISE images); else NaN.
+    pm_ra_cosdec: float = float("nan")
+    pm_dec: float = float("nan")
+    pm_err: float = float("nan")

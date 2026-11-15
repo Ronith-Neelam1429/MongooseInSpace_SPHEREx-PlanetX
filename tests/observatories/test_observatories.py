@@ -222,6 +222,85 @@ def test_no_counterpart_leaves_spherex_fit_standing():
     assert f.pm_ra_cosdec == pytest.approx(3.0, abs=1e-6)
 
 
+# --- absent: CatWISE should have seen the mover -------------------------------
+
+def catwise_field(pm_of=lambda k: (0.0, 0.0), spacing=20.0, extent=200.0):
+    """A grid of CatWISE sources (with their own motions) around the field centre."""
+    out = []
+    steps = np.arange(-extent, extent + 1e-9, spacing)
+    for k, (e, n) in enumerate((e, n) for e in steps for n in steps):
+        ra, dec = sky(e + 3.0, n + 7.0)  # off-grid of the test tracks' start
+        pm = pm_of(k)
+        out.append(ArchivalSource(Observatory.CATWISE, ra, dec, MJD_CATWISE, 0.3,
+                                  pm_ra_cosdec=pm[0], pm_dec=pm[1], pm_err=0.1))
+    return out
+
+
+def test_a_fast_mover_with_no_catwise_source_moving_like_it_is_absent():
+    track = spherex_track((0, 0), (8.0, 6.0), is_mover=True)  # 10"/yr, sharp: 0.4" positions
+    f = fuse_track(track.sources, {Observatory.CATWISE: catwise_field()})
+    assert f.verdict is Verdict.ABSENT and f.absent_in == (Observatory.CATWISE,)
+    assert f.is_mover is None  # the caller decides (saturation, wavelengths)
+    assert "catwise" in f.notes[-1]
+
+
+def test_a_catwise_source_moving_like_the_track_is_its_counterpart_not_an_absence():
+    start, pm = (0.0, 0.0), (8.0, 6.0)
+    field_ = catwise_field()
+    ra, dec = position(start, pm, MJD_CATWISE)
+    # A noisy CatWISE position (5" off, so outside the match gate) but CatWISE's own motion agrees.
+    ra, dec = _deproject(*(np.array(_project(ra, dec, RA0, DEC0)).ravel() + (5.0, 0.0)), RA0, DEC0)
+    field_.append(ArchivalSource(Observatory.CATWISE, ra, dec, MJD_CATWISE, 0.3,
+                                 pm_ra_cosdec=7.9, pm_dec=6.2, pm_err=0.2))
+    f = fuse_track(spherex_track(start, pm, is_mover=True).sources, {Observatory.CATWISE: field_})
+    assert f.verdict is not Verdict.ABSENT
+
+
+def test_a_catwise_source_without_a_measured_motion_counts_as_present():
+    start, pm = (0.0, 0.0), (8.0, 6.0)
+    field_ = catwise_field()
+    ra, dec = position(start, pm, MJD_CATWISE)
+    ra, dec = _deproject(*(np.array(_project(ra, dec, RA0, DEC0)).ravel() + (5.0, 0.0)), RA0, DEC0)
+    field_.append(ArchivalSource(Observatory.CATWISE, ra, dec, MJD_CATWISE, 0.3))  # pm NaN
+    f = fuse_track(spherex_track(start, pm, is_mover=True).sources, {Observatory.CATWISE: field_})
+    assert f.verdict is not Verdict.ABSENT
+
+
+def test_absence_needs_a_precise_prediction_significant_motion_and_coverage():
+    sharp = spherex_track((0, 0), (8.0, 6.0), is_mover=True)
+    # 30"/yr at 10 sigma, but loose positions: the 2015 prediction is wider than the 60" search
+    # limit, and only that stops the claim.
+    fast = spherex_track((0, 0), (24.0, 18.0), is_mover=True)
+    loose = Track([Epoch(e.ra, e.dec, e.mjd, sigma_arcsec=2.0) for e in fast.sources])
+    wide = {Observatory.CATWISE: catwise_field(spacing=25.0, extent=500.0)}
+    assert fuse_track(loose.sources, wide).verdict is not Verdict.ABSENT
+    assert fuse_track(loose.sources, wide, FusionParams(max_gate_arcsec=1e4)).verdict is Verdict.ABSENT
+    # No significant SPHEREx motion: nothing to be absent.
+    slow = spherex_track((0, 0), (0.3, 0.0))
+    assert fuse_track(slow.sources, {Observatory.CATWISE: catwise_field()}).verdict is not Verdict.ABSENT
+    # The 2015 position lies beyond the fetched area (sources only on one side of it).
+    one_side = [s for s in catwise_field() if _project(s.ra, s.dec, RA0, DEC0)[0][0] > 0]
+    assert fuse_track(sharp.sources, {Observatory.CATWISE: one_side}).verdict is not Verdict.ABSENT
+    # AllWISE has no usable motions and 2MASS is shallower than SPHEREx: neither can show absence.
+    other = {o: [replace_obs(s, o) for s in catwise_field()] for o in (Observatory.ALLWISE, Observatory.TWOMASS)}
+    assert fuse_track(sharp.sources, other).verdict is not Verdict.ABSENT
+
+
+def replace_obs(source, obs):
+    from dataclasses import replace
+    mjd = MJD_ALLWISE if obs is Observatory.ALLWISE else MJD_2MASS
+    return replace(source, observatory=obs, mjd=mjd)
+
+
+def test_catwise_rows_carry_their_own_motions():
+    from astropy.table import Table
+    t = Table(rows=[("J1", 133.78398, -7.2442, 0.1, 0.1, 18.0, 13.8, -7.965, 0.8062, 0.1903, 0.2646)],
+              names=("source_name", "ra_pm", "dec_pm", "sigra_pm", "sigdec_pm", "w1mpro_pm", "w2mpro_pm",
+                     "pmra", "pmdec", "sigpmra", "sigpmdec"))
+    (s,) = catalogs._parse_catwise(t)
+    assert (s.pm_ra_cosdec, s.pm_dec, s.pm_err) == pytest.approx((-7.965, 0.8062, 0.2646))
+
+
 def test_background_star_is_not_mistaken_for_the_mover():
     """A stationary star sits right where the mover was in 2015; the mover itself was not catalogued."""
     pm = (4.0, 0.0)

@@ -58,6 +58,12 @@ CONTAMINATED_FRAC = 0.5
 # radius and size it uses to warn about variability near such stars).
 BRIGHT_SAT_AREA_PX = 50
 BRIGHT_HALO_ARCSEC = 150.0
+# Archive verdict "absent" (CatWISE lists nothing moving like the track where it puts the object)
+# settles a motion only when SPHEREx saw the object at WISE's wavelengths (W1 3.4 um, W2 4.6 um),
+# where WISE reaches ~3 mag fainter than SPHEREx: then WISE could not have missed it. Seen only at
+# shorter wavelengths, a very hot (blue) object could be too faint for WISE.
+WISE_BAND_MIN_UM = 2.8
+WISE_BAND_MIN_DETECTIONS = 2
 
 
 @dataclass(frozen=True)
@@ -205,6 +211,14 @@ def _weak_passes(obj: TrackedObject) -> int:
     )
 
 
+def _wise_band_detections(obj: TrackedObject) -> int:
+    """Clean detections at WISE's wavelengths (unsaturated, not on flagged light)."""
+    return sum(
+        1 for s in obj.sources for d in s.detections
+        if d.wavelength_um >= WISE_BAND_MIN_UM and not d.saturated and not d.contaminated
+    )
+
+
 def _contaminated_passes(obj: TrackedObject) -> int:
     n = 0
     for s in obj.sources:
@@ -338,6 +352,24 @@ def object_verdict(
             "nothing there, so its positions belong to different objects.", "spherex", cause="chance_link",
         )
     cause = _engine_cause(obj, bright_star_arcsec)
+    if archive == "absent":
+        names = survey_names(str(o) for o in fm.absent_in)
+        nothing = f"{names} lists no source moving like this where its track puts it in 2015"
+        if cause == "saturated_halo":
+            return MotionVerdict(
+                "unsure", f"{nothing}, but {_CAUSE_TEXT[cause]}, and WISE is confused there too: not enough to "
+                "call the motion real or fake.", "archive", cause=cause,
+            )
+        if _wise_band_detections(obj) < WISE_BAND_MIN_DETECTIONS:
+            return MotionVerdict(
+                "unsure", f"{nothing}, but SPHEREx saw it only at wavelengths shorter than WISE's, where a very hot "
+                "object could be too faint for WISE.", "archive", cause=cause,
+            )
+        return MotionVerdict(
+            "fake_motion", f"SPHEREx sees it at 3-5 µm, where WISE reaches fainter than SPHEREx, yet {nothing}: "
+            f"the {speed} is not real; most likely {_CAUSE_TEXT[cause or 'chance_link']}.", "archive",
+            cause=cause or "chance_link",
+        )
     if archive == "stationary":
         return MotionVerdict(
             "fake_motion", f"{_archive_names(fm)} saw it in the same place{years}, so the {speed} SPHEREx measured is "
@@ -537,6 +569,12 @@ def stored_verdict(
         return MotionVerdict(
             "fake_motion", "Older surveys show a separate, fixed source at each SPHEREx position: neighbouring stars "
             "joined into one track.", "archive", cause="chance_link",
+        )
+    if archive_verdict == "absent":
+        # The row keeps no detections, so saturation and wavelength (object_verdict) cannot be checked.
+        return MotionVerdict(
+            "unsure", "CatWISE lists no source moving like this where its track puts it in 2015; whether WISE "
+            "should have seen it cannot be checked from the stored row.", "archive",
         )
     if kind == "static":
         if archive_verdict == "stationary" and significance >= MOVER_SIGMA:

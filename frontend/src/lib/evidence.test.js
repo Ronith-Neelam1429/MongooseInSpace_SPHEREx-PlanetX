@@ -540,6 +540,9 @@ suite('proof tests', () => {
     expect(confirmed.summary).toMatch(/2MASS, going back 26 years/);
     const refuted = surveysCheck(object({ archive: { ...object().archive, verdict: 'refuted' } }));
     expect(refuted.status).toBe('fail');
+    const absent = surveysCheck(object({ archive: { ...object().archive, verdict: 'absent' } }));
+    expect(absent.status).toBe('fail');
+    expect(absent.summary).toMatch(/^CatWISE, .* lists nothing moving like this/);
     const stationary = { verdict: 'stationary', pm_ra_cosdec: 0.01, pm_dec: 0, pm_err: 0.02, baseline_yr: 16, observatories: ['spherex', 'allwise'] };
     // Still in the archive: a failure for a SPHEREx mover, agreement for a star SPHEREx saw stand still.
     expect(surveysCheck(object({ archive: stationary })).status).toBe('fail');

@@ -99,6 +99,9 @@ def _parse_catwise(t: Table) -> list[ArchivalSource]:
     ra, dec = _col(t, "ra_pm"), _col(t, "dec_pm")
     sigma = _iso_sigma(_col(t, "sigra_pm"), _col(t, "sigdec_pm"))
     w1, w2 = _col(t, "w1mpro_pm"), _col(t, "w2mpro_pm")
+    # Gator gives CatWISE motions in arcsec/yr (checked live: WISE 0855 at (-7.97, +0.81)).
+    pmra, pmdec = _col(t, "pmra"), _col(t, "pmdec")
+    pm_err = np.fmax(_col(t, "sigpmra"), _col(t, "sigpmdec"))
     out = []
     for i, name in enumerate(_text(t, "source_name")):
         if not np.isfinite([ra[i], dec[i], sigma[i]]).all():
@@ -106,7 +109,8 @@ def _parse_catwise(t: Table) -> list[ArchivalSource]:
         mag, band = (w1[i], "W1") if np.isfinite(w1[i]) else (w2[i], "W2")
         out.append(
             ArchivalSource(
-                Observatory.CATWISE, ra[i], dec[i], CATWISE_EPOCH_MJD, sigma[i], mag, band, name
+                Observatory.CATWISE, ra[i], dec[i], CATWISE_EPOCH_MJD, sigma[i], mag, band, name,
+                pm_ra_cosdec=float(pmra[i]), pm_dec=float(pmdec[i]), pm_err=float(pm_err[i]),
             )
         )
     return out
@@ -199,7 +203,7 @@ _CATALOGS: dict[Observatory, _Catalog] = {
     ),
     Observatory.CATWISE: _Catalog(
         "catwise_2020",
-        "source_name,ra_pm,dec_pm,sigra_pm,sigdec_pm,w1mpro_pm,w2mpro_pm",
+        "source_name,ra_pm,dec_pm,sigra_pm,sigdec_pm,w1mpro_pm,w2mpro_pm,pmra,pmdec,sigpmra,sigpmdec",
         _parse_catwise,
         # The catalog keeps very low S/N entries; they are mostly noise peaks.
         constraints="w1snr_pm>=5 or w2snr_pm>=5",

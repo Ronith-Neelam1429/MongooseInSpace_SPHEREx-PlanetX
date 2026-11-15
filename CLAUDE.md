@@ -208,7 +208,11 @@ Work lands on `main` via feature branches (data connections, backend API, survey
   positions: 2MASS (~2000), AllWISE (2010.5), CatWISE2020 (2015.4), optionally NEOWISE single exposures (to 2024).
 - Toggle: `observatories="spherex"` (SPHEREx only, no network) | `"multi"` (default) | `"all"` (+NEOWISE) | comma list.
   Default comes from env `PLANETX_OBSERVATORIES`. The engine itself stays SPHEREx-only and network-free.
-- Verdicts: confirmed / stationary / refuted / unconfirmed / spherex_only. `FusedMotion.is_mover` is None when the
+- Verdicts: confirmed / stationary / refuted / absent / unconfirmed / spherex_only. `absent` (2026-11-15): SPHEREx
+  claims >= 5 sigma motion, but no CatWISE source near where the track puts it in 2015.4 has a CatWISE proper motion
+  consistent with it (CatWISE measures fast movers well: WISE 0855 (-7.97, +0.81) +- 0.2"/yr). The verdict layer makes
+  it fake_motion only when SPHEREx saw the object at >= 2.8 um (WISE is ~3 mag deeper there); saturated or seen only at
+  shorter wavelengths -> unsure. Caught the 3 fast NEP survey candidates (6-15"/yr, faint pairs of static Gaia stars). `FusedMotion.is_mover` is None when the
   archive has no say, so keep the engine's own flag then.
 - Catalogs come from IRSA Gator (`/cgi-bin/Gator/nph-query`), ~1.5 s per cone. IRSA TAP timed out (>90 s) on
   `catwise_2020` and `neowiser_p1bs_psd` on 2026-11-14. Gator reports errors as HTTP 200 with a `[struct stat="ERROR"` body.

@@ -180,6 +180,7 @@ pixel of shift):
 | older surveys: a fixed source at each position (`refuted`) | fake_motion | chance_link (blend with a blended pass) |
 | a different slow Gaia star under each pass | fake_motion | chance_link |
 | a pass covered its path and saw nothing (`missing_passes`) | fake_motion | chance_link |
+| CatWISE lists nothing moving like it where its track puts it in 2015 (`absent`) | fake_motion when SPHEREx saw it at ≥ 2.8 µm in 2+ clean detections; unsure when saturated / in a bright star's halo or seen only at shorter wavelengths | the SPHEREx cause, else chance_link |
 | older surveys saw it in the same place (`stationary`) | fake_motion | the SPHEREx cause below, else other |
 | it sits on one slow Gaia star whose motion it matches | fake_motion | the SPHEREx cause below, else other |
 | archival "confirmation" from other stars, no SPHEREx motion | fake_motion | chance_link |

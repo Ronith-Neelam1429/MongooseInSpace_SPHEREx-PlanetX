@@ -28,7 +28,7 @@ from planetx.classify.reliability import (
 )
 from planetx.classify.rules import Match
 from planetx.engine import TrackedObject
-from planetx.observatories import FusedMotion, Verdict
+from planetx.observatories import FusedMotion, Observatory, Verdict
 
 YEAR = 365.25
 
@@ -123,6 +123,45 @@ def test_a_saturated_star_with_an_empty_pass_is_unsure_not_fake():
     obj = replace(saturate(mover(pm_err=0.2, step_yr=1.0)), missing_passes=[1])
     v = object_verdict(found(obj, classification="static"))
     assert (v.verdict, v.cause, v.decided_by) == ("unsure", "saturated_halo", "spherex")
+
+
+def at_wavelength(obj, um):
+    return replace(obj, sources=[
+        replace(s, detections=[replace(d, wavelength_um=um) for d in s.detections]) for s in obj.sources
+    ])
+
+
+def absent(obj, **kw):
+    f = found(obj, Verdict.ABSENT, **kw)
+    return replace(f, fused=replace(f.fused, absent_in=(Observatory.CATWISE,)))
+
+
+def test_catwise_absence_of_a_mover_seen_at_wise_wavelengths_is_fake():
+    v = object_verdict(absent(at_wavelength(mover(), 4.2)))
+    assert (v.verdict, v.cause, v.decided_by) == ("fake_motion", "chance_link", "archive")
+    assert "CatWISE lists no source moving like this" in v.reason
+
+
+def test_catwise_absence_names_the_engine_cause():
+    obj = replace(at_wavelength(mover(), 4.2), blended_passes=[1])
+    assert object_verdict(absent(obj)).cause == "blend"
+
+
+def test_catwise_absence_is_unsure_for_a_saturated_star_or_one_seen_only_at_short_wavelengths():
+    v = object_verdict(absent(saturate(at_wavelength(mover(), 4.2))))
+    assert (v.verdict, v.cause) == ("unsure", "saturated_halo")
+    v = object_verdict(absent(at_wavelength(mover(), 1.3)))  # a hot object can be faint for WISE
+    assert (v.verdict, v.decided_by) == ("unsure", "archive") and "shorter than WISE" in v.reason
+
+
+def test_a_catalogued_moving_star_beats_a_catwise_absence():
+    v = object_verdict(absent(at_wavelength(mover(), 4.2), classification="known_star", name="Gaia DR3 1"))
+    assert (v.verdict, v.certainty) == ("moving", "confirmed")
+
+
+def test_a_stored_absent_row_is_unsure():
+    v = stored_verdict("mover", None, "absent", 12.0, 3, False)
+    assert (v.verdict, v.decided_by) == ("unsure", "archive")
 
 
 def test_archive_stationary_makes_the_motion_fake_and_names_the_engine_cause():

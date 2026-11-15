@@ -15,7 +15,10 @@ module:
 3. Gives a verdict: motion confirmed (when SPHEREx alone does not see it, only
    with secure epochs from two independent surveys), object stationary, track refuted (each
    SPHEREx position has its own stationary archival source, so the "mover" was
-   two objects), or unconfirmed (nothing found: too faint, blended or new).
+   two objects), absent (SPHEREx claims a motion, but CatWISE, deeper than
+   SPHEREx at 3-5 um and with its own proper motions, has no source moving like
+   that where the track puts the object in 2015), or unconfirmed (nothing found:
+   too faint, blended or new).
 
 With only SPHEREx selected nothing is fetched and the SPHEREx-only fit is
 returned, so the same call serves both modes.
@@ -77,6 +80,17 @@ class Verdict(StrEnum):
     STATIONARY = "stationary"  # archival epochs found; no motion beyond one SPHEREx pixel
     REFUTED = "refuted"  # each SPHEREx position has its own stationary archival source
     UNCONFIRMED = "unconfirmed"  # no (or not enough) archival evidence; engine's flag stands
+    # SPHEREx claims a motion, but CatWISE has no source moving like that where the track puts
+    # the object. Whether that settles it depends on the object (saturated? seen at 3-5 um?),
+    # which the caller knows: is_mover stays None.
+    ABSENT = "absent"
+
+
+# Catalogs that see fainter than SPHEREx at 3-5 um (WISE W1/W2 reach AB ~20, SPHEREx
+# single exposures ~17) and measure proper motions, so an object SPHEREx sees moving
+# there cannot be missing from them. CatWISE2020 only: AllWISE's motions (6 months of
+# data) are not usable, and SPHEREx detects sources fainter than 2MASS's Ks limit.
+DEEP_CATALOGS: tuple[Observatory, ...] = (Observatory.CATWISE,)
 
 
 @dataclass(frozen=True)
@@ -112,6 +126,15 @@ class FusionParams:
     # A fit is inconsistent (its positions do not lie on one line within their
     # errors) when its chi2 is this improbable.
     min_fit_probability: float = 1e-3
+    # Absence from a deep catalog (Verdict.ABSENT) is only claimed when no source of that
+    # catalog within max(absent_min_arcsec, gate) of the predicted position (one WISE beam
+    # at least) has a motion consistent with SPHEREx's at absent_pm_p (a source without a
+    # measured motion counts as consistent), the gate is no wider than max_gate_arcsec,
+    # and the catalog has sources in all four quadrants within coverage_arcsec beyond it
+    # (the position is inside the fetched area, not off its edge).
+    absent_min_arcsec: float = 6.0
+    absent_pm_p: float = 0.0027  # 3 sigma, two axes
+    coverage_arcsec: float = 90.0
 
 
 @dataclass
@@ -137,6 +160,8 @@ class FusedMotion:
     # motion consistent with the track; they come from one survey family (AllWISE
     # and CatWISE share exposures), so it is a candidate, never a confirmation.
     archive_candidate: bool = False
+    # Verdict ABSENT: the deep catalogs with nothing where the track puts the object.
+    absent_in: tuple[Observatory, ...] = ()
 
     @property
     def pm_total(self) -> float:
@@ -474,6 +499,7 @@ def fuse_track(
 
     offset = None
     archive_candidate = False
+    absent_in: tuple[Observatory, ...] = ()
     if not archive:
         verdict = Verdict.SPHEREX_ONLY
     elif matched:
@@ -536,6 +562,12 @@ def fuse_track(
                 notes.append(
                     "every SPHEREx position coincides with its own stationary archival source"
                 )
+        if verdict is Verdict.UNCONFIRMED and spx_signif >= params.mover_sigma:
+            absent_in = _absent_in(archive, sources, ax, ay, spx, params)
+            if absent_in:
+                verdict = Verdict.ABSENT
+                names = " and ".join(o.value for o in absent_in)
+                notes.append(f"{names}: no source moving like the SPHEREx track where it puts the object at that epoch")
 
     return FusedMotion(
         verdict=verdict,
@@ -552,7 +584,55 @@ def fuse_track(
         notes=notes,
         spherex_minus_archive_arcsec=offset,
         archive_candidate=archive_candidate,
+        absent_in=absent_in,
     )
+
+
+def _absent_in(
+    archive: Mapping[Observatory, Sequence[ArchivalSource]],
+    sources: Sequence[ArchivalSource],
+    ax: np.ndarray,
+    ay: np.ndarray,
+    spx: _Fit,
+    params: FusionParams,
+) -> tuple[Observatory, ...]:
+    """The deep catalogs with no source moving like the SPHEREx track where it puts the object.
+
+    Every source near the prediction is considered, even one already explained as another
+    object, and one whose own motion the catalog could not measure counts as a match.
+    """
+    # Positions scattering beyond their errors: the prediction is less certain than quoted.
+    inflate = math.sqrt(max(1.0, spx.chi2 / spx.dof)) if spx.dof > 0 else 1.0
+    pm_err = inflate / math.sqrt(spx.sxx)
+    limit = float(chi2_dist.isf(params.absent_pm_p, 2))
+    out = []
+    for obs in DEEP_CATALOGS:
+        if not archive.get(obs):
+            continue  # not consulted, or nothing fetched: no say about coverage
+        idx = np.array([i for i, s in enumerate(sources) if s.observatory is obs])
+        epoch = float(np.median([sources[i].mjd for i in idx])) / DAYS_PER_YEAR
+        px, py, psig = (float(v) for v in spx.predict(epoch))
+        own = float(np.median([math.hypot(sources[i].sigma_arcsec, params.archive_floor_arcsec) for i in idx]))
+        radius = max(params.absent_min_arcsec, params.gate_sigma * math.hypot(psig * inflate, own))
+        if radius > params.max_gate_arcsec:
+            continue  # too uncertain where it was
+        dx, dy = ax[idx] - px, ay[idx] - py
+        d = np.hypot(dx, dy)
+        if any(_moves_alike(sources[i], spx, pm_err, limit) for i in idx[d <= radius]):
+            continue
+        around = d <= radius + params.coverage_arcsec
+        if len({(bool(e >= 0), bool(n >= 0)) for e, n in zip(dx[around], dy[around])}) < 4:
+            continue  # near the edge of what was fetched (or an empty patch of sky)
+        out.append(obs)
+    return tuple(out)
+
+
+def _moves_alike(source: ArchivalSource, spx: _Fit, pm_err: float, limit: float) -> bool:
+    """Whether the catalog's own motion of `source` could be the SPHEREx track's (True if unmeasured)."""
+    if not (math.isfinite(source.pm_ra_cosdec) and math.isfinite(source.pm_dec) and source.pm_err > 0):
+        return True
+    var = pm_err**2 + source.pm_err**2
+    return ((source.pm_ra_cosdec - spx.pmx) ** 2 + (source.pm_dec - spx.pmy) ** 2) / var <= limit
 
 
 def _archive_alone_moves(

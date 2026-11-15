@@ -289,6 +289,9 @@ export function surveysCheck(object) {
   if (verdict === 'refuted') {
     statuses.push('fail');
     sentences.push('Older catalogues show a separate, fixed source at each SPHEREx position: two neighbours, not one moving object.');
+  } else if (verdict === 'absent') {
+    statuses.push('fail');
+    sentences.push('CatWISE, which sees fainter objects than SPHEREx at 3-5 µm and measures their motions, lists nothing moving like this where the track puts it in 2015.');
   } else if (verdict === 'confirmed' && archive) {
     statuses.push('pass');
     sentences.push(`Positions from ${listText(archive.surveys)}, going back ${archive.years.toFixed(0)} years, lie on the same track: ${archive.pm.toFixed(2)}″ per year.`);
