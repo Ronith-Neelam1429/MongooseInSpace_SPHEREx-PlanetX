@@ -43,7 +43,9 @@ class Settings:
     )
     # Observatories the motion engine may combine: "spherex" (SPHEREx only),
     # "multi" (+ 2MASS, AllWISE, CatWISE), "all" (+ NEOWISE), or a comma list.
-    # Parsed by planetx.observatories.parse_observatories.
+    # Parsed by planetx.observatories.parse_observatories. "spherex" means no other
+    # service at all: it also skips the Gaia/SIMBAD/SkyBoT check (planetx.classify),
+    # so objects come back unnamed with classification null.
     observatories: str = field(
         default_factory=lambda: os.environ.get("PLANETX_OBSERVATORIES", "multi")
     )
