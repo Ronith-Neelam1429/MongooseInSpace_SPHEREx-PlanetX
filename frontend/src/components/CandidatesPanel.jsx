@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { formatDec, formatRa } from '../lib/coords.js';
 import { classLabel, compass, shortName, speed } from '../lib/plain.js';
 import { fetchCandidates } from '../lib/services.js';
+import { failPage, mergePage } from './candidatesList.js';
 import { CloseIcon } from './ObjectCard.jsx';
 
 const PAGE = 50;
@@ -29,28 +30,34 @@ export default function CandidatesPanel({ onGo, onClose }) {
   const [filter, setFilter] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [list, setList] = useState({ status: 'loading' });
+  // The in-flight "Show more" request, aborted when the filter changes or the panel closes.
+  const moreCtrl = useRef(null);
 
   useEffect(() => {
     const ctrl = new AbortController();
     fetchCandidates({ limit: PAGE, classification: filter || undefined, signal: ctrl.signal }).then((r) => {
-      if (!ctrl.signal.aborted) setList(r ? { status: 'ok', ...r } : { status: 'none' });
+      if (!ctrl.signal.aborted) setList(r ? { status: 'ok', filter, ...r } : { status: 'none' });
     }, (err) => {
       if (!ctrl.signal.aborted) setList({ status: 'error', error: err?.message || String(err) });
     });
-    return () => ctrl.abort();
+    return () => { ctrl.abort(); moreCtrl.current?.abort(); };
   }, [filter, attempt]);
 
   const reload = (next) => { setList({ status: 'loading' }); next(); };
 
   const more = async () => {
+    const requested = filter;
+    moreCtrl.current?.abort();
+    const ctrl = new AbortController();
+    moreCtrl.current = ctrl;
     setList((l) => ({ ...l, loadingMore: true }));
     try {
-      const r = await fetchCandidates({ limit: PAGE, offset: list.candidates.length, classification: filter || undefined });
-      setList((l) => (r && l.status === 'ok'
-        ? { status: 'ok', total: r.total, candidates: [...l.candidates, ...r.candidates] }
-        : { ...l, loadingMore: false }));
+      const r = await fetchCandidates({
+        limit: PAGE, offset: list.candidates.length, classification: requested || undefined, signal: ctrl.signal,
+      });
+      if (!ctrl.signal.aborted) setList((l) => mergePage(l, r, requested));
     } catch (err) {
-      setList({ status: 'error', error: err?.message || String(err) });
+      if (!ctrl.signal.aborted) setList((l) => failPage(l, err?.message || String(err), requested));
     }
   };
 
