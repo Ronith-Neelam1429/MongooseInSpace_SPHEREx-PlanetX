@@ -94,7 +94,7 @@ export async function querySimbad(ra, dec, radiusDeg, { limit = 200, signal } = 
     ORDER BY dist`;
   const rows = await fromMirrors('SIMBAD', SIMBAD_TAP, tap(q), tapJson, { signal });
   return rows.map((r) => ({
-    name: String(r.main_id).replace(/^NAME /, ''),
+    name: String(r.main_id).replace(/^NAME /, '').replace(/\s+/g, ' '),
     otype: r.otype,
     type: r.description || r.otype,
     ra: num(r.ra), dec: num(r.dec),
@@ -131,7 +131,7 @@ export async function queryGaia(ra, dec, radiusDeg, { limit = 1500, signal } = {
     '-source': 'I/355/gaiadr3',
     '-c': `${ra.toFixed(6)} ${dec >= 0 ? '+' : ''}${dec.toFixed(6)}`,
     '-c.rd': radiusDeg.toFixed(5),
-    '-out': 'Source,RA_ICRS,DE_ICRS,pmRA,pmDE,Plx,Gmag',
+    '-out': 'Source,RA_ICRS,DE_ICRS,pmRA,pmDE,Plx,e_Plx,Gmag',
     '-out.max': String(limit),
     '-sort': 'Gmag',
   });
@@ -143,7 +143,7 @@ export async function queryGaia(ra, dec, radiusDeg, { limit = 1500, signal } = {
     id: r.Source,
     ra: num(r.RA_ICRS), dec: num(r.DE_ICRS),
     pmra: num(r.pmRA), pmdec: num(r.pmDE),
-    plx: num(r.Plx), gmag: num(r.Gmag),
+    plx: num(r.Plx), plxErr: num(r.e_Plx), gmag: num(r.Gmag),
   })).filter((r) => Number.isFinite(r.ra) && Number.isFinite(r.dec));
 }
 
@@ -161,27 +161,65 @@ export async function resolveName(name, { signal } = {}) {
   }, { signal, timeoutMs: 12000 });
 }
 
+/** GET a JSON document from the PlanetX API; rejects with `HTTP <status>` (also set as `err.status`). */
+async function apiJson(path, { signal, timeoutMs = 30000 } = {}) {
+  const t = withTimeout(signal, timeoutMs);
+  try {
+    const res = await fetch(`${API_BASE}${path}`, { signal: t.signal });
+    if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
+    return await res.json();
+  } finally {
+    t.done();
+  }
+}
+
 /**
- * SPHEREx visits for a position. Backend contract (proposed):
- *   GET {API_BASE}/visits?ra=<deg>&dec=<deg>
- *   -> { visits: [{ date: ISO string, obs_id?: string, band?: string, detector?: number }] }
- *   The PlanetX API serves this at {API_BASE}=<host>/api; it sends date (YYYY-MM-DD), detector (1-6),
- *   access_url (unique per visit) and obs_id (shared by an exposure's 6 detectors).
+ * How often SPHEREx has imaged a position (GET {API_BASE}/visits, `VisitsResponse` in the API):
+ * { count, passes: [{ start, end, n_visits }] } with YYYY-MM-DD dates, one entry per survey pass.
  * Returns null when no backend is configured.
  */
 export async function fetchVisits(ra, dec, { signal } = {}) {
   if (!API_BASE) return null;
-  const t = withTimeout(signal, 60000);
+  const j = await apiJson(`/visits?ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}`, { signal, timeoutMs: 60000 });
+  if (!Array.isArray(j?.passes) || !Number.isFinite(j.n_visits)) throw new Error('bad response');
+  return { count: j.n_visits, passes: j.passes };
+}
+
+/**
+ * Candidates found by the offline survey (GET {API_BASE}/candidates), most interesting first:
+ * { total, candidates: [{ id, ra, dec, name, classification, pm_total, position_angle_deg, score, found, ... }] }.
+ * `classification` narrows the list to one class. Returns null when the list cannot be had: no
+ * backend configured, or a backend that does not serve the route yet (404).
+ */
+export async function fetchCandidates({ limit = 100, offset = 0, classification, signal } = {}) {
+  if (!API_BASE) return null;
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (classification) params.set('classification', classification);
+  let j;
   try {
-    const res = await fetch(`${API_BASE}/visits?ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}`, { signal: t.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const j = await res.json();
-    const visits = Array.isArray(j) ? j : j.visits;
-    if (!Array.isArray(visits)) throw new Error('bad response');
-    return visits;
-  } finally {
-    t.done();
+    j = await apiJson(`/candidates?${params}`, { signal });
+  } catch (err) {
+    if (err.status === 404) return null;
+    throw err;
   }
+  if (!Array.isArray(j?.candidates)) throw new Error('bad response');
+  return { total: Number.isFinite(j.total) ? j.total : j.candidates.length, candidates: j.candidates };
+}
+
+/**
+ * The offline survey so far: { status, coverage }. `status` is the API's SurveyStatus (patch
+ * counts and how far the crawl has got). `coverage` is the finished patches as an Aladin MOC JSON
+ * ({ "<order>": [ipix, ...] }), or null while no patch is finished. Returns null without a backend.
+ */
+export async function fetchSurvey({ signal } = {}) {
+  if (!API_BASE) return null;
+  const [status, coverage] = await Promise.all([
+    apiJson('/survey/status', { signal }),
+    apiJson('/survey/coverage', { signal }),
+  ]);
+  if (!status?.counts || !coverage || typeof coverage !== 'object') throw new Error('bad response');
+  const empty = Object.values(coverage).every((cells) => !Array.isArray(cells) || cells.length === 0);
+  return { status, coverage: empty ? null : coverage };
 }
 
 const MOTION_POLL_MS = 2500;

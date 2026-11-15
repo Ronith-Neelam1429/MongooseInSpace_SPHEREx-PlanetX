@@ -1,26 +1,27 @@
-import { useEffect, useMemo, useRef } from 'react';
-import {
-  equatorialToEcliptic, equatorialToGalactic, formatDec, formatFov, formatRa,
-} from '../lib/coords.js';
-import { FAST_PM, MEASURED, measuredMotion } from '../lib/starfield.js';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { equatorialToEcliptic, equatorialToGalactic, formatDec, formatFov, formatRa } from '../lib/coords.js';
+import { FAST_ARCSEC_YR, displayName, sameObject } from '../lib/names.js';
+import { dateSpan, monthYear, shortClaim, shortName, speed, verdict } from '../lib/plain.js';
+import ObjectCard, { CloseIcon } from './ObjectCard.jsx';
 
-const n = (v, d = 2) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
 const signed = (v, d) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`;
-const pmText = (pm) => (pm >= 1000 ? `${(pm / 1000).toFixed(2)}″` : `${pm.toFixed(1)}`);
+const count = (n) => n.toLocaleString('en-US');
+const plural = (n, one, many = `${one}s`) => `${count(n)} ${n === 1 ? one : many}`;
+const KNOWN_SHOWN = 8;
 
 function cadence(beta) {
   const b = Math.abs(beta);
-  if (b >= 80) return 'Ecliptic pole. SPHEREx passes here on most orbits.';
-  if (b >= 60) return 'High ecliptic latitude. Above-average SPHEREx coverage.';
-  return 'Covered about every six months.';
+  if (b >= 80) return 'Near an ecliptic pole, where SPHEREx passes on most orbits.';
+  if (b >= 60) return 'High ecliptic latitude: SPHEREx comes by more often than average.';
+  return 'SPHEREx comes by about every six months.';
 }
 
 function State({ state, what, onRetry }) {
-  if (state.status === 'loading') return <p className="state"><span className="ticker" aria-hidden="true" />Querying {what}</p>;
+  if (state.status === 'loading') return <p className="state"><span className="ticker" aria-hidden="true" />Loading {what}</p>;
   if (state.status === 'error') {
     return (
       <p className="state err" role="alert">
-        {what} unavailable: {state.error}.{' '}
+        Could not load {what}: {state.error}.{' '}
         <button type="button" className="textbtn" onClick={onRetry}>Retry</button>
       </p>
     );
@@ -28,76 +29,105 @@ function State({ state, what, onRetry }) {
   return null;
 }
 
-const STAGES = { queued: 'Waiting for the engine', listing: 'Listing exposures', analysing: 'Measuring motion', checking: 'Checking archival catalogues' };
-
-function motionProgress(job) {
-  if (!job) return 'Starting the engine';
-  if (job.stage === 'downloading') return `Fetching frames ${job.frames_done}/${job.frames_total}`;
-  return STAGES[job.stage] || 'Working';
+/**
+ * One pickable object in a list. Pointing at it (mouse or keyboard focus) marks it on the map;
+ * `lit` is the reverse: the map's pointer is on this object, so the row lights up and scrolls into
+ * view. `resume` puts keyboard focus on the row when the list appears (the object just left).
+ */
+function Row({ lit, resume, onPick, onPoint, className = '', children }) {
+  const ref = useRef(null);
+  useEffect(() => { if (lit) ref.current?.scrollIntoView({ block: 'nearest' }); }, [lit]);
+  return (
+    <li>
+      <button
+        ref={ref}
+        type="button"
+        className={`row ${className} ${lit ? 'lit' : ''}`}
+        autoFocus={resume}
+        onClick={onPick}
+        onMouseEnter={() => onPoint(true)}
+        onMouseLeave={() => onPoint(false)}
+        onFocus={() => onPoint(true)}
+        onBlur={() => onPoint(false)}
+      >
+        {children}
+      </button>
+    </li>
+  );
 }
 
-const KIND = { mover: 'Mover', candidate: 'Candidate', static: 'Variable' };
-const VERDICT = {
-  confirmed: 'Motion confirmed by archival positions',
-  stationary: 'Stationary in archival positions',
-  refuted: 'Refuted: separate archival sources at each position',
-  unconfirmed: 'Not enough archival data to check',
-  spherex_only: 'SPHEREx only',
-};
-const OBSERVATORY = { spherex: 'SPHEREx', twomass: '2MASS', allwise: 'AllWISE', catwise: 'CatWISE', neowise: 'NEOWISE' };
+const STAGES = { queued: 'Waiting for a free slot', listing: 'Listing SPHEREx images', analysing: 'Measuring what moved', checking: 'Checking older sky surveys' };
 
-/** The motion engine's section: a run button, progress, then the movers, candidates and variables. */
-function Motion({ motion, focus, onFocus, onRun }) {
-  const r = motion.result;
-  const rows = useMemo(() => (r ? r.objects.filter((o) => o.kind !== 'static' || o.is_variable) : []), [r]);
+function Progress({ job }) {
+  const fetching = job?.stage === 'downloading' && job.frames_total > 0;
+  const text = fetching ? `Fetching images: ${job.frames_done} of ${job.frames_total}` : (job && STAGES[job.stage]) || 'Starting';
   return (
-    <section>
+    <div className="progress" role="status">
+      <p className="state"><span className="ticker" aria-hidden="true" />{text}</p>
+      {fetching && <progress max={job.frames_total} value={job.frames_done} aria-label="Images fetched" />}
+    </div>
+  );
+}
+
+/** The motion engine: a run button, progress, then what moves or changes brightness, by name. */
+function Results({ motion, results, visits, hover, resume, onPick, onPoint, onRun, onRetryVisits }) {
+  const r = motion.result;
+  return (
+    <section className="results">
       <h3>
-        Motion engine
-        {motion.status === 'ok' && <span className="count">{r.objects.length} tracked</span>}
+        <span><i className="dot measured-bg" />What moves here</span>
+        {motion.status === 'ok' && <span className="count">{results.length} found</span>}
       </h3>
-      {motion.status === 'none' && <p className="line dim">The engine needs the PlanetX API, which is not connected.</p>}
+      {motion.status === 'none' && <p className="line dim">Measuring motion needs the PlanetX server, which is not connected.</p>}
       {motion.status === 'idle' && (
         <>
-          <p className="line">Measure what moves or changes brightness between SPHEREx passes of this field.</p>
-          <p className="line dim">Fetches about 50 frames from IRSA: a minute or two the first time.</p>
-          <p className="line"><button type="button" className="textbtn" onClick={onRun}>Run engine</button></p>
+          <p className="line">Compare SPHEREx images taken months apart and list what moved or changed brightness.</p>
+          {visits.status === 'ok' && visits.count > 0 && (
+            <p className="line dim">
+              SPHEREx has imaged this spot {plural(visits.count, 'time')} in {plural(visits.passes.length, 'pass', 'passes')} since {monthYear(visits.passes[0].start)}.
+            </p>
+          )}
+          {visits.status === 'ok' && visits.count === 0 && <p className="line dim">SPHEREx has no images of this spot yet.</p>}
+          {visits.status === 'error' && (
+            <p className="line dim">
+              Could not check how often SPHEREx imaged this spot.{' '}
+              <button type="button" className="textbtn" onClick={onRetryVisits}>Retry</button>
+            </p>
+          )}
+          <button type="button" className="btn" onClick={onRun}>Find what moves</button>
+          <p className="line dim">Uses about 50 images. A minute or two the first time, seconds after that.</p>
         </>
       )}
-      {motion.status === 'loading' && <p className="state"><span className="ticker" aria-hidden="true" />{motionProgress(motion.job)}</p>}
+      {motion.status === 'loading' && <Progress job={motion.job} />}
       {motion.status === 'error' && (
         <p className="state err" role="alert">
-          Engine run failed: {motion.error}.{' '}
-          <button type="button" className="textbtn" onClick={onRun}>Retry</button>
+          The run failed: {motion.error}.{' '}
+          <button type="button" className="textbtn" onClick={onRun}>Try again</button>
         </p>
       )}
       {motion.status === 'ok' && (
         <>
           <p className="line">
-            {r.n_frames} frames in {r.passes.length} {r.passes.length === 1 ? 'pass' : 'passes'}
-            {r.passes.length > 0 && <span className="dim"> · {r.passes[0].start} to {r.passes[r.passes.length - 1].end}</span>}
+            Compared {plural(r.n_frames, 'image')} from {plural(r.passes.length, 'pass', 'passes')}
+            {r.passes.length > 0 && ` (${dateSpan(r.passes[0].start, r.passes[r.passes.length - 1].end)})`}
+            {' '}and followed {plural(r.objects.length, 'object')}.
           </p>
-          {rows.length === 0
-            ? <p className="line dim">Nothing moving or varying above the threshold.</p>
+          {results.length === 0
+            ? <p className="line dim">Nothing here moved or changed brightness by more than the measurement error.</p>
             : (
-              <table className="rows measured">
-                <thead><tr><th><i className="dot" style={{ background: `rgb(${MEASURED})` }} /> Measured</th><th>µ ″/yr</th><th>σ</th></tr></thead>
-                <tbody>
-                  {rows.map((o) => (
-                    <tr
-                      key={o.id}
-                      className={focus?.obj === o ? 'on' : ''}
-                      onClick={() => onFocus('engine', o)}
-                      onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onFocus('engine', o); } }}
-                      tabIndex={0}
-                    >
-                      <td className="name">{KIND[o.kind]}{o.kind !== 'static' && o.is_variable ? ' · variable' : ''}</td>
-                      <td>{o.kind === 'static' ? `×${n(o.variability?.ratio)}` : n(measuredMotion(o).pm)}</td>
-                      <td>{n(o.kind === 'static' ? o.variability?.significance : measuredMotion(o).sigma, 1)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <ul className="rowlist">
+                {results.map(({ o, who }) => {
+                  const f = { kind: 'engine', obj: o };
+                  const name = displayName(who);
+                  return (
+                    <Row key={o.id} className="result" lit={sameObject(hover, f)} resume={sameObject(resume, f)} onPick={() => onPick(f)} onPoint={(p) => onPoint(p ? f : null)}>
+                      <span className="row-name" title={name}>{shortName(name)}</span>
+                      <span className="badge">{verdict(o)}</span>
+                      <span className="row-sub">{shortClaim(o)}</span>
+                    </Row>
+                  );
+                })}
+              </ul>
             )}
           {r.notes.map((note) => <p key={note} className="line dim">{note}</p>)}
         </>
@@ -106,105 +136,157 @@ function Motion({ motion, focus, onFocus, onRun }) {
   );
 }
 
-function EngineFocus({ o, onClear }) {
-  const a = o.archive;
-  const others = a.observatories.filter((x) => x !== 'spherex').map((x) => OBSERVATORY[x] || x);
-  const title = o.kind === 'static' ? 'Variable source' : o.kind === 'candidate' ? 'Candidate mover' : 'Moving source';
-  return (
-    <section className="focus">
-      <header><span className="kicker">SPHEREx engine</span><button type="button" className="textbtn" onClick={onClear}>Clear</button></header>
-      <p className="focus-name">{title}</p>
-      <dl className="kv">
-        <dt>µ SPHEREx</dt><dd>{n(o.pm_total)} ± {n(o.pm_err)} ″/yr · {n(o.significance, 1)}σ</dd>
-        <dt>µα*, µδ</dt><dd>{signed(o.pm_ra_cosdec, 2)}, {signed(o.pm_dec, 2)} ″/yr · PA {n(o.position_angle_deg, 0)}°</dd>
-        {o.parallax_arcsec != null && <><dt>ϖ</dt><dd>{n(o.parallax_arcsec)} ± {n(o.parallax_err_arcsec)} ″</dd></>}
-        <dt>Passes</dt><dd>{o.track.map((t) => t.date).join(' · ')}</dd>
-        {o.variability && <><dt>Flux</dt><dd>{o.variability.band} {o.variability.change} · {n(o.variability.significance, 1)}σ</dd></>}
-        {o.variability?.caution && <><dt /><dd className="dim">{o.variability.caution}</dd></>}
-        <dt>Archive</dt><dd>{VERDICT[a.verdict] || a.verdict}{others.length > 0 && <span className="dim"> ({others.join(', ')})</span>}</dd>
-        {others.length > 0 && a.pm_ra_cosdec != null && a.pm_err != null && (
-          <><dt>µ fused</dt><dd>{signed(a.pm_ra_cosdec, 3)}, {signed(a.pm_dec, 3)} ± {n(a.pm_err, 3)} ″/yr · {n(a.baseline_yr, 1)} yr</dd></>
-        )}
-        <dt>Position</dt><dd>{formatRa(o.ra)} {formatDec(o.dec)}</dd>
-        {o.saturated && <><dt /><dd className="dim">Saturated star: position from its masked core.</dd></>}
-      </dl>
-    </section>
-  );
-}
-
-function Epoch({ getYears, total }) {
+function Clock({ getYear }) {
   const ref = useRef(null);
   useEffect(() => {
     let raf;
     const tick = () => {
-      if (ref.current) ref.current.textContent = `+${Math.round(getYears()).toLocaleString('en-US')}`;
+      if (ref.current) ref.current.textContent = `Year ${count(Math.round(getYear()))}`;
       raf = requestAnimationFrame(tick);
     };
     tick();
     return () => cancelAnimationFrame(raf);
-  }, [getYears]);
-  return <span className="epoch"><span>2016.0</span><span ref={ref} className="tabular">+{total}</span><span className="dim">yr</span></span>;
+  }, [getYear]);
+  return <span ref={ref} className="tabular" />;
 }
 
-function Focused({ focus, onClear }) {
-  const o = focus.obj;
-  if (focus.kind === 'engine') return <EngineFocus o={o} onClear={onClear} />;
-  if (focus.kind === 'simbad') {
-    return (
-      <section className="focus">
-        <header><span className="kicker">SIMBAD</span><button type="button" className="textbtn" onClick={onClear}>Clear</button></header>
-        <p className="focus-name">{o.name}</p>
-        <dl className="kv">
-          <dt>Type</dt><dd>{o.type || '–'}</dd>
-          <dt>Mag</dt><dd>{o.mag != null ? `${o.band} ${n(o.mag)}` : '–'}</dd>
-          {o.pmra != null && <><dt>µ</dt><dd>{pmText(Math.hypot(o.pmra, o.pmdec))} mas/yr</dd></>}
-          <dt>Position</dt><dd>{formatRa(o.ra)} {formatDec(o.dec)}</dd>
-        </dl>
-      </section>
-    );
-  }
-  const pm = o.pmra != null ? Math.hypot(o.pmra, o.pmdec) : null;
+/** SIMBAD and Gaia as one list of already-known objects, with the control that plays catalogued motion. */
+function Known({ known, simbad, gaia, hover, resume, onPick, onPoint, onRetry, playing, onTogglePlay, getYear, moversOnly, onToggleMovers }) {
+  const [all, setAll] = useState(false);
+  const few = known.rows.length <= KNOWN_SHOWN + 2; // not worth folding
+  const rows = all || few ? known.rows : known.rows.slice(0, KNOWN_SHOWN);
+  const fast = known.rows.filter((r) => r.pm >= FAST_ARCSEC_YR).length;
+  const loaded = simbad.status === 'ok' && gaia.status === 'ok';
   return (
-    <section className="focus">
-      <header><span className="kicker">Gaia DR3</span><button type="button" className="textbtn" onClick={onClear}>Clear</button></header>
-      <p className="focus-name mono">{o.id}</p>
-      <dl className="kv">
-        <dt>G</dt><dd>{n(o.gmag)}</dd>
-        <dt>µα*, µδ</dt><dd>{o.pmra != null ? `${signed(o.pmra, 1)}, ${signed(o.pmdec, 1)} mas/yr` : '–'}</dd>
-        <dt>µ</dt><dd className={pm >= FAST_PM ? 'signal' : ''}>{pm != null ? `${pmText(pm)} mas/yr` : '–'}</dd>
-        <dt>ϖ</dt><dd>{o.plx != null ? `${n(o.plx)} mas${o.plx > 0 ? ` · ${(1000 / o.plx).toFixed(o.plx > 100 ? 2 : 0)} pc` : ''}` : '–'}</dd>
-      </dl>
+    <section>
+      <h3>
+        <span>Already known here</span>
+        {known.rows.length > 0 && <span className="count">{count(known.rows.length)}</span>}
+      </h3>
+      <State state={simbad} what="named objects (SIMBAD)" onRetry={() => onRetry('simbad')} />
+      <State state={gaia} what="stars (Gaia)" onRetry={() => onRetry('gaia')} />
+      {gaia.status === 'ok' && gaia.years && (
+        <div className="player">
+          <button type="button" className="iconbtn" onClick={onTogglePlay} aria-label={playing ? 'Stop the star motion' : 'Play the star motion'}>
+            {playing
+              ? <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0h10v10H0z" fill="currentColor" /></svg>
+              : <svg width="10" height="12" viewBox="0 0 10 12" aria-hidden="true"><path d="M0 0l10 6-10 6z" fill="currentColor" /></svg>}
+          </button>
+          <span className="player-text">
+            {playing ? <Clock getYear={getYear} /> : `Play ${count(gaia.years)} years of motion`}
+          </span>
+          {fast > 0 && (
+            <button
+              type="button"
+              className={`opt legend ${moversOnly ? 'on' : ''}`}
+              aria-pressed={moversOnly}
+              title={`Fade every star slower than ${FAST_ARCSEC_YR}″ per year`}
+              onClick={onToggleMovers}
+            >
+              <i className="dot signal-bg" />Fast only
+            </button>
+          )}
+        </div>
+      )}
+      {rows.length > 0 && (
+        <ul className="rowlist">
+          {rows.map((row) => {
+            const f = { kind: 'known', obj: row };
+            const isFast = row.pm >= FAST_ARCSEC_YR;
+            return (
+              <Row key={row.key} className="known" lit={sameObject(hover, f)} resume={sameObject(resume, f)} onPick={() => onPick(f)} onPoint={(p) => onPoint(p ? f : null)}>
+                <span className="row-name" title={row.name}>{isFast && <i className="dot signal-bg" />}{shortName(row.name)}</span>
+                <span className="row-type" title={row.type}>{row.type}</span>
+                <span className={`row-pm ${isFast ? 'signal' : 'dim'}`}>{isFast ? `${speed(row.pm)}″/yr` : ''}</span>
+              </Row>
+            );
+          })}
+        </ul>
+      )}
+      {!few && (
+        <p className="line">
+          <button type="button" className="textbtn" aria-expanded={all} onClick={() => setAll(!all)}>
+            {all ? 'Show fewer' : `Show all ${count(known.rows.length)}`}
+          </button>
+        </p>
+      )}
+      {loaded && known.rows.length === 0 && <p className="line dim">Nothing here has a catalogue name.</p>}
+      {loaded && fast === 0 && known.rows.length > 0 && (
+        <p className="line dim">No catalogued star here moves faster than {FAST_ARCSEC_YR}″ per year.</p>
+      )}
+      {gaia.status === 'ok' && (
+        <p className="line dim">
+          The dots on the map are {count(gaia.stars.length)}{gaia.capped ? '+' : ''} stars from the Gaia catalogue. Click any of them.
+        </p>
+      )}
     </section>
   );
 }
 
-export default function InfoPanel({
-  sel, simbad, gaia, visits, motion, focus, onFocus, onClearFocus, onClose, onRetry, onCopyLink, copied,
-  playing, onTogglePlay, getYears, moversOnly, onToggleMovers,
-}) {
+/** What most visitors do not need: coordinates in three systems, SPHEREx pass dates, data credits. */
+function FieldDetails({ sel, visits }) {
   const { g, e } = useMemo(() => ({
     g: equatorialToGalactic(sel.ra, sel.dec),
     e: equatorialToEcliptic(sel.ra, sel.dec),
   }), [sel.ra, sel.dec]);
-
-  const movers = useMemo(() => (gaia.status !== 'ok' ? [] : gaia.stars
-    .filter((s) => s.pmra != null && s.pmdec != null)
-    .map((s) => ({ s, pm: Math.hypot(s.pmra, s.pmdec) }))
-    .sort((a, b) => b.pm - a.pm)
-    .slice(0, 8)), [gaia]);
-
-  const fastCount = useMemo(() => movers.filter((m) => m.pm >= FAST_PM).length, [movers]);
-
   return (
-    <aside className="panel" aria-label="Field details">
+    <details className="more">
+      <summary>Details</summary>
+      <h4>Coordinates of the centre</h4>
+      <dl className="kv">
+        <dt>Equatorial</dt><dd>RA {sel.ra.toFixed(5)}° · Dec {signed(sel.dec, 5)}°</dd>
+        <dt>Galactic</dt><dd>l {g.l.toFixed(4)}° · b {signed(g.b, 4)}°</dd>
+        <dt>Ecliptic</dt><dd>lon {e.lambda.toFixed(4)}° · lat {signed(e.beta, 4)}°</dd>
+        <dt>Radius</dt><dd>{formatFov(sel.radius)}</dd>
+      </dl>
+      <h4>SPHEREx coverage</h4>
+      <p className="line">{cadence(e.beta)}</p>
+      {visits.status === 'none' && <p className="line dim">Pass dates need the PlanetX server, which is not connected.</p>}
+      {visits.status === 'loading' && <p className="state"><span className="ticker" aria-hidden="true" />Listing SPHEREx passes</p>}
+      {visits.status === 'ok' && visits.passes.length > 0 && (
+        <ol className="passes">
+          {visits.passes.map((p) => (
+            <li key={p.start}><span>{dateSpan(p.start, p.end)}</span><span className="dim">{plural(p.n_visits, 'image')}</span></li>
+          ))}
+        </ol>
+      )}
+      <p className="credits">Data: NASA/SPHEREx DR1 + QR3 (IRSA) · ESA Gaia DR3 (VizieR) · SIMBAD (CDS) · 2MASS, AllWISE, CatWISE (IRSA)</p>
+    </details>
+  );
+}
+
+/**
+ * The side panel for the selected patch of sky. It lists the engine's results first, then the
+ * known objects; picking any object swaps the list for that object's card, with a way back.
+ */
+export default function InfoPanel({
+  sel, simbad, gaia, visits, motion, known, results, focus, hover, resume, onPick, onPoint, onBack, onClose, onRetry,
+  onCopyLink, copied, playing, onTogglePlay, getYear, moversOnly, onToggleMovers,
+}) {
+  if (focus) {
+    return (
+      <aside className="panel" aria-label="Selected object">
+        <ObjectCard
+          key={focus.kind === 'engine' ? `engine:${focus.obj.id}` : focus.obj.key}
+          focus={focus}
+          results={results}
+          field={motion.result?.field}
+          onPick={onPick}
+          onBack={onBack}
+          onClose={onClose}
+        />
+      </aside>
+    );
+  }
+  const width = sel.radius * 2;
+  return (
+    <aside className="panel" aria-label="Selected patch of sky">
       <header className="panel-head">
         <div className="panel-tools">
-          <span className="kicker">{sel.label ? 'Target' : 'Field'} · r {formatFov(sel.radius)}</span>
+          <span className="kicker">Patch of sky · {width >= 1 ? width.toFixed(1) : width.toFixed(2)}° wide</span>
           <span className="tools">
             <button type="button" className="textbtn" onClick={onCopyLink}>{copied ? 'Copied' : 'Copy link'}</button>
-            <button type="button" className="iconbtn" onClick={onClose} aria-label="Close panel">
-              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.25" /></svg>
-            </button>
+            <button type="button" className="iconbtn" onClick={onClose} aria-label="Close panel"><CloseIcon /></button>
           </span>
         </div>
         {sel.label
@@ -214,117 +296,34 @@ export default function InfoPanel({
       </header>
 
       <div className="panel-body">
-        <section>
-          <h3>Position</h3>
-          <dl className="grid4">
-            <dt>α</dt><dd>{sel.ra.toFixed(5)}°</dd><dt>δ</dt><dd>{signed(sel.dec, 5)}°</dd>
-            <dt>l</dt><dd>{g.l.toFixed(4)}°</dd><dt>b</dt><dd>{signed(g.b, 4)}°</dd>
-            <dt>λ</dt><dd>{e.lambda.toFixed(4)}°</dd><dt>β</dt><dd>{signed(e.beta, 4)}°</dd>
-          </dl>
-        </section>
-
-        <section>
-          <h3>SPHEREx</h3>
-          <p className="line">{cadence(e.beta)}</p>
-          {visits.status === 'none' && <p className="line dim">Visit dates need the PlanetX API, which is not connected.</p>}
-          <State state={visits} what="Visits" onRetry={() => onRetry('visits')} />
-          {visits.status === 'ok' && (visits.visits.length === 0
-            ? <p className="line dim">No visits yet.</p>
-            : (
-              <ol className="visits">
-                {visits.visits.map((v, i) => (
-                  // obs_id is shared by an exposure's 6 detectors; access_url is unique per visit.
-                  <li key={v.access_url || i}><span>{String(v.date || '').slice(0, 10) || '–'}</span><span className="dim">{v.band || (v.detector ? `D${v.detector}` : '')}</span></li>
-                ))}
-              </ol>
-            ))}
-        </section>
-
-        <Motion motion={motion} focus={focus} onFocus={onFocus} onRun={() => onRetry('motion')} />
-
-        <section>
-          <h3>
-            Proper motion
-            {gaia.status === 'ok' && <span className="count">{gaia.stars.length.toLocaleString('en-US')}{gaia.stars.length >= gaia.limit ? '+' : ''}</span>}
-          </h3>
-          <State state={gaia} what="Gaia DR3" onRetry={() => onRetry('gaia')} />
-          {gaia.status === 'ok' && (gaia.years ? (
-            <>
-              <div className="player">
-                <button type="button" className="iconbtn" onClick={onTogglePlay} aria-label={playing ? 'Pause motion' : 'Play motion'}>
-                  {playing
-                    ? <svg width="10" height="12" viewBox="0 0 10 12" aria-hidden="true"><path d="M1.5 0v12M8.5 0v12" stroke="currentColor" strokeWidth="2" /></svg>
-                    : <svg width="10" height="12" viewBox="0 0 10 12" aria-hidden="true"><path d="M0 0l10 6-10 6z" fill="currentColor" /></svg>}
-                </button>
-                <Epoch getYears={getYears} total={gaia.years.toLocaleString('en-US')} />
-                <button
-                  type="button"
-                  className={`opt legend ${moversOnly ? 'on' : ''}`}
-                  aria-pressed={moversOnly}
-                  title={`Show only stars moving faster than ${FAST_PM} mas/yr`}
-                  onClick={onToggleMovers}
-                >
-                  <i className="dot signal-bg" />Movers ≥ {FAST_PM}
-                </button>
-              </div>
-              {movers.length > 0 && (
-                <table className="rows">
-                  <thead><tr><th>Gaia DR3</th><th>G</th><th>µ mas/yr</th></tr></thead>
-                  <tbody>
-                    {movers.map(({ s, pm }) => (
-                      <tr
-                        key={s.id}
-                        className={focus?.obj === s ? 'on' : ''}
-                        onClick={() => onFocus('gaia', s)}
-                        onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onFocus('gaia', s); } }}
-                        tabIndex={0}
-                      >
-                        <td className="id">{s.id}</td>
-                        <td>{n(s.gmag, 1)}</td>
-                        <td className={pm >= FAST_PM ? 'signal' : ''}>{pmText(pm)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-              {fastCount === 0 && <p className="line dim">No star here moves faster than {FAST_PM} mas/yr.</p>}
-            </>
-          ) : <p className="line dim">No proper motions measured in this field.</p>)}
-        </section>
-
-        <section>
-          <h3>
-            Catalogued
-            {simbad.status === 'ok' && <span className="count">{simbad.objects.length}{simbad.objects.length >= 200 ? '+' : ''}</span>}
-          </h3>
-          <State state={simbad} what="SIMBAD" onRetry={() => onRetry('simbad')} />
-          {simbad.status === 'ok' && (simbad.objects.length === 0
-            ? <p className="line dim">Nothing catalogued in this field.</p>
-            : (
-              <table className="rows">
-                <thead><tr><th>Name</th><th>Type</th><th>Mag</th></tr></thead>
-                <tbody>
-                  {simbad.objects.map((o, i) => (
-                    <tr
-                      key={`${o.name}-${i}`}
-                      className={focus?.obj === o ? 'on' : ''}
-                      onClick={() => onFocus('simbad', o)}
-                      onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onFocus('simbad', o); } }}
-                      tabIndex={0}
-                    >
-                      <td className="name" title={o.name}>{o.name}</td>
-                      <td className="type" title={o.type}>{o.type}</td>
-                      <td>{o.mag != null ? n(o.mag, 1) : ''}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ))}
-        </section>
-
-        <footer className="credits">Data: NASA/SPHEREx DR1 + QR3 (IRSA) · ESA Gaia DR3 (VizieR) · SIMBAD (CDS) · 2MASS, AllWISE, CatWISE (IRSA)</footer>
+        <Results
+          motion={motion}
+          results={results}
+          visits={visits}
+          hover={hover}
+          resume={resume}
+          onPick={onPick}
+          onPoint={onPoint}
+          onRun={() => onRetry('motion')}
+          onRetryVisits={() => onRetry('visits')}
+        />
+        <Known
+          known={known}
+          simbad={simbad}
+          gaia={gaia}
+          hover={hover}
+          resume={resume}
+          onPick={onPick}
+          onPoint={onPoint}
+          onRetry={onRetry}
+          playing={playing}
+          onTogglePlay={onTogglePlay}
+          getYear={getYear}
+          moversOnly={moversOnly}
+          onToggleMovers={onToggleMovers}
+        />
+        <FieldDetails sel={sel} visits={visits} />
       </div>
-      {focus && <Focused focus={focus} onClear={onClearFocus} />}
     </aside>
   );
 }

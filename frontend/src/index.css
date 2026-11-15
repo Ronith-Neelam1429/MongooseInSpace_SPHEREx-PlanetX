@@ -6,7 +6,8 @@
   --line: #262624;
   --hover: #121211;
   --veil: rgba(0, 0, 0, 0.72);
-  --signal: #ff4d2e;
+  --signal: #ff4d2e; /* Gaia's catalogued motion */
+  --measured: #5ce1ff; /* what our engine measured in SPHEREx images (MEASURED in lib/starfield.js) */
   --serif: 'Instrument Serif', 'Times New Roman', serif;
   --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Consolas, monospace;
   color-scheme: dark;
@@ -25,7 +26,7 @@ html, body, #root { height: 100%; margin: 0; }
 body { overflow: hidden; background: var(--bg); }
 button, input { font: inherit; color: inherit; }
 button { cursor: pointer; }
-h1, h2, h3, p, ol, dl, dd { margin: 0; }
+h1, h2, h3, h4, p, ol, dl, dd { margin: 0; }
 ol { padding: 0; list-style: none; }
 :focus-visible { outline: 1px solid var(--fg); outline-offset: 2px; }
 ::selection { background: var(--fg); color: var(--bg); }

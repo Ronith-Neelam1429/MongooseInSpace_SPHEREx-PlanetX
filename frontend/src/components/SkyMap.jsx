@@ -38,8 +38,10 @@ function showCubeFrame(layer, frame) {
 /**
  * Aladin Lite v3 sky with its built-in UI switched off; the app draws its own controls.
  * Reports view changes, cursor moves and non-drag clicks (with canvas pixel coords).
+ * `coverage` is an optional MOC JSON ({ "<order>": [ipix, ...] }) shaded on the sky: the patches
+ * the offline survey has finished.
  */
-export default function SkyMap({ initial, survey, frame, grid, onReady, onViewChange, onPointer, onSkyClick, onSurveyError, onLoading }) {
+export default function SkyMap({ initial, survey, frame, grid, coverage, onReady, onViewChange, onPointer, onSkyClick, onSurveyError, onLoading }) {
   const divRef = useRef(null);
   const aladinRef = useRef(null);
   const layerRef = useRef(null);
@@ -145,6 +147,15 @@ export default function SkyMap({ initial, survey, frame, grid, onReady, onViewCh
   useEffect(() => {
     if (ready) aladinRef.current?.setCooGrid({ enabled: !!grid });
   }, [grid, ready]);
+
+  useEffect(() => {
+    const aladin = aladinRef.current;
+    if (!ready || !aladin || !coverage) return undefined;
+    // Cyan, like everything else that is PlanetX's own work.
+    const moc = A.MOCFromJSON(coverage, { name: 'PlanetX survey', color: '#5ce1ff', opacity: 0.3, fill: true, edge: true, lineWidth: 1 });
+    aladin.addMOC(moc);
+    return () => aladin.removeOverlay(moc);
+  }, [coverage, ready]);
 
   return (
     <>
