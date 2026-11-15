@@ -419,3 +419,33 @@ def test_result_does_not_depend_on_frame_order(stack):
         shuffled = list(frames)
         np.random.default_rng(seed).shuffle(shuffled)
         assert _outcome(find_motion(shuffled, stack=stack)) == expected
+
+
+def test_variable_seen_across_visits_cut_into_time_windows():
+    # Visits of ~80 days (as at R Dra, Dec +67) are cut into 40-day windows,
+    # each holding only half of a visit's wavelengths. Brightness must still
+    # be compared visit against visit, with all their same-wavelength pairs.
+    rng = np.random.default_rng(15)
+    starts = [60900.0, 61080.0, 61265.0]
+
+    def brightening(mjd):
+        return 600.0 if mjd < starts[2] - 30 else 1200.0
+
+    stars = field_stars(rng)
+    spot = clear_spot(stars)
+    stars.append((*spot, 0.0, 0.0, brightening))
+    frames = [
+        make_frame(
+            stars, m0 + 11 * k, WAVES[k], rng,
+            rot_deg=rng.uniform(0, 360), wcs_error=tuple(rng.normal(0, 0.7, 2)),
+        )
+        for m0 in starts
+        for k in range(8)
+    ]
+    r = find_motion(frames)
+    assert len(r.passes) == 6  # each visit is two windows
+    v = nearest(r, *spot)
+    assert v.is_variable and not v.is_mover
+    assert v.variability["ratio"] == pytest.approx(2.0, rel=0.15)
+    assert v.variability["n_pairs"] >= 8
+    assert [o for o in r.variables] == [v]

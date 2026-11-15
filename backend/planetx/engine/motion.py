@@ -23,6 +23,7 @@ Intra-pass motion (fast asteroids moving within one visit) is not handled yet.
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import math
 from dataclasses import dataclass, field
@@ -572,6 +573,22 @@ def _flux_kinds(d: Detection) -> list[tuple[str, float, float]]:
     return out
 
 
+def _brightness_epochs(sources: list[PassSource], epoch_of_pass: list[int]) -> list[PassSource]:
+    """A track's sources merged per brightness epoch (time-ordered input).
+
+    Each merged source keeps the first pass's fields (so its `pass_index`
+    names the epoch's first pass) and holds all the epoch's detections.
+    """
+    merged: dict[int, PassSource] = {}
+    for s in sources:
+        e = epoch_of_pass[s.pass_index]
+        if e in merged:
+            merged[e] = dataclasses.replace(merged[e], detections=merged[e].detections + s.detections)
+        else:
+            merged[e] = s
+    return list(merged.values())
+
+
 def _variability(
     obj_sources: list[PassSource], calib_frac: float, wave_tol: float = 0.01, min_pairs: int = 5
 ) -> dict | None:
@@ -971,6 +988,17 @@ def find_motion(
     offsets, align_notes = align_frames(detections, plane)
     notes += align_notes
     input_frames, input_passes = frames, passes
+    # Brightness is compared between survey visits (runs split at gaps), not
+    # between the time windows a long visit is cut into: halving a visit
+    # halves the same-wavelength pairs each comparison gets (R Dra's ~85-day
+    # visits fell below `min_pairs`). Where there are no gaps (ecliptic
+    # poles), the windows are the only epochs there are.
+    visits = group_into_passes([f.mjd for f in frames], pass_gap_days, math.inf)
+    if len(visits) >= 2:
+        visit_of_frame = {i: v for v, ids in enumerate(visits) for i in ids}
+        epoch_of_pass = [visit_of_frame[ids[0]] for ids in input_passes]
+    else:
+        epoch_of_pass = list(range(len(input_passes)))
     if stack:
         n = int(round(max(frames[0].data.shape)))
         grid = stack_grid(SkyCoord(float(c_ra) * u.deg, float(c_dec) * u.deg), n, pix)
@@ -1080,7 +1108,7 @@ def find_motion(
             and not obj.missing_passes
             and len(obj.sources) >= min(3, len(passes))
         )
-        var = _variability(obj.sources, calib_frac)
+        var = _variability(_brightness_epochs(obj.sources, epoch_of_pass), calib_frac)
         obj.variability = var
         obj.is_variable = bool(
             var and var["ratio"] >= variable_ratio and var["significance"] >= variable_sigma
