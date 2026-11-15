@@ -6,6 +6,15 @@ slow patches are not reclaimed by other workers. A processor exception fails
 the patch (it is retried later); a database error stops the worker, and the
 lease returns the patch to the queue.
 
+Upstream outages: an exception with `transient = True` (archive.UpstreamError
+for IRSA 5xx, timeouts, our own request cap) means the service is down, not
+that the patch is bad. IRSA's SIA returns 502s for hours at a time, which used
+to fail every patch the worker reached. Such a patch is released without
+counting an attempt and the worker waits (60 s doubling to 15 min) before
+claiming again. A patch that keeps hitting transient errors while others
+succeed counts a real attempt after OUTAGE_RELEASES_PER_ATTEMPT releases, so
+it cannot hold the worker forever.
+
 Signals:
   * SIGINT (Ctrl-C): finish the current patch, then stop. A second SIGINT
     aborts the current patch and releases it back to the queue.
@@ -18,12 +27,12 @@ import logging
 import signal
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import FrameType
-from typing import Any
+from typing import Any, Literal
 
 from planetx.survey.queue import (
     DEFAULT_LEASE_S,
@@ -39,6 +48,11 @@ log = logging.getLogger(__name__)
 # How long to wait before asking again when no patch is claimable yet
 # (others are in progress elsewhere, or failed patches are waiting to retry).
 DEFAULT_IDLE_POLL_S = 30.0
+
+# Waits after consecutive upstream outages; the last one repeats.
+DEFAULT_OUTAGE_WAITS_S: tuple[float, ...] = (60.0, 120.0, 240.0, 480.0, 900.0)
+# Outage releases of one patch (seen by this worker) before one counts as a failed attempt.
+OUTAGE_RELEASES_PER_ATTEMPT = 8
 
 
 class PatchAbandoned(Exception):
@@ -83,6 +97,7 @@ class RunResult:
     done: int = 0
     failed: int = 0  # failed attempts (the patch may still be retried)
     released: int = 0  # patches handed back unprocessed (PatchAbandoned)
+    outages: int = 0  # patches handed back because the upstream service was down
     lease_lost: int = 0  # results discarded because another worker reclaimed the patch
     aborted: bool = False  # stopped mid-patch by a signal; that patch was released
     reason: str = ""  # why the loop stopped
@@ -126,6 +141,40 @@ class _StopFlag:
             log.warning("%s: aborting the current patch", name)
             raise KeyboardInterrupt
         log.warning("%s: stopping after recording the current patch", name)
+
+
+class _Outage:
+    """Consecutive upstream outages and per-patch outage releases (this worker only)."""
+
+    def __init__(self, waits_s: Sequence[float]) -> None:
+        if not waits_s or any(not w > 0 for w in waits_s):
+            raise ValueError(f"outage_waits_s must be non-empty and positive, got {waits_s!r}")
+        self.waits_s = tuple(waits_s)
+        self.streak = 0  # outages since the last patch that got through
+        self.per_patch: dict[tuple[int, int], int] = {}
+
+    def release_allowed(self, patch: Patch) -> bool:
+        """Record an outage on `patch`; False once it should count as a failed attempt instead."""
+        key = (patch.nside, patch.ipix)
+        self.per_patch[key] = self.per_patch.get(key, 0) + 1
+        if self.per_patch[key] > OUTAGE_RELEASES_PER_ATTEMPT:
+            self.per_patch[key] = 0
+            return False
+        return True
+
+    def next_wait(self) -> float:
+        wait = self.waits_s[min(self.streak, len(self.waits_s) - 1)]
+        self.streak += 1
+        return wait
+
+    def cleared(self, patch: Patch) -> None:
+        self.streak = 0
+        self.per_patch.pop((patch.nside, patch.ipix), None)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    # Duck-typed so this module does not import the archive client (see `motion`).
+    return getattr(exc, "transient", False) is True
 
 
 def _open_heartbeat_queue(queue: PatchQueue) -> PatchQueue:
@@ -188,6 +237,7 @@ def run(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     retry_delay_s: float = DEFAULT_RETRY_DELAY_S,
     idle_poll_s: float = DEFAULT_IDLE_POLL_S,
+    outage_waits_s: Sequence[float] = DEFAULT_OUTAGE_WAITS_S,
     worker_id: str | None = None,
 ) -> RunResult:
     """Process patches from the queue at `db_path` until it is drained or stopped.
@@ -201,6 +251,7 @@ def run(
         raise ValueError(f"max_patches must be an int >= 1, got {max_patches!r}")
     if not idle_poll_s > 0:
         raise ValueError(f"idle_poll_s must be > 0, got {idle_poll_s!r}")
+    outage = _Outage(outage_waits_s)
     result = RunResult()
     flags = _StopFlag()
     with PatchQueue(
@@ -232,9 +283,15 @@ def run(
                     flags.stop.wait(idle_poll_s)
                     continue
                 claimed += 1
-                if not _process_one(queue, patch, process_patch, result, flags):
+                outcome = _process_one(queue, patch, process_patch, result, flags, outage)
+                if outcome == "aborted":
                     result.reason = "aborted by signal"
                     break
+                if outcome == "outage":
+                    wait = outage.next_wait()
+                    log.warning("upstream service down (%d in a row); waiting %.0fs before the next claim",
+                                outage.streak, wait)
+                    flags.stop.wait(wait)
         except KeyboardInterrupt:
             # Only reachable when our handlers are not installed (run() off the
             # main thread). A patch claimed in that instant is recovered when
@@ -243,14 +300,16 @@ def run(
             result.reason = "aborted by signal"
         finally:
             flags.restore()
-    log.info("worker stopping: %s (done %d, failed attempts %d)", result.reason, result.done, result.failed)
+    log.info("worker stopping: %s (done %d, failed attempts %d, outage releases %d)",
+             result.reason, result.done, result.failed, result.outages)
     return result
 
 
 def _process_one(
-    queue: PatchQueue, patch: Patch, process_patch: ProcessPatch, result: RunResult, flags: _StopFlag
-) -> bool:
-    """Process one claimed patch and record the outcome. Returns False if aborted."""
+    queue: PatchQueue, patch: Patch, process_patch: ProcessPatch, result: RunResult, flags: _StopFlag,
+    outage: _Outage,
+) -> Literal["ok", "outage", "aborted"]:
+    """Process one claimed patch and record the outcome."""
     started = time.monotonic()
     log.info("patch rank %d (ipix %d, attempt %d): processing", patch.rank, patch.ipix, patch.attempts + 1)
     try:
@@ -264,33 +323,41 @@ def _process_one(
     except KeyboardInterrupt:
         _release(queue, patch)
         result.aborted = True
-        return False
+        return "aborted"
     except PatchAbandoned as exc:
         log.warning("patch rank %d (ipix %d) abandoned by the processor: %s", patch.rank, patch.ipix, exc)
         if _release(queue, patch):
             result.released += 1
-        return True
+        return "ok"
     except Exception as exc:
+        if _is_transient(exc) and outage.release_allowed(patch):
+            log.warning("patch rank %d (ipix %d): upstream outage, not counted as an attempt: %s",
+                        patch.rank, patch.ipix, exc)
+            if _release(queue, patch):
+                result.outages += 1
+            return "outage"
         log.exception("patch rank %d (ipix %d) failed", patch.rank, patch.ipix)
         _fail(queue, patch, f"{type(exc).__name__}: {exc}", result)
-        return True
+        return "ok"
+
+    outage.cleared(patch)
 
     try:
         queue.complete(patch, summary)
     except (TypeError, ValueError) as exc:
         log.error("patch rank %d (ipix %d): processor returned an invalid summary: %s", patch.rank, patch.ipix, exc)
         _fail(queue, patch, f"invalid summary: {exc}", result)
-        return True
+        return "ok"
     except LeaseLostError as exc:
         log.warning("%s; result discarded", exc)
         result.lease_lost += 1
-        return True
+        return "ok"
     result.done += 1
     stats = queue.stats()
     log.info("patch rank %d (ipix %d): done in %.1fs %s [survey %d/%d done, %d failed]",
              patch.rank, patch.ipix, time.monotonic() - started, summary,
              stats.counts["done"], stats.total, stats.counts["failed"])
-    return True
+    return "ok"
 
 
 def _fail(queue: PatchQueue, patch: Patch, error: str, result: RunResult) -> None:

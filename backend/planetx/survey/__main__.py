@@ -84,7 +84,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"stopped: {result.reason}; done {result.done}, failed attempts {result.failed}, "
-          f"released {result.released}, lost leases {result.lease_lost}")
+          f"released {result.released}, outage releases {result.outages}, lost leases {result.lease_lost}")
     return 130 if result.aborted else 0
 
 

@@ -82,6 +82,93 @@ def test_processor_exception_fails_the_patch_and_the_loop_continues(db):
     assert all(by_rank[k]["status"] == "done" for k in range(1, 12))
 
 
+class _Transient(Exception):
+    """Shaped like archive.UpstreamError for an IRSA 5xx."""
+
+    transient = True
+
+
+def test_upstream_outage_releases_the_patch_without_an_attempt_and_waits(db, monkeypatch):
+    waits = []
+    monkeypatch.setattr(_StopFlag, "__init__", _recording_wait_init(waits))
+    calls = {"n": 0}
+
+    def outage_then_up(ctx: PatchContext) -> dict:
+        calls["n"] += 1
+        if calls["n"] <= 3:  # IRSA down for the first three claims
+            raise _Transient("SIA query spherex_dr1 failed after 3 attempt(s): HTTP 502")
+        return {"ok": True}
+
+    result = run(outage_then_up, db, max_attempts=1, outage_waits_s=(1.0, 2.0), idle_poll_s=0.01)
+    assert (result.done, result.failed, result.outages) == (12, 0, 3)
+    assert waits == [1.0, 2.0, 2.0]  # doubling, capped at the last wait
+    by_rank = {r["rank"]: r for r in rows(db).values()}
+    assert by_rank[0]["status"] == "done"
+    assert by_rank[0]["attempts"] == 0  # max_attempts=1 would have failed it on the first 502
+
+
+def test_a_patch_that_always_hits_transient_errors_still_fails_eventually(db, monkeypatch):
+    monkeypatch.setattr(_StopFlag, "__init__", _recording_wait_init([]))
+
+    def rank0_stuck(ctx: PatchContext) -> dict:
+        if ctx.patch.rank == 0:
+            raise _Transient("truncated FITS")
+        return {"ok": True}
+
+    result = run(rank0_stuck, db, max_attempts=2, retry_delay_s=0.01, outage_waits_s=(0.01,), idle_poll_s=0.01)
+    by_rank = {r["rank"]: r for r in rows(db).values()}
+    assert by_rank[0]["status"] == "failed"
+    assert by_rank[0]["attempts"] == 2
+    assert result.done == 11
+    assert result.outages == 2 * worker.OUTAGE_RELEASES_PER_ATTEMPT
+
+
+def test_a_non_transient_upstream_error_counts_an_attempt(db):
+    class _Permanent(Exception):
+        transient = False
+
+    def bad_request(ctx: PatchContext) -> dict:
+        if ctx.patch.rank == 0:
+            raise _Permanent("HTTP 400")
+        return {"ok": True}
+
+    result = run(bad_request, db, max_attempts=1, idle_poll_s=0.01)
+    assert (result.failed, result.outages) == (1, 0)
+    assert {r["rank"]: r for r in rows(db).values()}[0]["status"] == "failed"
+
+
+@pytest.mark.parametrize("waits", [(), (0.0,), (1.0, -1.0)])
+def test_invalid_outage_waits_rejected(db, waits):
+    with pytest.raises(ValueError):
+        run(dry_run, db, outage_waits_s=waits)
+
+
+def _recording_wait_init(waits):
+    """_StopFlag.__init__ whose stop.wait records the timeout instead of sleeping on it."""
+    original = _StopFlag.__init__
+
+    def init(self):
+        original(self)
+        event = self.stop
+
+        class _Recording(threading.Event):
+            def wait(self, timeout=None):
+                if timeout is not None and timeout >= 0.5:
+                    waits.append(timeout)
+                    return event.is_set()
+                return event.wait(timeout)
+
+            def set(self):
+                event.set()
+
+            def is_set(self):
+                return event.is_set()
+
+        self.stop = _Recording()
+
+    return init
+
+
 def test_invalid_summary_fails_the_patch(db):
     result = run(lambda ctx: {"bad": float("nan")}, db, max_patches=1, max_attempts=1)
     assert result.failed == 1
