@@ -12,6 +12,8 @@ with a wider match radius, and says so in a note.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
@@ -25,8 +27,10 @@ from .catalogs import DAYS_PER_YEAR, CatalogError, CatalogObject, SolarSystemBod
 from .observer import SPHEREX_MAX_GEOCENTRIC_KM, mean_position, parallax_arcsec
 from .rules import (
     BODY_MATCH_ARCSEC,
+    BODY_MIN_AU,
     MATCH_RADIUS_ARCSEC,
     MAX_MATCHES,
+    NEAREST_BODY_AU,
     FieldCatalog,
     Match,
     archive_is_other_stars,
@@ -48,17 +52,17 @@ CANDIDATE_MIN_PASSES = 3
 # the field cannot be one of its objects.
 MAX_PM_ARCSEC_YR = 15.0
 # The SkyBoT cone (geocentric) must hold a body SPHEREx sees at the cone's centre
-# down to this distance: 8' of parallax plus the match radius and the 120" of
-# position error SkyBoT is told to allow (`-filter`), about 620" in all. Nearer
-# bodies move several pixels during one SPHEREx exposure, so the engine does not
-# see them as point sources anyway.
-NEAREST_BODY_AU = 0.02
+# down to NEAREST_BODY_AU: 8' of parallax plus the match radius and the 120" of
+# position error SkyBoT is told to allow (`-filter`), about 620" in all.
 SKYBOT_MAX_POSITION_ERR_ARCSEC = 120.0
 SKYBOT_RADIUS_ARCSEC = (
     parallax_arcsec(SPHEREX_MAX_GEOCENTRIC_KM, NEAREST_BODY_AU) + BODY_MATCH_ARCSEC + SKYBOT_MAX_POSITION_ERR_ARCSEC
 )
 # SkyBoT takes 2-10 s per cone; a run asks at most this many.
 MAX_BODY_QUERIES = 8
+# After Horizons fails, runs skip it for this long (asteroid checks use the
+# geocentric fallback meanwhile), so an outage does not cost every run a timeout.
+HORIZONS_BACKOFF_S = 600.0
 
 FetchStars = Callable[[float, float, float], list[CatalogObject]]
 FetchBodies = Callable[[float, float, float, float], list[SolarSystemBody]]
@@ -136,12 +140,15 @@ def check_objects(
     fetch_simbad: FetchStars = catalogs.fetch_simbad,
     fetch_skybot: FetchBodies = catalogs.fetch_skybot,
     fetch_observer: FetchObserver = observer.spherex_geocentric_km,
+    stacked: bool = False,
 ) -> CheckResult:
     """Name and classify the tracked objects of one field, and settle which of them move.
 
     `fused[i]` is the archival refit of `objects[i]`. Gaia is required: without
     it nothing is classified. SIMBAD only adds names and object types. Horizons
-    (`fetch_observer`) only sharpens the known-asteroid check.
+    (`fetch_observer`) only sharpens the known-asteroid check. `stacked`
+    (`EngineResult.stacked`): positions come from per-pass co-adds whose time is
+    a multi-day mean, which no solar-system body fits, so SkyBoT is not asked.
     """
     if not objects:
         return CheckResult(known=[])
@@ -205,8 +212,14 @@ def check_objects(
     if on_slow_stars:
         notes.append(f"{on_slow_stars} apparent mover(s) set to static: slow Gaia stars lie at every position")
 
-    asteroids, unchecked_bodies, body_notes = _check_bodies(objects, kinds, leads, fetch_skybot, fetch_observer)
-    notes += body_notes
+    if stacked:
+        asteroids, unchecked_bodies = {}, set()
+        if any(kind != "static" and lead is None for kind, lead in zip(kinds, leads, strict=True)):
+            notes.append("stacked passes: movers were not checked for known asteroids "
+                         "(a co-add's time spans days, no solar-system body fits it)")
+    else:
+        asteroids, unchecked_bodies, body_notes = _check_bodies(objects, kinds, leads, fetch_skybot, fetch_observer)
+        notes += body_notes
 
     known = []
     for i, (obj, kind) in enumerate(zip(objects, kinds, strict=True)):
@@ -230,6 +243,55 @@ def check_objects(
             archive_void=i in void_archive,
         ))
     return CheckResult(known=known, notes=notes)
+
+
+class _HorizonsBackoff:
+    """Process-wide memory of a Horizons failure, shared by all runs (and threads)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._until = 0.0
+        self._reason = ""
+
+    def reason(self) -> str | None:
+        """Why Horizons is being skipped right now, or None to try it."""
+        with self._lock:
+            return self._reason if time.monotonic() < self._until else None
+
+    def failed(self, reason: str) -> None:
+        with self._lock:
+            self._until = time.monotonic() + HORIZONS_BACKOFF_S
+            self._reason = reason
+
+    def reset(self) -> None:
+        with self._lock:
+            self._until, self._reason = 0.0, ""
+
+
+horizons_backoff = _HorizonsBackoff()
+
+
+def _spherex_at(source, fetch_observer: FetchObserver) -> tuple[object, float, str | None]:
+    """(SPHEREx's mean position over the pass's frames or None, its spread km, failure reason).
+
+    Weighted like the pass position (1/sigma^2 per detection), so the shift
+    applies to the averaged position the engine reports.
+    """
+    reason = horizons_backoff.reason()
+    if reason is not None:
+        return None, 0.0, f"{reason}; not retried for {HORIZONS_BACKOFF_S / 60:.0f} min"
+    dets = source.detections
+    try:
+        positions = fetch_observer([d.mjd for d in dets])
+    except CatalogError as exc:
+        log.warning("Horizons unavailable, SkyBoT positions stay geocentric: %s", exc)
+        horizons_backoff.failed(str(exc))
+        return None, 0.0, str(exc)
+    weights = [1.0 / d.sigma_arcsec ** 2 if d.sigma_arcsec > 0 else 0.0 for d in dets]
+    if not sum(weights) > 0:
+        weights = None
+    mean, spread = mean_position(positions, weights)
+    return mean, spread, None
 
 
 def _check_bodies(
@@ -258,6 +320,7 @@ def _check_bodies(
     horizons_failure: str | None = None
     geocentric_passes = 0
     geocentric_matches = 0
+    assumed_distance_matches = 0
     for i in wanted:
         for source in body_epochs(objects[i].sources):
             if failure is not None or queries >= MAX_BODY_QUERIES:
@@ -275,17 +338,14 @@ def _check_bodies(
                 continue
             spherex_km, spread_km = None, 0.0
             if horizons_failure is None:
-                try:
-                    spherex_km, spread_km = mean_position(fetch_observer([d.mjd for d in source.detections]))
-                except CatalogError as exc:
-                    log.warning("Horizons unavailable, SkyBoT positions stay geocentric: %s", exc)
-                    horizons_failure = str(exc)
+                spherex_km, spread_km, horizons_failure = _spherex_at(source, fetch_observer)
             if spherex_km is None:
                 geocentric_passes += 1
-            match = asteroid_match(source.ra, source.dec, bodies, spherex_km, spread_km)
-            if match is not None:
-                found[i] = match
+            hit = asteroid_match(source.ra, source.dec, bodies, spherex_km, spread_km)
+            if hit is not None:
+                found[i] = hit.match
                 geocentric_matches += spherex_km is None
+                assumed_distance_matches += hit.assumed_distance
                 break
     if failure is not None:
         notes.append(
@@ -300,7 +360,14 @@ def _check_bodies(
         notes.append(
             f"JPL Horizons unavailable ({horizons_failure}): {geocentric_passes} position(s) compared with "
             "geocentric SkyBoT predictions, the match radius widened by SPHEREx's largest parallax "
-            f"({parallax_arcsec(SPHEREX_MAX_GEOCENTRIC_KM, 1.0):.1f}\" divided by the distance in au); "
+            f"({parallax_arcsec(SPHEREX_MAX_GEOCENTRIC_KM, 1.0):.1f}\" divided by the distance in au, "
+            f"at most {parallax_arcsec(SPHEREX_MAX_GEOCENTRIC_KM, NEAREST_BODY_AU):.0f}\"); "
             f"{geocentric_matches} known-asteroid match(es) rest on that wider radius"
+        )
+    if assumed_distance_matches:
+        notes.append(
+            f"{assumed_distance_matches} known-asteroid match(es) on bodies SkyBoT gives no distance for: "
+            f"compared at the geocentric position within the parallax of a body {BODY_MIN_AU} au away "
+            f"({parallax_arcsec(SPHEREX_MAX_GEOCENTRIC_KM, BODY_MIN_AU):.0f}\")"
         )
     return found, unchecked_bodies, notes

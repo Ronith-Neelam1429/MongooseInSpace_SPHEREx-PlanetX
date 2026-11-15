@@ -62,7 +62,7 @@ def _horizons_radec(target: str, center: str, jd: float) -> tuple[float, float, 
 
 
 def test_horizons_knows_spherex_in_low_earth_orbit(tmp_path):
-    first, later = observer.spherex_geocentric_km([61000.0, 61000.01], cache_path=tmp_path / "c.json")
+    first, later = observer.spherex_geocentric_km([61000.0, 61000.01], cache_dir=tmp_path / "c")
     for xyz in (first, later):
         assert 6900.0 < math.dist(xyz, (0, 0, 0)) < 7100.0
     # As recorded on 2026-11-14 (TLE-based, so a later TLE set may move it a little).
@@ -74,7 +74,7 @@ def test_moving_a_geocentric_position_to_spherex_matches_horizons_spacecraft_eph
     jd = 2461000.5
     geo_ra, geo_dec, au = _horizons_radec("433;", "500@399", jd)
     seen_ra, seen_dec, _ = _horizons_radec("433;", "@-163182", jd)
-    (spherex_km,) = observer.spherex_geocentric_km([jd - observer.MJD_TO_JD], cache_path=tmp_path / "c.json")
+    (spherex_km,) = observer.spherex_geocentric_km([jd - observer.MJD_TO_JD], cache_dir=tmp_path / "c")
     ra, dec = observer.from_observer(geo_ra, geo_dec, au, spherex_km)
     miss = math.hypot((ra - seen_ra) * math.cos(math.radians(seen_dec)), dec - seen_dec) * 3600.0
     shift = math.hypot((geo_ra - seen_ra) * math.cos(math.radians(seen_dec)), geo_dec - seen_dec) * 3600.0
@@ -83,7 +83,7 @@ def test_moving_a_geocentric_position_to_spherex_matches_horizons_spacecraft_eph
 
 def test_horizons_refuses_times_before_launch(tmp_path):
     with pytest.raises(CatalogError, match="No ephemeris"):
-        observer.spherex_geocentric_km([60000.0], cache_path=tmp_path / "c.json")
+        observer.spherex_geocentric_km([60000.0], cache_dir=tmp_path / "c")
 
 
 def test_skybot_has_no_spherex_observer_so_positions_must_be_moved_here():

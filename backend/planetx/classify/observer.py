@@ -59,6 +59,7 @@ ARCSEC_PER_RAD = 180.0 / math.pi * 3600.0
 MJD_TO_JD = 2400000.5
 # Cache key precision: 1e-8 day is ~1 ms, in which SPHEREx moves ~8 m.
 _KEY_FORMAT = "{:.8f}"
+CACHE_FILE_MODE = 0o644
 
 _cache_lock = threading.Lock()
 
@@ -89,18 +90,24 @@ def from_observer(ra: float, dec: float, distance_au: float, observer_km: Sequen
     return float(math.degrees(math.atan2(y, x)) % 360.0), float(math.degrees(math.asin(max(-1.0, min(1.0, z)))))
 
 
-def mean_position(positions: Sequence[Sequence[float]]) -> tuple[np.ndarray, float]:
-    """(mean position, largest distance of any position from it) in km.
+def mean_position(
+    positions: Sequence[Sequence[float]], weights: Sequence[float] | None = None
+) -> tuple[np.ndarray, float]:
+    """(weighted mean position, largest distance of any position from it) in km.
 
-    A pass position averages detections from several frames, and a body's shift
-    is linear in the observer's position to first order: the mean observer
-    position gives the shift of the averaged position, and the spread bounds how
-    far any one frame's shift can differ from it.
+    A pass position is the weighted mean of its detections (weights 1/sigma^2 in
+    the engine, and the pass time uses the same weights), and a body's shift is
+    linear in the observer's position to first order: the observer positions
+    averaged with those weights give the shift of the pass position. The spread
+    bounds how far any one frame's shift can differ from it.
     """
     pts = np.asarray(positions, dtype=float).reshape(-1, 3)
     if len(pts) == 0:
         raise ValueError("no positions")
-    mean = pts.mean(axis=0)
+    w = np.ones(len(pts)) if weights is None else np.asarray(weights, dtype=float)
+    if w.shape != (len(pts),) or not (np.all(np.isfinite(w)) and np.all(w >= 0) and w.sum() > 0):
+        raise ValueError(f"need one finite, non-negative weight per position with a positive sum, got {weights}")
+    mean = (w[:, None] * pts).sum(axis=0) / w.sum()
     return mean, float(np.linalg.norm(pts - mean, axis=1).max())
 
 
@@ -169,8 +176,14 @@ def _fetch_horizons(mjds: Sequence[float]) -> dict[str, list[float]]:
     return out
 
 
-def default_cache_path() -> Path:
-    return settings.cache_dir / "horizons" / "spherex_geocentric.json"
+def default_cache_dir() -> Path:
+    return settings.cache_dir / "horizons" / "spherex"
+
+
+def _day_file(cache_dir: Path, key: str) -> Path:
+    """One small JSON file per UTC day (MJD integer part), so a survey's cache never
+    has to be rewritten in full: a day holds at most the few hundred frames SPHEREx took."""
+    return cache_dir / f"{math.floor(float(key))}.json"
 
 
 def _read_cache(path: Path) -> dict[str, list[float]]:
@@ -199,20 +212,21 @@ def _read_cache(path: Path) -> dict[str, list[float]]:
 
 
 def _write_cache(path: Path, data: dict[str, list[float]]) -> None:
-    """Atomic replace, so a reader never sees half a file. Another process writing at
-    the same time can drop this one's new entries: they are fetched again next time."""
+    """Atomic replace, so a reader never sees half a file. Another process writing the
+    same day at the same time can drop this one's new entries: they are fetched again."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(data, f)
+        os.chmod(tmp, CACHE_FILE_MODE)  # mkstemp makes it 0600; other users of the cache read it too
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
 
 
-def spherex_geocentric_km(mjds: Sequence[float], cache_path: Path | None = None) -> list[np.ndarray]:
+def spherex_geocentric_km(mjds: Sequence[float], cache_dir: Path | None = None) -> list[np.ndarray]:
     """SPHEREx's geocentric ICRF position (km) at each UTC time, from Horizons, cached on disk.
 
     Only times not in the cache are asked for, in one request per
@@ -224,19 +238,28 @@ def spherex_geocentric_km(mjds: Sequence[float], cache_path: Path | None = None)
     for m in mjds:
         if not math.isfinite(m):
             raise ValueError(f"invalid epoch mjd={m}")
-    path = cache_path or default_cache_path()
+    root = cache_dir or default_cache_dir()
     keys = [_KEY_FORMAT.format(m) for m in mjds]
+    days: dict[Path, list[str]] = {}
+    for k in keys:
+        days.setdefault(_day_file(root, k), []).append(k)
+    found: dict[str, list[float]] = {}
     with _cache_lock:
-        cached = _read_cache(path)
-    missing = sorted({k for k in keys if k not in cached})
+        for path in days:
+            found.update(_read_cache(path))
+    missing = sorted({k for k in keys if k not in found})
     if missing:
         fetched: dict[str, list[float]] = {}
         for start in range(0, len(missing), MAX_EPOCHS_PER_CALL):
             fetched.update(_fetch_horizons([float(k) for k in missing[start:start + MAX_EPOCHS_PER_CALL]]))
+        found.update(fetched)
+        new_by_day: dict[Path, dict[str, list[float]]] = {}
+        for k, v in fetched.items():
+            new_by_day.setdefault(_day_file(root, k), {})[k] = v
         with _cache_lock:
-            cached = {**_read_cache(path), **fetched}
-            try:
-                _write_cache(path, cached)
-            except OSError as exc:
-                log.warning("could not write Horizons cache %s: %s", path, exc)
-    return [np.array(cached[k], dtype=float) for k in keys]
+            for path, new in new_by_day.items():
+                try:
+                    _write_cache(path, {**_read_cache(path), **new})
+                except OSError as exc:
+                    log.warning("could not write Horizons cache %s: %s", path, exc)
+    return [np.array(found[k], dtype=float) for k in keys]

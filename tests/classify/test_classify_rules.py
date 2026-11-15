@@ -199,7 +199,9 @@ def test_asteroid_tolerance_allows_for_spherex_not_being_at_the_earths_centre():
     def body(east, au, err=0.0, name="(213446) 2002 AV66"):
         return SolarSystemBody(name, "Main-belt asteroid", *offset(ra, dec, east, 0.0), 61000.0, 21.6, au, err)
 
-    match = asteroid_match(ra, dec, [body(30.0, 3.0), body(11.0, 3.0, name="(1) Ceres")])
+    hit = asteroid_match(ra, dec, [body(30.0, 3.0), body(11.0, 3.0, name="(1) Ceres")])
+    assert (hit.corrected, hit.assumed_distance) == (False, False)
+    match = hit.match
     assert match.name == "(1) Ceres" and match.catalog == "skybot" and match.sep_arcsec == pytest.approx(11.0, abs=0.01)
     assert match.kind == "Main-belt asteroid" and match.magnitude == 21.6 and match.pm_ra_cosdec is None
     assert asteroid_match(ra, dec, [body(30.0, 3.0)]) is None  # 10" + 3" of parallax is not enough
@@ -217,22 +219,42 @@ def test_a_near_earth_object_is_matched_where_spherex_saw_it():
     assert 400.0 < shift < 490.0
     neo = SolarSystemBody("2026 AB", "Near-Earth asteroid", geo_ra, geo_dec, 61000.0, 18.0, au, 1.0)
 
-    match = asteroid_match(seen_ra, seen_dec, [neo], spherex_km)
-    assert match.name == "2026 AB" and match.sep_arcsec < 0.01  # corrected: exact
+    hit = asteroid_match(seen_ra, seen_dec, [neo], spherex_km)
+    assert hit.match.name == "2026 AB" and hit.match.sep_arcsec < 0.01 and hit.corrected  # corrected: exact
     # Corrected positions keep the tolerance tight: 20" from where SPHEREx saw it is someone else.
     assert asteroid_match(seen_ra, seen_dec + 20.0 / 3600.0, [neo], spherex_km) is None
     # Frames averaged over SPHEREx's motion leave that motion's parallax as the allowance.
     assert asteroid_match(seen_ra, seen_dec + 20.0 / 3600.0, [neo], spherex_km, observer_spread_km=300.0) is not None
     # Without SPHEREx's position (Horizons down) the geocentric one is matched within the largest parallax.
     fallback = asteroid_match(seen_ra, seen_dec, [neo])
-    assert fallback.name == "2026 AB" and fallback.sep_arcsec == pytest.approx(shift, abs=0.01)
+    assert fallback.match.name == "2026 AB" and fallback.match.sep_arcsec == pytest.approx(shift, abs=0.01)
+    assert not fallback.corrected
     # ...but not beyond it: a body at 1 au gets under 10" of allowance.
     far = SolarSystemBody("(5) Astraea", "Main-belt asteroid", geo_ra, geo_dec, 61000.0, 12.0, 1.0, 0.0)
     assert asteroid_match(seen_ra, seen_dec, [far]) is None
     # A body without a distance is not moved, and gets the allowance of one 0.05 au away.
     unknown = SolarSystemBody("C/2026 X1", "Comet", geo_ra, geo_dec, 61000.0, None, None, None)
     assert asteroid_match(seen_ra, seen_dec, [unknown], spherex_km) is None
-    assert asteroid_match(geo_ra, geo_dec + 150.0 / 3600.0, [unknown], spherex_km) is not None
+    hit = asteroid_match(geo_ra, geo_dec + 150.0 / 3600.0, [unknown], spherex_km)
+    assert hit.assumed_distance and not hit.corrected
+
+
+def test_the_parallax_allowance_never_exceeds_the_geocentric_fallback():
+    geo_ra, geo_dec = 269.4485, -23.0
+    spherex_km = (0.0, 0.0, 7000.0)
+    neo = SolarSystemBody("2026 AB", "Near-Earth asteroid", geo_ra, geo_dec, 61000.0, 18.0, 0.02, 0.0)
+    seen_ra, seen_dec = from_observer(geo_ra, geo_dec, 0.02, spherex_km)
+    # An absurd spread (a pass averaged over a whole orbit) is capped at the 0.02 au fallback: 489" + 10".
+    assert asteroid_match(seen_ra, seen_dec + 495.0 / 3600.0, [neo], spherex_km, observer_spread_km=1e6) is not None
+    assert asteroid_match(seen_ra, seen_dec + 505.0 / 3600.0, [neo], spherex_km, observer_spread_km=1e6) is None
+
+
+def test_a_very_near_body_gets_no_more_than_the_nearest_body_allowance_without_horizons():
+    # 0.005 au would allow 1958" of parallax; the floor at 0.02 au keeps it at 489" + 10".
+    geo_ra, geo_dec = 269.4485, -23.0
+    near = SolarSystemBody("2026 EF", "Near-Earth asteroid", geo_ra, geo_dec, 61000.0, 16.0, 0.005, 0.0)
+    assert asteroid_match(geo_ra, geo_dec + 540.0 / 3600.0, [near]) is None  # 9' away
+    assert asteroid_match(geo_ra, geo_dec + 490.0 / 3600.0, [near]) is not None
 
 
 @pytest.mark.parametrize("kind, flags, expected", [
