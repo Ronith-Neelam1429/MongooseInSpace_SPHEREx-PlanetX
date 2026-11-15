@@ -1,9 +1,13 @@
-"""Co-add each pass's frames into one deeper image.
+"""Co-add each pass's frames, per detector, into deeper images.
 
 Faint objects (e.g. the brown dwarf WISE 0855) sit below the single-frame
-detection limit but appear once a pass's ~10-40 frames are added. Frames are
-first shifted by the star-matched alignment offsets, then resampled onto one
-shared tangent-plane grid and combined with inverse-variance weights.
+detection limit but appear once a pass's frames are added. Frames are first
+shifted by the star-matched alignment offsets, then resampled onto one shared
+tangent-plane grid and combined with inverse-variance weights.
+
+Each detector covers its own wavelength range (0.75-5 um over the six), so
+frames are co-added per detector: adding a red object's 4-5 um frames to
+1-2 um frames where it is invisible would only add noise.
 """
 from __future__ import annotations
 
@@ -44,11 +48,12 @@ def stack_pass(
     grid: WCS,
     shape: tuple[int, int],
 ) -> Frame:
-    """Inverse-variance co-add of one pass, as a Frame the detector can use.
+    """Inverse-variance co-add of one pass's frames, as a Frame the detector can use.
 
-    Each frame is background-subtracted first. Frames span different
-    wavelengths, so the stack is a broadband image: fine for positions, but its
-    flux is only comparable with stacks made from the same detectors.
+    Each frame is background-subtracted first. The frames should come from one
+    detector; they still span that detector's wavelengths, so the stack's
+    `wavelength_um` is their weighted mean and its flux is that of a band
+    average (comparable with stacks of the same detector and mean wavelength).
     """
     num = np.zeros(shape)
     den = np.zeros(shape)
@@ -83,6 +88,9 @@ def stack_pass(
     weights = np.array([1 / np.nanmedian(np.where(np.isfinite(f.variance), f.variance, np.nan)) for f in frames])
     weights = np.where(np.isfinite(weights), weights, 0) + 1e-30
     mjd = float(np.average([f.mjd for f in frames], weights=weights))
+    waves = np.array([f.wavelength_um for f in frames])
+    known = np.isfinite(waves)
+    wavelength = float(np.average(waves[known], weights=weights[known])) if known.any() else float("nan")
     detectors = sorted({f.detector for f in frames})
     return Frame(
         data=data,
@@ -92,7 +100,16 @@ def stack_pass(
         # 0 = mixed detectors; per-detector flux comparisons don't apply.
         detector=detectors[0] if len(detectors) == 1 else 0,
         obs_id=f"stack:{len(frames)} frames",
+        wavelength_um=wavelength,
         psf_fwhm_arcsec=float(np.nanmedian([f.psf_fwhm_arcsec for f in frames])),
         saturated=saturated,
-        meta={"n_frames": len(frames), "detectors": detectors, "mjd_min": min(f.mjd for f in frames), "mjd_max": max(f.mjd for f in frames)},
+        meta={
+            "stacked": True,
+            "n_frames": len(frames),
+            "detectors": detectors,
+            "mjd_min": min(f.mjd for f in frames),
+            "mjd_max": max(f.mjd for f in frames),
+            "wavelength_min_um": float(waves[known].min()) if known.any() else float("nan"),
+            "wavelength_max_um": float(waves[known].max()) if known.any() else float("nan"),
+        },
     )

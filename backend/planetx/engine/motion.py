@@ -318,6 +318,7 @@ def _merge_pass(
     min_detect_frac: float,
 ) -> list[PassSource]:
     """Average each object's detections within one pass."""
+    stacked = bool(frame_ids) and bool(frames[frame_ids[0]].meta.get("stacked"))
     dets = [d for fi in frame_ids for d in detections[fi]]
     dets.sort(key=lambda d: -d.snr)  # brightest seed clusters first
     if not dets:
@@ -350,8 +351,8 @@ def _merge_pass(
         ra, dec = float(ras[c]), float(decs[c])
         covering = [fi for fi, seen in zip(frame_ids, covered[:, c]) if seen]
         n_cover = len(covering)
-        # A stacked pass is a single frame, so one detection is all there is.
-        if n < (2 if len(frame_ids) > 1 else 1):
+        # A stack (one per detector) or a lone frame is all a pass has there.
+        if n < (1 if stacked or len(frame_ids) == 1 else 2):
             continue
         # Judge the detection rate per detector: red objects (Y dwarfs) are only
         # visible at 4-5 um, i.e. in a third of the frames or fewer.
@@ -367,20 +368,23 @@ def _merge_pass(
             continue  # flickering at the noise limit: not a solid detection
         # Core fluxes and saturated stars' wing fluxes measure different things,
         # so they're kept under separate keys and only compared like with like.
-        by_det: dict[str, list[float]] = {}
+        by_det: dict[str, list[tuple[float, float]]] = {}
         for m in members:
             d = dets[m]
             if d.saturated:
                 if np.isfinite(d.wing_flux):
-                    by_det.setdefault(f"D{d.detector}-wing", []).append(d.wing_flux)
+                    by_det.setdefault(f"D{d.detector}-wing", []).append((d.wing_flux, d.wing_flux_err))
             elif np.isfinite(d.flux):
-                by_det.setdefault(f"D{d.detector}", []).append(d.flux)
+                by_det.setdefault(f"D{d.detector}", []).append((d.flux, d.flux_err))
         flux_by_detector = {}
-        for det, fl in by_det.items():
-            fl = np.asarray(fl)
-            if len(fl) < 2:
+        for det, values in by_det.items():
+            fl = np.array([v for v, _ in values])
+            if len(fl) >= 2:
+                err = fl.std(ddof=1) / np.sqrt(len(fl))
+            elif stacked and np.isfinite(values[0][1]):
+                err = values[0][1]  # a stack's own noise: its frames' scatter is averaged in
+            else:
                 continue  # one frame gives no error estimate; don't compare it
-            err = fl.std(ddof=1) / np.sqrt(len(fl))
             flux_by_detector[det] = (float(np.median(fl)), float(err))
         out.append(
             PassSource(
@@ -1031,9 +1035,11 @@ def find_motion(
 ) -> EngineResult:
     """Run the full pipeline on frames of one patch of sky (any order, any detectors).
 
-    With `stack=True`, each pass's aligned frames are co-added and sources are
-    found on the stacks: deeper (faint brown dwarfs), but saturated-star and
-    per-detector flux information is coarser.
+    With `stack=True`, each pass's aligned frames are co-added per detector
+    and sources are found on the stacks: deeper (faint brown dwarfs), but
+    saturated-star and wavelength information is coarser (a stack's flux is a
+    band average at its frames' mean wavelength, so brightness is compared
+    only between stacks whose mean wavelengths match).
     """
     if not frames:
         raise ValueError("no frames")
@@ -1078,11 +1084,16 @@ def find_motion(
     if stack:
         n = int(round(max(frames[0].data.shape)))
         grid = stack_grid(SkyCoord(float(c_ra) * u.deg, float(c_dec) * u.deg), n, pix)
-        frames = [
-            stack_pass([input_frames[i] for i in ids], [offsets[i] for i in ids], grid, (n, n))
-            for ids in input_passes
-        ]
-        passes = [[k] for k in range(len(frames))]
+        # One stack per pass and detector, so red objects aren't diluted by
+        # frames at wavelengths where they're invisible, and each stack keeps
+        # a wavelength for brightness comparisons.
+        frames, passes = [], []
+        for ids in input_passes:
+            passes.append([])
+            for det in sorted({input_frames[i].detector for i in ids}):
+                mine = [i for i in ids if input_frames[i].detector == det]
+                frames.append(stack_pass([input_frames[i] for i in mine], [offsets[i] for i in mine], grid, (n, n)))
+                passes[-1].append(len(frames) - 1)
         detections = [detect_sources(f, k, nsigma) for k, f in enumerate(frames)]
         offsets = [(0.0, 0.0)] * len(frames)
     if len(passes) < 2:

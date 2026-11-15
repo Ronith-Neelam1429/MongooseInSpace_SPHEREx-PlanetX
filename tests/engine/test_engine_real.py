@@ -36,12 +36,9 @@ def run(target: str, detectors=None, per_pass: int = 6, stack: bool = False):
     return coord, find_motion(frames, stack=stack)
 
 
-# Known problem (CLAUDE.md, "Engine known problems"): stack mode depends on which frame anchors
-# the per-pass co-adds. Since find_motion sorts its input by time (3e72fba), stacks come out as
-# in the website's frame order, where Eps Indi B measures 4.28"/yr (6.0" shift, under the 1 px
-# mover bar) and WISE 0855 reaches 6.6 sigma. Both passed only in tools/fetch's frame order.
-# The website and the survey never stack. Strict, so a fix shows up as XPASS.
-STACK_ORDER_REASON = "stack mode results depend on frame order; time-ordered stacks miss these values"
+# Known problem: WISE 0855's stacked significance (5.5 sigma with per-detector stacks) rests on
+# hand-set centroid errors. Strict, so a fix shows up as XPASS.
+STACK_ORDER_REASON = "WISE 0855's stacked significance rests on uncalibrated centroid errors"
 
 
 def sep(coord, obj) -> float:
@@ -59,10 +56,9 @@ def angle_diff(a: float, b: float) -> float:
         ("barnard", {"detectors": (1, 2, 3, 4, 5, 6)}, 10.39, 355.6, 0.05),
         # Eps Ind Ba/Bb system: ~4.7"/yr at PA ~122
         ("eps-indi-b", {}, 4.68, 121.8, 0.10),
-        pytest.param(
-            "eps-indi-b", {"stack": True}, 4.68, 121.8, 0.10,
-            marks=pytest.mark.xfail(strict=True, reason=STACK_ORDER_REASON),
-        ),
+        # Per-detector stacks: 4.58"/yr PA 123, 9 sigma (one co-add across
+        # detectors measured 4.28"/yr, under the 1 px mover bar).
+        ("eps-indi-b", {"stack": True}, 4.68, 121.8, 0.10),
     ],
 )
 def test_known_movers_are_the_only_movers(target, kw, pm, pa, pm_tol):

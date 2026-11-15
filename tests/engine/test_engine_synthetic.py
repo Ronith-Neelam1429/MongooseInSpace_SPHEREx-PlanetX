@@ -501,3 +501,33 @@ def test_variability_pairs_use_each_detection_once():
         signif.append(v["significance"])
     # Gaussian noise: |z| > 3 in ~0.3% of cases; allow for the median's heavier tails.
     assert np.mean(np.array(signif) > 3) < 0.03
+
+
+def test_stacks_per_detector_keep_a_faint_red_object():
+    # A faint Y-dwarf-like mover, visible only to detector 3 (~2.3 sigma per
+    # frame). Co-adding all three detectors' frames would add twice as many
+    # frames of pure noise and bury it; per-detector stacks find it.
+    rng = np.random.default_rng(18)
+    stars = field_stars(rng, flux=(400, 2000))
+    e0, n0 = clear_spot(stars, drift=(-8.0, 0.7))
+    red = (e0, n0, -8.0, 0.7, 13.0)
+    waves = {1: 1.0, 2: 1.6, 3: 4.5}
+    frames = []
+    for m0 in PASS_MJDS:
+        for k in range(36):
+            det = 1 + k % 3
+            frames.append(
+                make_frame(
+                    stars + ([red] if det == 3 else []), m0 + 0.5 * k, waves[det] + 0.01 * (k // 3), rng,
+                    rot_deg=rng.uniform(0, 360), wcs_error=tuple(rng.normal(0, 0.7, 2)), detector=det,
+                )
+            )
+    r = find_motion(frames, stack=True)
+    assert [len(p) for p in r.passes] == [3, 3, 3]
+    assert [[r.frames[i].detector for i in p] for p in r.passes] == [[1, 2, 3]] * 3
+    # Each stack carries its frames' mean wavelength.
+    assert [r.frames[i].wavelength_um for i in r.passes[0]] == pytest.approx([1.055, 1.655, 4.555])
+    (m,) = r.movers
+    assert m is nearest(r, e0 - 4.0, n0)
+    assert m.pm_ra_cosdec == pytest.approx(-8.0, abs=3.0)
+    assert all({d.detector for d in s.detections} == {3} for s in m.sources)
