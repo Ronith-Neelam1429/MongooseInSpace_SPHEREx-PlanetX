@@ -374,3 +374,17 @@ def test_crop_at_the_edge_is_clipped_and_off_the_cutout_is_none():
     assert crop["IMAGE"].data.shape[0] == 18 and crop["IMAGE"].data.shape[1] < 18
     assert cutouts.crop_cutout(big, *wcs.pixel_to_world_values(-3.0, 30.0), 0.03) is None
     assert cutouts.crop_cutout(big, RA + 10, DEC, 0.03) is None
+
+
+@pytest.mark.parametrize(("x", "y", "x0", "y0"), [
+    # Live pair (Nov 2026): a 0.30683 deg field request whose centre fell on pixel
+    # (547.754, 893.441) of a 2.1 deg cutout came back as the 180 px box from (458, 804).
+    (547.754, 893.441, 458, 804),
+    # Ends of the range seen over 106 live field cutouts: centre - origin in [89.0, 90.0).
+    (300.001, 300.999, 211, 211),
+    (299.999, 301.0, 210, 212),
+])
+def test_crop_box_follows_irsas_rule(x, y, x0, y0):
+    wcs = cutouts.cutout_wcs(synthetic_header(RA, DEC))
+    ra, dec = (float(c) for c in wcs.pixel_to_world_values(x, y))
+    assert cutouts.crop_box(wcs, (2000, 2000), ra, dec, 0.30683) == (x0, x0 + 180, y0, y0 + 180)
