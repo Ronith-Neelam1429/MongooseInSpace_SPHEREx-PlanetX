@@ -130,6 +130,26 @@ def _psf_for(lib):
     return psf_for
 
 
+def object_verdicts(objects):
+    """The motion verdict (planetx.classify.reliability) of each engine object, SPHEREx alone.
+
+    No archive or catalogue is consulted: a planted source has no counterpart in any of them, so
+    this is also what the full pipeline would have to go on.
+    """
+    from planetx.classify.check import Known
+    from planetx.classify.reliability import bright_star_distances, object_verdict, split_partners
+    from planetx.observatories import refine_objects
+
+    fused = refine_objects(objects, observatories="spherex").fused
+    bright, partners = bright_star_distances(objects), split_partners(objects)
+    out = []
+    for o, fm, b, p in zip(objects, fused, bright, partners):
+        known = Known(kind="mover" if o.is_mover else "static")
+        found = type("Found", (), {"tracked": o, "fused": fm, "known": known})()
+        out.append(object_verdict(found, bright_star_arcsec=b, split_partner=p))
+    return out
+
+
 def run_batch(task: dict) -> list[dict]:
     """Plant one batch, run the engine in each mode, score each injection."""
     from planetx.analysis.injection import inject, match_injections
@@ -152,12 +172,13 @@ def run_batch(task: dict) -> list[dict]:
     rows = []
     for mode in task["modes"]:
         t0 = time.time()
-        error = None
+        error, verdicts = None, None
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 result = find_motion(planted, stack=(mode == "stack"))
             matches = match_injections(result.objects, injections)
+            verdicts = object_verdicts(result.objects) if task.get("verdicts") else None
         except Exception as exc:  # a failed run counts as a miss, and is reported
             error, matches = f"{type(exc).__name__}: {exc}", [None] * len(injections)
         k = 0
@@ -176,6 +197,9 @@ def run_batch(task: dict) -> list[dict]:
                         pm_true_n=inj.pm_dec, pull_e=pull[0] if pull else None, pull_n=pull[1] if pull else None,
                         significance=m.obj.pm_significance, link=m.obj.link,
                     )
+                    if verdicts is not None:
+                        v = verdicts[result.objects.index(m.obj)]
+                        row.update(verdict=v.verdict, verdict_cause=v.cause, verdict_certainty=v.certainty)
             rows.append(row)
     return rows
 
@@ -330,6 +354,7 @@ def main() -> None:
     ap.add_argument("--fields", nargs="*", default=list(FIELDS), choices=list(FIELDS))
     ap.add_argument("--rerun", nargs="*", default=None, choices=list(FIELDS), help="only recompute these fields; take the rest from --rows-in")
     ap.add_argument("--rows-in", type=Path, default=None, help="raw rows (from --dump-rows) of an earlier run, for --rerun")
+    ap.add_argument("--static-verdicts", action="store_true", help="only static injections, single frames: record the motion verdict of each recovered one and add `static_verdicts` to the existing results file")
     ap.add_argument("--reps", type=int, default=6, help="injections per (field, speed, brightness) cell")
     ap.add_argument("--modes", nargs="*", default=list(MODES), choices=list(MODES))
     ap.add_argument("--workers", type=int, default=4, help="processes (the machine is shared: at most 4)")
@@ -361,6 +386,37 @@ def main() -> None:
             # The engine needs a mover to shift by more than one pixel over its baseline.
             "one_pixel_pm_arcsec_yr": frames[0].pixel_scale_arcsec / ((max(f.mjd for f in frames) - min(f.mjd for f in frames)) / 365.25),
         })
+    if args.static_verdicts:
+        sv_path = args.out or ROOT / "results" / "injection_recovery.json"
+        tasks = [
+            {**t, "cells": [c for c in t["cells"] if c[0] == 0.0], "modes": ["single"], "verdicts": True}
+            for t in make_tasks(args.cache_dir, args.fields, reps, ["single"])
+        ]
+        tasks = [t for t in tasks if t["cells"]]
+        print(f"{len(tasks)} static-verdict batches", flush=True)
+        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+            sv_rows = [r for batch in pool.map(run_batch, tasks) for r in batch]
+        rec = [r for r in sv_rows if r["placed"] and r["recovered"]]
+        counts: dict = defaultdict(int)
+        for r in rec:
+            counts[r["verdict"]] += 1
+        causes: dict = defaultdict(int)
+        for r in rec:
+            if r["verdict"] in ("fake_motion", "unsure") and r["verdict_cause"]:
+                causes[r["verdict_cause"]] += 1
+        sv = {
+            "n_static_injected": sum(r["placed"] for r in sv_rows), "n_recovered": len(rec),
+            "verdicts": dict(counts), "causes_of_fake_or_unsure": dict(causes),
+            "fraction_fake_or_unsure": (counts["fake_motion"] + counts["unsure"]) / len(rec) if rec else None,
+            "fraction_moving": counts["moving"] / len(rec) if rec else None,
+            "note": "Static injections the engine recovered, judged by planetx.classify.reliability.object_verdict with SPHEREx evidence only (no archive, no catalogues).",
+        }
+        doc = json.loads(sv_path.read_text())
+        doc["static_verdicts"] = sv
+        sv_path.write_text(json.dumps(doc, indent=1, default=float) + "\n")
+        print(json.dumps(sv, indent=1))
+        return
+
     run_fields = args.rerun if args.rerun is not None else args.fields
     tasks = make_tasks(args.cache_dir, args.fields, reps, args.modes)
     tasks = [t for t in tasks if t["field"] in run_fields]  # seeds depend on the field's position, so they match a full run

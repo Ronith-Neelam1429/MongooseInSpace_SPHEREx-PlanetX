@@ -400,3 +400,14 @@ def test_summary_finds_pm_50_pm_90_and_mag_50_and_static_false_rate():
     fp = t.false_positive_summary(rows)
     assert fp["single"]["n_static_injected"] == 10 and fp["single"]["n_flagged_mover"] == 1
     assert fp["stack"]["n_flagged_mover"] == 0
+
+
+def test_verdicts_call_a_recovered_static_injection_not_moving_and_a_fast_one_moving():
+    static, fast = Spot(-60.0, 60.0, (0.0, 0.0), 14.0), Spot(60.0, -70.0, (8.0, -4.0), 14.0)
+    injections = [static.injection(), fast.injection()]
+    result = find_motion(inject(planted_field(14, [static, fast]), injections))
+    ms = match_injections(result.objects, injections)
+    verdicts = _tool().object_verdicts(result.objects)
+    v_static, v_fast = (verdicts[result.objects.index(m.obj)] for m in ms)
+    assert v_static.verdict == "not_moving"
+    assert v_fast.verdict == "moving" and v_fast.certainty == "candidate"
