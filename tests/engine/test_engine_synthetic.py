@@ -388,3 +388,34 @@ def test_frame_wavelength_ignores_celestial_sip_terms():
     centre_x = (SHAPE[1] - 1) / 2
     assert frame.wavelength_um == pytest.approx(wavelength_at_raw_pixel(centre_x), abs=1e-5)
     assert frame.wavelength_um != pytest.approx(wavelength_at_raw_pixel(centre_x + SIP_A00), abs=1e-3)
+
+
+def _outcome(r):
+    """Everything a caller reads from a result, frame order aside."""
+    objects = [
+        (o.link, o.ra, o.dec, o.pm_ra_cosdec, o.pm_dec, o.pm_err, o.is_mover, o.is_variable,
+         o.missing_passes, [(s.pass_index, s.ra, s.dec, s.mjd) for s in o.sources])
+        for o in r.objects
+    ]
+    passes = [[r.frames[i].mjd for i in ids] for ids in r.passes]
+    unlinked = [(s.pass_index, s.ra, s.dec) for s in r.unlinked]
+    return objects, passes, unlinked, r.pm_floor_arcsec_yr, r.notes
+
+
+@pytest.mark.parametrize("stack", [False, True])
+def test_result_does_not_depend_on_frame_order(stack):
+    rng = np.random.default_rng(14)
+
+    def brightening(mjd):
+        return 600.0 if mjd < PASS_MJDS[1] - 30 else 1200.0
+
+    stars = field_stars(rng) + [(0.0, -10.0, -1.0, 10.0, 1500.0), (-40.0, 25.0, 0.0, 0.0, brightening)]
+    frames = survey(stars, rng)
+    # Same time and detector, no obs_id: only their content tells them apart.
+    frames.append(make_frame(stars, frames[0].mjd, WAVES[1], rng, rot_deg=77.0))
+    expected = _outcome(find_motion(frames, stack=stack))
+    assert expected[0], "the scenario must produce tracked objects"
+    for seed in range(3):
+        shuffled = list(frames)
+        np.random.default_rng(seed).shuffle(shuffled)
+        assert _outcome(find_motion(shuffled, stack=stack)) == expected

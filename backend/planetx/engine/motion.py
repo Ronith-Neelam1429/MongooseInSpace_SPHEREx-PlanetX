@@ -23,6 +23,7 @@ Intra-pass motion (fast asteroids moving within one visit) is not handled yet.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass, field
 
@@ -112,7 +113,7 @@ class TrackedObject:
 
 @dataclass
 class EngineResult:
-    frames: list[Frame]  # frames analysed: the inputs, or one stack per pass
+    frames: list[Frame]  # frames analysed: the usable inputs in time order, or one stack per pass
     passes: list[list[int]]  # indices into `frames` per pass, time-ordered
     detections: list[list[Detection]]  # per frame, after alignment
     frame_offsets_arcsec: list[tuple[float, float]]  # (east, north) shift applied
@@ -907,6 +908,17 @@ def _link_movers(
     return chains, [s for k, s in enumerate(pool) if k not in used]
 
 
+def _frame_sort_key(f: Frame) -> tuple:
+    """A total order on frames: time, detector, id, then content.
+
+    The content digest only separates frames that agree on everything else
+    (e.g. no obs_id); identical frames may come in any order.
+    """
+    digest = hashlib.blake2b(np.ascontiguousarray(f.data).tobytes(), digest_size=16)
+    digest.update(f.wcs.to_header_string(relax=True).encode())
+    return (f.mjd, f.detector, f.obs_id, digest.digest())
+
+
 def find_motion(
     frames: list[Frame],
     *,
@@ -932,6 +944,9 @@ def find_motion(
     """
     if not frames:
         raise ValueError("no frames")
+    # The tangent-plane centre, the alignment reference and every tie-break
+    # below follow frame order, so fix one that doesn't depend on the caller.
+    frames = sorted(frames, key=_frame_sort_key)
     notes: list[str] = []
     ny, nx = frames[0].data.shape
     c_ra, c_dec = frames[0].wcs.all_pix2world((nx - 1) / 2, (ny - 1) / 2, 0)
