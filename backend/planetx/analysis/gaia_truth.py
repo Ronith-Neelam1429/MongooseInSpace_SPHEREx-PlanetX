@@ -410,16 +410,21 @@ def _track_row(track: TrackLike, field_name: str) -> dict:
     }
 
 
-def evaluate_field(tracks: Sequence[TrackLike], gaia: GaiaField, field_name: str) -> tuple[list[dict], list[dict]]:
+def evaluate_field(
+    tracks: Sequence[TrackLike], gaia: GaiaField, field_name: str, extra: Sequence[dict] | None = None,
+) -> tuple[list[dict], list[dict]]:
     """(matched rows, unmatched rows) for one field's engine objects.
 
     Matched rows carry the docs/RESULTS.md object fields plus the match details;
     `clean` marks the ones fit for residual statistics (Gaia star in every pass,
-    no blend, not a chance match, Gaia motion measured).
+    no blend, not a chance match, Gaia motion measured). `extra[i]`, when given,
+    is merged into track i's row (e.g. the pipeline's motion verdict).
     """
+    if extra is not None and len(extra) != len(tracks):
+        raise ValueError(f"extra has {len(extra)} entries for {len(tracks)} tracks")
     matched, unmatched = [], []
-    for track in tracks:
-        row = _track_row(track, field_name)
+    for k, track in enumerate(tracks):
+        row = _track_row(track, field_name) | (dict(extra[k]) if extra is not None else {})
         m = match_track(track, gaia)
         if m is None:
             unmatched.append(row | {"truth": None, "truth_reason": "no visible Gaia star within the match radius"})
@@ -544,6 +549,13 @@ def summarize(matched: Sequence[dict], n_objects: int) -> dict:
             name = r["snr_band"] if key == "snr_band" else passes_bin(r["n_passes"])
             groups.setdefault(name, []).append(r)
         out[label] = {name: _Stats(rows).summary() for name, rows in sorted(groups.items())}
+    if any("motion_verdict" in r for r in matched):
+        # How the pipeline's per-object verdict (planetx.classify.reliability) scores against Gaia.
+        table: dict[str, dict[str, int]] = {}
+        for r in matched:
+            cell = table.setdefault(str(r.get("motion_verdict")), {t: 0 for t in TRUTHS})
+            cell[r["truth"]] += 1
+        out["verdict_vs_truth"] = dict(sorted(table.items()))
     return out
 
 

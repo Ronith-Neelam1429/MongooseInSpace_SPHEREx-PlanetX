@@ -389,6 +389,22 @@ def test_fast_star_split_into_two_tracks_is_counted_once_as_split():
     assert s["confusion"]["fn"] == 2  # each piece is a real mover the engine did not flag
 
 
+def test_extra_fields_reach_the_rows_and_the_verdict_table():
+    static, fast = star(1), star(2, dx=100.0, pm=(2.0, 0.0))
+    field = gt.GaiaField([static, fast], WIDE)
+    tracks = [track(on(static)), track(on(fast), pm=(2.0, 0.0), pm_err=0.2, mover=True),
+              track([(RA0 + 0.5, DEC0)] * 3)]
+    extra = [{"motion_verdict": "not_moving"}, {"motion_verdict": "moving"}, {"motion_verdict": "unsure"}]
+    matched, unmatched = gt.evaluate_field(tracks, field, "f", extra)
+    assert [r["motion_verdict"] for r in matched] == ["not_moving", "moving"]
+    assert unmatched[0]["motion_verdict"] == "unsure"
+    table = gt.summarize(matched, 3)["verdict_vs_truth"]
+    assert table == {"moving": {"real_mover": 1, "static": 0, "ambiguous": 0},
+                     "not_moving": {"real_mover": 0, "static": 1, "ambiguous": 0}}
+    with pytest.raises(ValueError, match="entries"):
+        gt.evaluate_field(tracks, field, "f", extra[:2])
+
+
 def test_rows_are_json_safe_with_nan_chi2():
     s = star(1)
     obj = track(on(s))
