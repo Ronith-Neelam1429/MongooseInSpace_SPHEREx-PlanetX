@@ -134,7 +134,7 @@ def _nside(text: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m planetx.survey", description="SPHEREx PlanetX survey crawler")
+    parser = argparse.ArgumentParser(prog="python -m planetx.survey", description="AstroSearchX survey crawler")
     parser.add_argument("--db", type=Path, default=settings.db_path, help="survey SQLite database")
     sub = parser.add_subparsers(dest="command", required=True)
 

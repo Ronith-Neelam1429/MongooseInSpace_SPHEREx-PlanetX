@@ -508,7 +508,10 @@ export default function App() {
         <canvas ref={canvasRef} className="field" aria-hidden="true" />
 
         <header className="bar">
-          <h1 className="mark">PlanetX</h1>
+          <h1 className="mark">
+            {/* A real link to the bare page: loading it with no ?ra=&dec=&fov= or #results starts the app fresh. */}
+            <a href={window.location.pathname} title="Start over">AstroSearchX</a>
+          </h1>
           <Search
             ref={searchRef}
             value={query}
@@ -531,7 +534,7 @@ export default function App() {
             <div className="group" role="group" aria-label="Shown on the map">
               <Toggle on={show.gaia} title="Stars from the Gaia catalogue" onClick={() => setShow({ ...show, gaia: !show.gaia })}>Stars</Toggle>
               <Toggle on={show.simbad} title="Named objects from the SIMBAD catalogue" onClick={() => setShow({ ...show, simbad: !show.simbad })}>Named</Toggle>
-              <Toggle on={show.engine} title="What PlanetX measured in SPHEREx images" onClick={() => setShow({ ...show, engine: !show.engine })}>Results</Toggle>
+              <Toggle on={show.engine} title="What AstroSearchX measured in SPHEREx images" onClick={() => setShow({ ...show, engine: !show.engine })}>Results</Toggle>
               <Toggle on={show.crawl} title="Patches our automatic survey has already checked" onClick={toggleCrawl}>Survey</Toggle>
               <Toggle on={show.grid} title="Coordinate grid" onClick={() => setShow({ ...show, grid: !show.grid })}>Grid</Toggle>
             </div>

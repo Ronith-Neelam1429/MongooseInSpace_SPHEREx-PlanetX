@@ -21,8 +21,8 @@ export const OTHER = [143, 143, 140]; // everything else (--dim)
  * (candidate), diamond (variable), square (catalogue entry with no Gaia star).
  */
 export const CLASSES = [
-  { id: 'candidate', label: 'Candidates', rgb: MEASURED, mark: 'dashed', hint: 'Motion PlanetX measured that no catalogue explains yet. A candidate, not a discovery.' },
-  { id: 'mover', label: 'Measured movers', rgb: MEASURED, mark: 'ring', hint: 'Objects PlanetX saw move between SPHEREx passes' },
+  { id: 'candidate', label: 'Candidates', rgb: MEASURED, mark: 'dashed', hint: 'Motion AstroSearchX measured that no catalogue explains yet. A candidate, not a discovery.' },
+  { id: 'mover', label: 'Measured movers', rgb: MEASURED, mark: 'ring', hint: 'Objects AstroSearchX saw move between SPHEREx passes' },
   { id: 'fast', label: 'Fast stars', rgb: SIGNAL, mark: 'dot', hint: `Catalogued stars moving faster than ${FAST_ARCSEC_YR}″ per year: good first targets` },
   { id: 'variable', label: 'Variables', rgb: VARIABLE, mark: 'diamond', hint: 'Stars that change brightness (and engine results that did)' },
   { id: 'star', label: 'Stars', rgb: PLAIN, mark: 'dot', hint: 'Ordinary stars with little or no motion' },

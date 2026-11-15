@@ -318,7 +318,7 @@ export function EnginePictures({ object, ev, title }) {
     () => (ev.status === 'ok' ? engineViews(object, ev.evidence, surveys.status === 'ok' ? surveys.data : null) : null),
     [object, ev.status, ev.evidence, surveys.status, surveys.data],
   );
-  if (ev.status === 'none') return <p className="ev-state">The images need the PlanetX API, which is not connected.</p>;
+  if (ev.status === 'none') return <p className="ev-state">The images need the AstroSearchX API, which is not connected.</p>;
   if (ev.status === 'error') {
     return (
       <p className="ev-state ev-err" role="alert">

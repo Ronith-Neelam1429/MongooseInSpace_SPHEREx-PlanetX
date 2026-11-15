@@ -373,7 +373,7 @@ export function KnownPictures({ row, title }) {
     cutoutUrl: (fr) => frameImageUrl(fr),
   }), [motion, patch, s.status, s.data, f.status, f.data]);
 
-  if (!API_BASE) return <p className="line dim">The telescope pictures need the PlanetX server, which is not connected.</p>;
+  if (!API_BASE) return <p className="line dim">The telescope pictures need the AstroSearchX server, which is not connected.</p>;
 
   const notes = [];
   if (s.status === 'loading') notes.push({ key: 's', text: 'Loading 2MASS (about 2000) and WISE (about 2010)…' });

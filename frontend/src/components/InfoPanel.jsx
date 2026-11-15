@@ -156,7 +156,7 @@ function Summary({ motion, results, known, simbad, gaia, onRun, onRetry, runShow
         {ran ? 'Measured in SPHEREx images' : 'From the catalogues · not measured yet'}
       </p>
       <p id="patch-verdict" className={`verdict-line ${v.tone === 'plain' ? '' : v.tone}`} aria-live="polite">{v.text}</p>
-      {motion.status === 'none' && <p className="line dim">Measuring motion needs the PlanetX server, which is not connected.</p>}
+      {motion.status === 'none' && <p className="line dim">Measuring motion needs the AstroSearchX server, which is not connected.</p>}
       {motion.status === 'idle' && !runShown && (
         <div className="run">
           <button type="button" className="btn" onClick={onRun}>Find what moves</button>

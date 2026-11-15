@@ -118,7 +118,7 @@ export default function CandidatesPanel({ onGo, onClose }) {
             </button>
           </div>
           {list.status === 'loading' && <p className="state"><span className="ticker" aria-hidden="true" />Loading candidates</p>}
-          {list.status === 'none' && <p className="line dim">The candidates list needs the PlanetX server, which is not connected (or does not offer it yet).</p>}
+          {list.status === 'none' && <p className="line dim">The candidates list needs the AstroSearchX server, which is not connected (or does not offer it yet).</p>}
           {list.status === 'error' && (
             <p className="state err" role="alert">
               Could not load the candidates: {list.error}.{' '}

@@ -192,7 +192,7 @@ export default function StarTimelapse({ row }) {
     if (picture) ctx.putImageData(new ImageData(picture, GRID, GRID), 0, 0);
   }, [trace, story?.moved, usable, fwhmPx, thenKey, nowKey, viewKey, matched, grids]);
 
-  if (!API_BASE) return <p className="line dim">The images need the PlanetX server, which is not connected.</p>;
+  if (!API_BASE) return <p className="line dim">The images need the AstroSearchX server, which is not connected.</p>;
 
   const loading = archive.status === 'loading' || spherex.status === 'loading'
     || (spherex.status === 'ok' && spherex.frames.some((f) => !srcs[f.image_url]));

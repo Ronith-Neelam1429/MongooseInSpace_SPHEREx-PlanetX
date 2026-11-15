@@ -1,4 +1,4 @@
-# PlanetX: SPHEREx sky explorer (frontend)
+# AstroSearchX: SPHEREx sky explorer (frontend)
 
 The SPHEREx sky as a slowly turning globe. Click anywhere (or search) and the camera flies in and
 opens that patch of sky. The side panel then shows, in this order:
@@ -95,7 +95,7 @@ npm run build     # static site in dist/ (relative base: GitHub Pages or Vercel)
 ```
 
 ## What needs the backend
-Set `VITE_API_BASE` (see `.env.example`) to the PlanetX API (`docs/API.md` in the repo root):
+Set `VITE_API_BASE` (see `.env.example`) to the AstroSearchX API (`docs/API.md` in the repo root):
 - `GET /visits` for how often SPHEREx imaged the patch (IRSA's SIA service sends no CORS headers,
   so a browser can't ask it directly),
 - `GET /motion` for the engine (polled),

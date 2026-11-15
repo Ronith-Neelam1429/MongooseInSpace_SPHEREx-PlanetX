@@ -23,7 +23,7 @@ async def lifespan(_: FastAPI):
     spectra.shutdown()
 
 
-app = FastAPI(title="SPHEREx PlanetX API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="AstroSearchX API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,

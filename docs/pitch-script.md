@@ -1,4 +1,4 @@
-# Pitch script: SPHEREx PlanetX (Space Apps Seattle, "240 Seconds of Glory" format)
+# Pitch script: AstroSearchX (Space Apps Seattle, "240 Seconds of Glory" format)
 
 Deck: https://claude.ai/artifact/RXXRta1rueUtkzRBZrf5Ki (6 slides; each slide's speaker notes hold its lines).
 
@@ -32,7 +32,7 @@ Cuts for the 3-minute round are marked ✂.
 ## 2. Solution + Proof (0:35–3:05)
 
 **Slide 3, live demo (0:35–2:05)**
-> So we built SPHEREx PlanetX. You pick any spot in the sky, by name or by coordinates. We pull NASA's real SPHEREx
+> So we built AstroSearchX. You pick any spot in the sky, by name or by coordinates. We pull NASA's real SPHEREx
 > images of that spot and play them as a time-lapse. Let me show you.
 
 *Switch to the app:*

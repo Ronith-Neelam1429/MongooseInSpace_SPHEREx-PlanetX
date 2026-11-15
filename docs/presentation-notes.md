@@ -1,4 +1,4 @@
-# Presentation notes: SPHEREx PlanetX
+# Presentation notes: AstroSearchX
 
 Running collection of material for the pitch. Last updated 2026-11-15 about 03:30 (everything merged to main; added classification, evidence checks, survey candidates, website, CI/deploy and ideas for standing out).
 

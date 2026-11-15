@@ -123,7 +123,7 @@ export default function Spectrum({ target }) {
       .catch((err) => set({ status: 'error', error: err?.message || String(err) }));
   };
 
-  if (!API_BASE) return <p className="state">The spectrum needs the PlanetX API, which is not connected.</p>;
+  if (!API_BASE) return <p className="state">The spectrum needs the AstroSearchX API, which is not connected.</p>;
   if (state.status === 'idle') {
     return (
       <div className="sp-start">

@@ -1,4 +1,4 @@
-# SPHEREx PlanetX (NASA Space Apps)
+# AstroSearchX (NASA Space Apps)
 
 Public web tool for the NASA Space Apps SPHEREx challenge. Users pick a patch of
 sky and see SPHEREx images of it as a time-lapse to spot moving and variable

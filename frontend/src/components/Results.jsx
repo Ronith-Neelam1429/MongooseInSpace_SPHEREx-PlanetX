@@ -84,7 +84,7 @@ function useResults() {
 
 /** What a section shows while its file is loading, not run yet, or broken; null once it can draw. */
 function FileState({ name, file, index }) {
-  if (index.status === 'none') return <p className="rp-empty">Needs the PlanetX server, which is not connected.</p>;
+  if (index.status === 'none') return <p className="rp-empty">Needs the AstroSearchX server, which is not connected.</p>;
   if (index.status === 'error') return <p className="rp-empty err" role="alert">Could not ask the server for results: {index.error}.</p>;
   if (!file || file.status === 'loading') return <p className="rp-empty" role="status"><span className="ticker" aria-hidden="true" />Loading</p>;
   if (file.status === 'missing') return <p className="rp-empty">Not run yet. <code>{MAKES[name]}</code> makes it.</p>;
@@ -169,7 +169,7 @@ function Crawler({ survey }) {
   const s = useMemo(() => (survey.status === 'ok' ? surveySummary(survey.stats) : null), [survey]);
   let body;
   if (survey.status === 'loading') body = <p className="rp-empty" role="status"><span className="ticker" aria-hidden="true" />Loading</p>;
-  else if (survey.status === 'none') body = <p className="rp-empty">Needs the PlanetX server, which is not connected.</p>;
+  else if (survey.status === 'none') body = <p className="rp-empty">Needs the AstroSearchX server, which is not connected.</p>;
   else if (survey.status === 'error') body = <p className="rp-empty err" role="alert">Could not read the crawler: {survey.error}.</p>;
   else if (!s.available || s.total === 0) body = <p className="rp-empty">The crawler has not started on this server yet.</p>;
   else {
@@ -490,7 +490,7 @@ export default function Results({ onClose }) {
       <header className="rp-bar">
         <div className="rp-bar-inner">
           <div className="rp-brand">
-            <span className="kicker">PlanetX · SPHEREx</span>
+            <span className="kicker">AstroSearchX · SPHEREx</span>
             <h1 id="rp-title" className="rp-title">Findings</h1>
           </div>
           <nav className="rp-nav" aria-label="Sections">

@@ -164,7 +164,7 @@ export async function resolveName(name, { signal } = {}) {
 }
 
 /**
- * GET a JSON document from the PlanetX API; rejects with `HTTP <status>` (also set as `err.status`),
+ * GET a JSON document from the AstroSearchX API; rejects with `HTTP <status>` (also set as `err.status`),
  * or "the request timed out" after `timeoutMs`. An abort through `signal` rejects with its reason.
  */
 export async function apiJson(path, { signal, timeoutMs = 30000 } = {}) {
@@ -202,7 +202,7 @@ function unreachable() {
   let host = API_BASE;
   try { host = new URL(API_BASE, globalThis.location?.href).host; } catch { /* keep API_BASE as written */ }
   const origin = globalThis.location?.origin;
-  return `could not reach the PlanetX server at ${host}: it is down or restarting, or it does not allow `
+  return `could not reach the AstroSearchX server at ${host}: it is down or restarting, or it does not allow `
     + `${origin ? `this page (${origin})` : 'this page'} in PLANETX_CORS_ORIGINS`;
 }
 
@@ -313,7 +313,7 @@ function mocOrNull(moc) {
 const MOTION_POLL_MS = 2500;
 
 /**
- * Run the PlanetX motion engine on SPHEREx frames of a position (GET {API_BASE}/motion).
+ * Run the AstroSearchX motion engine on SPHEREx frames of a position (GET {API_BASE}/motion).
  * The backend works in the background (it downloads tens of frames on first use), so this polls
  * until the run ends. `onProgress` gets { stage, frames_done, frames_total } on every poll.
  * Resolves to the MotionResult (see backend/planetx/api/schemas.py) plus `field: { ra, dec, size_deg }`,

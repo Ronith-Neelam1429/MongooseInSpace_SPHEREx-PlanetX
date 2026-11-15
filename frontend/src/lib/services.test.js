@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.useRealTimers(); vi.resetModules(); });
 
-/** services.js against a fake PlanetX API that answers with `responses` in order ({ status, body }). */
+/** services.js against a fake AstroSearchX API that answers with `responses` in order ({ status, body }). */
 async function load(responses, { apiBase = 'http://api.test/api/' } = {}) {
   vi.stubEnv('VITE_API_BASE', apiBase);
   vi.resetModules();
@@ -217,7 +217,7 @@ describe('apiJson errors, in words', () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
     const { apiJson } = await import('./services.js');
     const err = await apiJson('/frames?ra=1&dec=2&size_deg=0.1').catch((e) => e);
-    expect(err.message).toMatch(/could not reach the PlanetX server at 127\.0\.0\.1:8031/);
+    expect(err.message).toMatch(/could not reach the AstroSearchX server at 127\.0\.0\.1:8031/);
     expect(err.message).toMatch(/PLANETX_CORS_ORIGINS/);
     expect(err.network).toBe(true);
   });
