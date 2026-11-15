@@ -258,14 +258,36 @@ function FakeMotions({ file, index }) {
   const doc = file?.status === 'ok' ? file.doc : null;
   const rows = useMemo(() => causeRows(doc), [doc]);
   const s = doc?.summary;
+  // Near-misses: stars Gaia says are still whose apparent motion is significant but under one
+  // pixel, so only the engine's 1 px rule keeps them from being called moving.
+  const near = doc?.near_summary;
+  const nearRows = useMemo(() => (doc?.near_movers
+    ? causeRows({ movers: doc.near_movers.filter((m) => m.truth === 'static'), summary: doc.near_summary })
+    : []), [doc]);
+  const before = doc?.baseline;
   return (
     <Section id="rp-fake" kicker="Check 2 · every false alarm, explained" title="Which motions are fake?"
       lede="Each object our engine called moving that Gaia, or a look at the pixels, shows is not. Knowing why lets the engine learn to throw them out.">
       <FileState name="false_movers" file={file} index={index} />
       {doc && (
         <>
-          {s && <p className="rp-say">{fmt(s.n_fake)} of {fmt(s.n_movers)} motions the engine flagged are not real. Here is why.</p>}
-          {rows.length ? <BarList rows={rows} label="Fake motions by cause" /> : <p className="line dim">No fake motions in this run.</p>}
+          {s && (
+            <p className="rp-say">
+              {fmt(s.n_fake)} of {fmt(s.n_movers)} motions the engine flagged are not real{s.n_fake ? '. Here is why.' : '.'}
+              {before?.summary && ` Before this round's engine fixes it flagged ${fmt(before.summary.n_movers)}; the ones removed were faint tracks joining unrelated specks.`}
+            </p>
+          )}
+          {rows.length ? <BarList rows={rows} label="Fake motions by cause" /> : !s && <p className="line dim">No fake motions in this run.</p>}
+          {near && nearRows.length > 0 && (
+            <>
+              <p className="rp-say">
+                Just under the line: {fmt(near.n_fake)} stars Gaia says are still show a motion at least 5 times their
+                error, but smaller than one SPHEREx pixel, so the engine does not call them moving. This is why
+                we keep that rule{before?.near_summary ? ` (${fmt(before.near_summary.n_fake)} before this round's fixes)` : ''}.
+              </p>
+              <BarList rows={nearRows} label="Near-misses by cause" />
+            </>
+          )}
           {rows.some((r) => r.examples.length) && (
             <details className="more">
               <summary>Examples</summary>
