@@ -15,7 +15,8 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
-from fetch import fetch_all, find_visits, pick_visits, resolve  # noqa: E402
+from fetch import TARGETS, fetch_all, find_visits, pick_visits  # noqa: E402
+from targets import ENGINE_TARGETS_DEG  # noqa: E402
 
 from planetx.engine import find_motion, frame_from_hdul  # noqa: E402
 
@@ -24,7 +25,9 @@ log.setLevel("WARNING")
 
 
 def run(target: str, detectors=None, per_pass: int = 6, stack: bool = False):
-    coord, default = resolve(target)
+    # Fixed positions, not a SIMBAD lookup: with the cutouts cached, no service is asked.
+    coord = SkyCoord(*ENGINE_TARGETS_DEG[target], unit="deg")
+    default = TARGETS[target][2] if target in TARGETS else (1, 2, 3)
     visits = pick_visits(find_visits(coord, detectors or default), per_pass)
     frames = []
     for v, path in fetch_all(visits, coord, 0.1):
@@ -83,7 +86,7 @@ def test_north_ecliptic_pole_is_measured_in_time_windows():
     # At the pole SPHEREx (detectors 2 and 5 only) comes back every week or two
     # for the whole survey, so there are no gaps to split passes at. The field's
     # stars must still be tracked, across time windows, and none of them moves.
-    coord, r = run("270.0 66.5607", per_pass=4)
+    coord, r = run("nep", per_pass=4)
     assert len(r.passes) >= 9
     assert all(r.frames[p[-1]].mjd - r.frames[p[0]].mjd <= 60 for p in r.passes)
     assert not any("only one pass" in n for n in r.notes)
