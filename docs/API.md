@@ -112,6 +112,17 @@ curl 'http://127.0.0.1:8000/api/motion?ra=269.4485&dec=4.7394'
 # Barnard's Star: mover, 9.9"/yr at PA 2 deg from 54 frames in 3 passes
 ```
 
+### `GET /api/motion/evidence?ra=&dec=&size_deg=&object=`
+The proof behind one engine object (`MotionEvidence` in `schemas.py`): the same small
+patch of sky around it in every survey pass (real SPHEREx frames of that pass, aligned and
+median-combined, one shared grey scale, north up, east left, PNGs as base64), a
+last-minus-first difference image, its measured position per pass with errors, the
+straight-line fit, and how far the field's fixed stars appear to shift (the noise).
+- `ra`, `dec`, `size_deg`: the same values as the finished `/api/motion` run.
+- `object`: `MotionObject.id` from that run.
+- 404 when the run's engine data is no longer kept (only the newest 4 runs keep it):
+  request `/api/motion` again until done, then retry. The frontend does this itself.
+
 ## Errors
 
 | Status | Meaning |
