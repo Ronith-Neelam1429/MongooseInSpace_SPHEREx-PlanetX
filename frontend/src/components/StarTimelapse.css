@@ -16,6 +16,10 @@
 .tl-key-path { height: 0 !important; border-top: 1.5px dashed var(--signal); vertical-align: 3px !important; }
 @media (prefers-reduced-motion: reduce) { .tl-track i { transition: none; } }
 
+/* The star the card is about: brackets and its name over the picture, the rest dimmed a little. */
+.ev-marks .tl-bracket { stroke: #fff; stroke-width: 2; filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000); }
+.ev-marks text.tl-name { font-weight: 500; }
+
 /* ---------- overlay: older image in red, newer in cyan ---------- */
 .tl { --tl-red: #ff4d3d; --tl-cyan: #3ee8ff; }
 .tl-canvas {
