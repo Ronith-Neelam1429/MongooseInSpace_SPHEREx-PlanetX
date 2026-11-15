@@ -234,6 +234,50 @@ def _get(params: dict[str, str], timeout: float, retries: int) -> str:
     raise ArchiveError(f"{last} after {retries + 1} attempts")
 
 
+def cone_params(
+    catalog: str, columns: str, ra: float, dec: float, radius_arcsec: float,
+    max_rows: int, constraints: str = "",
+) -> dict[str, str]:
+    """Gator request parameters for one cone (numbers formatted here, never raw request text)."""
+    params = {
+        "catalog": catalog,
+        "spatial": "cone",
+        "objstr": f"{ra:.7f} {dec:+.7f}",
+        "radius": f"{radius_arcsec:.2f}",
+        "radunits": "arcsec",
+        "outfmt": "1",  # IPAC ASCII table
+        "selcols": columns,
+        "outrows": str(max_rows),
+    }
+    if constraints:
+        params["constraints"] = constraints
+    return params
+
+
+def query_table(
+    params: dict[str, str], *, what: str, timeout: float = 90.0, retries: int = 2,
+    max_rows: int | None = None,
+) -> Table:
+    """One Gator query as an astropy Table (possibly empty).
+
+    Raises ArchiveError when IRSA cannot answer, reports a Gator error (HTTP 200 with
+    a `[struct stat="ERROR"` body), sends something unreadable, or the list reaches
+    `max_rows` (a cut-off list could hide the true counterpart; better none than partial).
+    """
+    text = _get(params, timeout, retries)
+    if text.lstrip().startswith("[struct"):
+        raise ArchiveError(f"Gator error for {what}: {text.strip()[:300]}")
+    try:
+        table = astropy_ascii.read(text, format="ipac")
+    except Exception as exc:
+        raise ArchiveError(f"unreadable Gator response for {what}: {exc}") from exc
+    if not isinstance(table, Table):
+        raise ArchiveError(f"unreadable Gator response for {what}")
+    if max_rows is not None and len(table) >= max_rows:
+        raise ArchiveError(f"{what} query returned {max_rows} or more rows (cut off); use a smaller radius")
+    return table
+
+
 def fetch_catalog(
     observatory: Observatory,
     ra: float,
@@ -259,33 +303,8 @@ def fetch_catalog(
             f"{observatory.value} radius must be in (0, {cat.max_radius_arcsec:g}] arcsec, "
             f"got {radius_arcsec}"
         )
-    params = {
-        "catalog": cat.table,
-        "spatial": "cone",
-        "objstr": f"{ra:.7f} {dec:+.7f}",
-        "radius": f"{radius_arcsec:.2f}",
-        "radunits": "arcsec",
-        "outfmt": "1",  # IPAC ASCII table
-        "selcols": cat.columns,
-        "outrows": str(cat.max_rows),
-    }
-    if cat.constraints:
-        params["constraints"] = cat.constraints
-    text = _get(params, timeout, retries)
-    if text.lstrip().startswith("[struct"):
-        raise ArchiveError(f"Gator error for {cat.table}: {text.strip()[:300]}")
-    try:
-        table = astropy_ascii.read(text, format="ipac")
-    except Exception as exc:
-        raise ArchiveError(f"unreadable Gator response for {cat.table}: {exc}") from exc
-    if not isinstance(table, Table):
-        raise ArchiveError(f"unreadable Gator response for {cat.table}")
-    if len(table) >= cat.max_rows:
-        # A cut-off list could hide the true counterpart; better none than partial.
-        raise ArchiveError(
-            f"{cat.table} cone of {radius_arcsec:.0f}\" returned more than {cat.max_rows} rows; "
-            "use a smaller radius"
-        )
+    params = cone_params(cat.table, cat.columns, ra, dec, radius_arcsec, cat.max_rows, cat.constraints)
+    table = query_table(params, what=cat.table, timeout=timeout, retries=retries, max_rows=cat.max_rows)
     if len(table) == 0:
         return []
     return cat.parse(table)

@@ -546,28 +546,11 @@ def _check_cone(ra: float, dec: float, radius_arcsec: float) -> None:
 
 def _gator(catalog: str, columns: str, ra: float, dec: float, radius_arcsec: float, constraints: str = ""):
     """One Gator cone as an astropy Table. Raises ArchiveError (network, 5xx, Gator error, cut-off list)."""
-    from astropy.io import ascii as astropy_ascii
-
     from planetx.observatories import catalogs as gator
 
     _check_cone(ra, dec, radius_arcsec)
-    params = {
-        "catalog": catalog, "spatial": "cone", "objstr": f"{ra:.7f} {dec:+.7f}",
-        "radius": f"{radius_arcsec:.2f}", "radunits": "arcsec", "outfmt": "1",
-        "selcols": columns, "outrows": str(MAX_ROWS),
-    }
-    if constraints:
-        params["constraints"] = constraints
-    text = gator._get(params, timeout=90.0, retries=2)
-    if text.lstrip().startswith("[struct"):
-        raise gator.ArchiveError(f"Gator error for {catalog}: {text.strip()[:300]}")
-    try:
-        table = astropy_ascii.read(text, format="ipac")
-    except Exception as exc:
-        raise gator.ArchiveError(f"unreadable Gator response for {catalog}: {exc}") from exc
-    if len(table) >= MAX_ROWS:
-        raise gator.ArchiveError(f"{catalog} cone of {radius_arcsec:.0f}\" is cut off at {MAX_ROWS} rows")
-    return table
+    params = gator.cone_params(catalog, columns, ra, dec, radius_arcsec, MAX_ROWS, constraints)
+    return gator.query_table(params, what=catalog, timeout=90.0, retries=2, max_rows=MAX_ROWS)
 
 
 def _value(v) -> float | None:

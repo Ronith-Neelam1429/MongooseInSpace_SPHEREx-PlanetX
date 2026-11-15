@@ -9,7 +9,7 @@ Conventions:
   * Times as MJD (float) plus a human `date` (UTC, YYYY-MM-DD).
   * Wavelengths in microns.
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Health(BaseModel):
@@ -553,3 +553,146 @@ class SpectrumResponse(BaseModel):
     frames_total: int
     error: str | None = None
     result: SpectrumResult | None = None
+
+
+# --- Object profile (GET /api/object/profile) ---------------------------------------
+# Everything we can say about one focused object. Every field may be None when unknown;
+# partial answers are normal. Inferred values are estimates and the text says so.
+
+
+class ProfileIdentity(BaseModel):
+    name: str | None = Field(None, description="SIMBAD main identifier, as people write it")
+    simbad_type: str | None = Field(None, description='Raw SIMBAD otype, e.g. "BY*"')
+    kind: str | None = Field(None, description='Plain words, e.g. "Red dwarf star"')
+    spectral_type: str | None = None
+    gaia_id: str | None = Field(None, description="Gaia DR3 source_id")
+    constellation: str
+    galactic_l: float
+    galactic_b: float
+    ecliptic_lat: float
+
+
+class ProfileDistance(BaseModel):
+    pc: float
+    pc_err: float | None = None
+    ly: float
+    light_left_year: int = Field(description="Year the light we see now left it (negative = BCE)")
+    source: str = Field(description="gaia_parallax | simbad_parallax | photometric_estimate")
+    note: str | None = None
+
+
+class SizeComparison(BaseModel):
+    thing: str = Field(description="Sun | Jupiter | Earth")
+    ratio: float = Field(description="Object diameter / thing's diameter")
+
+
+class ProfilePhysical(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    class_: str | None = Field(
+        None, alias="class",
+        description="white dwarf | red dwarf | sun-like star | hot star | giant | supergiant | brown dwarf",
+    )
+    class_basis: str | None = None
+    teff_k: float | None = None
+    teff_source: str | None = None
+    color_hex: str | None = Field(None, description="Blackbody colour of teff_k, for a swatch")
+    radius_rsun: float | None = None
+    radius_rsun_err: float | None = None
+    radius_source: str | None = None
+    radius_km: float | None = None
+    mass_msun: float | None = None
+    mass_source: str | None = None
+    luminosity_lsun: float | None = None
+    luminosity_source: str | None = Field(None, description="Added: where luminosity_lsun comes from")
+    age_gyr: float | None = None
+    abs_mag_g: float | None = Field(None, description="Absolute Gaia G magnitude (no extinction correction)")
+    size_comparison: list[SizeComparison] = Field(default_factory=list)
+
+
+class ProfileMotion(BaseModel):
+    pmra: float = Field(description="mas/yr, includes cos dec")
+    pmdec: float
+    pm: float = Field(description="Total proper motion, mas/yr")
+    pm_err: float | None = None
+    pa_deg: float = Field(description="Direction of motion, east of north")
+    source: str = Field(description="gaia | simbad | measured")
+    tangential_km_s: float | None = None
+    tangential_err: float | None = None
+    radial_km_s: float | None = None
+    radial_err: float | None = None
+    space_km_s: float | None = None
+    uvw_km_s: list[float] | None = Field(
+        None, description="Heliocentric (U toward the Galactic centre, V rotation, W north), km/s"
+    )
+    population: str | None = Field(None, description="thin disk | thick disk | halo (Toomre cuts, LSR frame)")
+    population_basis: str | None = None
+    parallax_wobble_arcsec: float | None = Field(None, description="= parallax: the yearly back-and-forth")
+    estimated_distance_pc: list[float] | None = Field(
+        None, description="[lo, hi] for motion without a distance, assuming 20-100 km/s"
+    )
+
+
+class PathPoint(BaseModel):
+    year: int
+    ra: float
+    dec: float
+    dist_ly: float | None = None
+
+
+class ClosestApproach(BaseModel):
+    year: int
+    dist_ly: float
+
+
+class ProfilePath(BaseModel):
+    points: list[PathPoint]
+    span_years: int
+    closest_approach: ClosestApproach | None = None
+    note: str
+
+
+class WhyMoving(BaseModel):
+    factor: str = Field(description="closeness | speed | population | parallax | orbit | companion | static | unknown")
+    text: str
+
+
+class Companion(BaseModel):
+    gaia_id: str
+    name: str | None = None
+    sep_arcsec: float
+    sep_au: float | None = None
+    g_mag: float | None = None
+    period_yr: float | None = Field(None, description="Kepler III from projected separation and estimated masses")
+    bound: str = Field(description="likely | possible")
+
+
+class ProfileGravity(BaseModel):
+    summary: str
+    companions: list[Companion] = Field(default_factory=list)
+    ruwe: float | None = None
+    wobble_hint: bool = Field(False, description="RUWE > 1.4: suggests an unseen companion")
+    non_single_star: int | None = None
+
+
+class ProfileLink(BaseModel):
+    label: str
+    url: str
+
+
+class ObjectProfile(BaseModel):
+    """GET /api/object/profile. Every part may be null; outside-service failures land in `notes`."""
+
+    ra: float
+    dec: float
+    identity: ProfileIdentity
+    distance: ProfileDistance | None = None
+    physical: ProfilePhysical | None = None
+    motion: ProfileMotion | None = None
+    path: ProfilePath | None = None
+    why_moving: list[WhyMoving] = Field(description="Ordered plain sentences; at least one")
+    gravity: ProfileGravity
+    solar_system: dict | None = Field(None, description="Reserved for asteroids and comets; always null for now")
+    links: list[ProfileLink] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list, description="Services that answered")
+    notes: list[str] = Field(default_factory=list, description="What failed or is uncertain, in plain words")
