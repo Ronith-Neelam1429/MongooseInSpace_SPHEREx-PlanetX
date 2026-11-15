@@ -3,7 +3,9 @@
 Pipeline (all in sky coordinates, so frames never need resampling):
 
 1. Group frames into passes: SPHEREx revisits a field every ~6 months and
-   each visit spans up to ~7 weeks, so a gap > `pass_gap_days` starts a new pass.
+   each visit spans up to ~8 weeks, so a gap > `pass_gap_days` starts a new pass.
+   Near the ecliptic poles coverage has no such gaps; there it is cut into
+   time windows of at most `pass_max_days`, each treated as a pass.
 2. Detect sources and measure centroids in every frame.
 3. Align frames: shift each frame so its stars line up with a reference frame
    (median offset of matched stars). Removes small pointing/WCS errors.
@@ -21,6 +23,7 @@ Intra-pass motion (fast asteroids moving within one visit) is not handled yet.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import astropy.units as u
@@ -33,6 +36,11 @@ from .frames import Frame
 from .stack import stack_grid, stack_pass
 
 DAYS_PER_YEAR = 365.25
+# Longest stretch of time averaged as one pass. A pass's detections are merged
+# as if the object stood still, so the fastest motion the engine links (15"/yr)
+# may only smear it by a fraction of the 0.7 px merge radius: 60 days is 0.4 px.
+# Ordinary passes are shorter (longest seen: 55 days, Barnard's Star).
+MAX_PASS_DAYS = 60.0
 # Per-pass position floor for saturated stars. Measured on Barnard's Star
 # against Gaia (detectors 1-3 and 4-6, 3 passes): per-axis scatter ~0.8"
 # (0.13 px). 0.2 px keeps ~50% margin; fits came out chi2/dof ~0.6-0.7 at
@@ -122,16 +130,40 @@ class EngineResult:
         return [o for o in self.objects if o.is_variable]
 
 
-def group_into_passes(mjds: list[float], gap_days: float = 60.0) -> list[list[int]]:
-    """Split frame indices into time-ordered passes separated by > gap_days."""
+def group_into_passes(
+    mjds: list[float], gap_days: float = 60.0, max_days: float = MAX_PASS_DAYS
+) -> list[list[int]]:
+    """Split frame indices into time-ordered passes.
+
+    A gap longer than `gap_days` starts a new pass. Where SPHEREx revisits a
+    field without such gaps (near the ecliptic poles), a run of frames longer
+    than `max_days` is cut into the fewest equal time windows that are each at
+    most `max_days` long, and every window with frames in it is a pass.
+
+    The cuts depend only on a run's first and last frame, so a subset of the
+    frames that keeps those two (e.g. a few frames sampled per pass) is
+    grouped the same way as the full list.
+    """
+    if max_days <= 0:
+        raise ValueError(f"max_days must be positive, got {max_days}")
     if not mjds:
         return []
     order = np.argsort(mjds)
-    passes: list[list[int]] = [[int(order[0])]]
+    runs: list[list[int]] = [[int(order[0])]]
     for prev, cur in zip(order[:-1], order[1:]):
         if mjds[cur] - mjds[prev] > gap_days:
-            passes.append([])
-        passes[-1].append(int(cur))
+            runs.append([])
+        runs[-1].append(int(cur))
+    passes: list[list[int]] = []
+    for run in runs:
+        start = mjds[run[0]]
+        span = mjds[run[-1]] - start
+        n = max(1, math.ceil(span / max_days))
+        windows: list[list[int]] = [[] for _ in range(n)]
+        for i in run:
+            # The run's last frame sits exactly on the end of the last window.
+            windows[min(int((mjds[i] - start) / span * n), n - 1) if n > 1 else 0].append(i)
+        passes += [w for w in windows if w]
     return passes
 
 
@@ -661,6 +693,7 @@ def find_motion(
     *,
     nsigma: float = 5.0,
     pass_gap_days: float = 60.0,
+    pass_max_days: float = MAX_PASS_DAYS,
     max_pm_arcsec_yr: float = 15.0,
     static_arcsec: float = 2.0,
     min_detect_frac: float = 0.5,
@@ -686,7 +719,7 @@ def find_motion(
     center = SkyCoord(float(c_ra) * u.deg, float(c_dec) * u.deg)
     pix = float(np.median([f.pixel_scale_arcsec for f in frames]))
 
-    passes = group_into_passes([f.mjd for f in frames], pass_gap_days)
+    passes = group_into_passes([f.mjd for f in frames], pass_gap_days, pass_max_days)
     usable = []
     for f in frames:
         try:
@@ -699,7 +732,7 @@ def find_motion(
         frames = usable
         if not frames:
             raise ValueError("no frame has enough usable pixels")
-        passes = group_into_passes([f.mjd for f in frames], pass_gap_days)
+        passes = group_into_passes([f.mjd for f in frames], pass_gap_days, pass_max_days)
     detections = [detect_sources(f, i, nsigma) for i, f in enumerate(frames)]
     offsets, align_notes = align_frames(detections, center)
     notes += align_notes

@@ -26,6 +26,8 @@ import requests  # noqa: E402
 from astropy.coordinates import SkyCoord  # noqa: E402
 from astropy.io import fits  # noqa: E402
 
+from planetx.engine import group_into_passes  # noqa: E402
+
 ALLOWED_PREFIX = "https://irsa.ipac.caltech.edu/ibe/data/spherex/"
 CACHE = Path(__file__).resolve().parent.parent / ".cache" / "dev"
 KEEP_HDUS = ("IMAGE", "FLAGS", "VARIANCE", "WCS-WAVE")
@@ -126,14 +128,14 @@ def _query_visits(coord: SkyCoord, detectors: tuple[int, ...]) -> list[Visit]:
 
 
 def pick_visits(visits: list[Visit], per_pass: int, gap_days: float = 60.0) -> list[Visit]:
-    """At most `per_pass` visits per (pass, detector), spread evenly in time."""
+    """At most `per_pass` visits per (pass, detector), spread evenly in time.
+
+    Passes are the engine's own (`group_into_passes`), so continuous coverage
+    near the ecliptic poles is sampled per time window, not as one pass.
+    """
     picked: list[Visit] = []
-    passes: list[list[Visit]] = []
-    for v in visits:
-        if not passes or v.mjd - passes[-1][-1].mjd > gap_days:
-            passes.append([])
-        passes[-1].append(v)
-    for p in passes:
+    for ids in group_into_passes([v.mjd for v in visits], gap_days):
+        p = [visits[i] for i in ids]
         for det in sorted({v.detector for v in p}):
             vs = [v for v in p if v.detector == det]
             idx = np.unique(np.linspace(0, len(vs) - 1, min(per_pass, len(vs))).round().astype(int))

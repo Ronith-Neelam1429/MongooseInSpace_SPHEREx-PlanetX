@@ -96,12 +96,74 @@ def nearest(result, east, north):
     return min(result.objects, key=sep)
 
 
+def continuous_survey(stars, rng, days=400.0, step=5.0):
+    """Coverage as at the ecliptic poles: a frame every few days, no gaps."""
+    return [
+        make_frame(
+            stars, PASS_MJDS[0] + t, WAVES[k % len(WAVES)], rng,
+            rot_deg=rng.uniform(0, 360), wcs_error=tuple(rng.normal(0, 0.7, 2)),
+        )
+        for k, t in enumerate(np.arange(0.0, days + step / 2, step))
+    ]
+
+
+def clear_spot(stars, drift=(0.0, 0.0)):
+    """(east, north) with no star within 40" of the middle of a track that
+    drifts by `drift` arcsec from there (blending isn't what these tests are about)."""
+    grid = [(float(e), float(n)) for e in range(-100, 101, 10) for n in range(-100, 81, 10)]
+
+    def room(p):
+        return min(np.hypot(s[0] - p[0] - drift[0] / 2, s[1] - p[1] - drift[1] / 2) for s in stars)
+
+    spot = max(grid, key=room)
+    assert room(spot) > 40
+    return spot
+
+
 def test_group_into_passes_splits_on_gaps_only():
     mjds = [10, 11, 50, 200, 230, 400]
     assert group_into_passes(mjds, gap_days=60) == [[0, 1, 2], [3, 4], [5]]
     assert group_into_passes([], gap_days=60) == []
     # Input order doesn't matter: passes come out time-ordered.
     assert group_into_passes([400, 10, 200], gap_days=60) == [[1], [2], [0]]
+
+
+def test_ordinary_passes_of_up_to_eight_weeks_stay_whole():
+    # First and last visit of the three real passes at Barnard's Star (37-55 days long).
+    mjds = [60902.9, 60923.1, 60949.3, 61110.1, 61140.0, 61165.1, 61268.6, 61285.3, 61305.6]
+    assert group_into_passes(mjds, 60.0) == [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+    # A run of exactly the longest allowed pass is not cut.
+    assert group_into_passes([0.0, 30.0, 60.0], 60.0) == [[0, 1, 2]]
+
+
+def test_continuous_coverage_is_cut_into_time_windows():
+    mjds = [60000.0 + 2.5 * k for k in range(201)]  # 500 days without a gap
+    passes = group_into_passes(mjds, 60.0)
+    assert sorted(i for p in passes for i in p) == list(range(len(mjds)))  # every frame, once
+    assert len(passes) == 9  # the fewest windows of at most 60 days
+    spans = [mjds[p[-1]] - mjds[p[0]] for p in passes]
+    assert max(spans) <= 60 and min(spans) > 45  # equal windows, no sliver at the end
+    assert all(mjds[a[-1]] < mjds[b[0]] for a, b in zip(passes, passes[1:]))  # time-ordered
+    # The window length follows `max_days`.
+    assert len(group_into_passes(mjds, 60.0, max_days=100.0)) == 5
+    with pytest.raises(ValueError):
+        group_into_passes(mjds, 60.0, max_days=0.0)
+
+
+def test_a_sample_of_each_window_is_grouped_like_the_full_list():
+    # The website downloads a few frames per pass and hands only those to the
+    # engine, which must then see the same passes.
+    rng = np.random.default_rng(12)
+    mjds = sorted(60000.0 + rng.uniform(0, 430, 300))
+    passes = group_into_passes(mjds, 60.0)
+    sample = [p[i] for p in passes for i in sorted({0, len(p) // 3, 2 * len(p) // 3, len(p) - 1})]
+    regrouped = group_into_passes([mjds[i] for i in sample], 60.0)
+    assert [[sample[k] for k in p] for p in regrouped] == [[i for i in p if i in sample] for p in passes]
+
+
+def test_window_without_frames_is_not_a_pass():
+    # 135 days with no gap over 60: three 45-day windows, the middle one empty.
+    assert group_into_passes([0.0, 5.0, 40.0, 95.0, 130.0, 135.0], 60.0) == [[0, 1, 2], [3, 4, 5]]
 
 
 def test_detects_star_at_subpixel_position():
@@ -192,6 +254,37 @@ def test_single_pass_reports_it_cannot_measure_motion():
     r = find_motion(frames)
     assert r.movers == []
     assert any("only one pass" in n for n in r.notes)
+
+
+def test_continuous_coverage_recovers_mover_and_variable():
+    # Near the ecliptic poles SPHEREx never leaves a field for long, so there
+    # are no gaps to split passes at. Motion and brightness changes must still
+    # be measured there, and static stars must stay static.
+    rng = np.random.default_rng(21)
+    stars = field_stars(rng)
+    e0, n0 = clear_spot(stars, drift=(-1.1, 11.0))
+    ve, vn = clear_spot(stars + [(e0, n0 + 5.5)])
+
+    def brightening(mjd):
+        return 600.0 if mjd < PASS_MJDS[0] + 200 else 1200.0
+
+    special = [(e0, n0, -1.0, 10.0, 1500.0), (ve, vn, 0.0, 0.0, brightening)]
+    frames = continuous_survey(stars + special, rng)  # 400 days, a frame every 5
+    r = find_motion(frames)
+    assert len(r.passes) == 7
+    assert all(frames[p[-1]].mjd - frames[p[0]].mjd <= 60 for p in r.passes)
+    assert not any("only one pass" in n for n in r.notes)
+    (m,) = r.movers
+    assert m.pm_ra_cosdec == pytest.approx(-1.0, abs=0.6)
+    assert m.pm_dec == pytest.approx(10.0, abs=0.6)
+    assert len(m.sources) == 7  # followed through every window
+    (v,) = r.variables
+    assert v is nearest(r, ve, vn)
+    assert v.variability["ratio"] == pytest.approx(2.0, rel=0.15)
+    assert len(r.objects) >= 35
+    # Treated as one long pass (the old behaviour) the same frames say nothing.
+    blind = find_motion(frames, pass_max_days=float("inf"))
+    assert blind.objects == [] and any("only one pass" in n for n in blind.notes)
 
 
 def test_rejects_empty_input():
