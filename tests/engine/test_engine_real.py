@@ -15,7 +15,8 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
-from fetch import fetch_all, find_visits, pick_visits, resolve  # noqa: E402
+from fetch import TARGETS, fetch_all, find_visits, pick_visits  # noqa: E402
+from targets import ENGINE_TARGETS_DEG  # noqa: E402
 
 from planetx.engine import find_motion, frame_from_hdul  # noqa: E402
 
@@ -24,21 +25,15 @@ log.setLevel("WARNING")
 
 
 def run(target: str, detectors=None, per_pass: int = 6, stack: bool = False):
-    coord, default = resolve(target)
+    # Fixed positions, not a SIMBAD lookup: with the cutouts cached, no service is asked.
+    coord = SkyCoord(*ENGINE_TARGETS_DEG[target], unit="deg")
+    default = TARGETS[target][2] if target in TARGETS else (1, 2, 3)
     visits = pick_visits(find_visits(coord, detectors or default), per_pass)
     frames = []
     for v, path in fetch_all(visits, coord, 0.1):
         with fits.open(path) as h:
             frames.append(frame_from_hdul(h, v.obs_id))
     return coord, find_motion(frames, stack=stack)
-
-
-# Known problem (CLAUDE.md, "Engine known problems"): stack mode depends on which frame anchors
-# the per-pass co-adds. Since find_motion sorts its input by time (3e72fba), stacks come out as
-# in the website's frame order, where Eps Indi B measures 4.28"/yr (6.0" shift, under the 1 px
-# mover bar) and WISE 0855 reaches 6.6 sigma. Both passed only in tools/fetch's frame order.
-# The website and the survey never stack. Strict, so a fix shows up as XPASS.
-STACK_ORDER_REASON = "stack mode results depend on frame order; time-ordered stacks miss these values"
 
 
 def sep(coord, obj) -> float:
@@ -56,10 +51,9 @@ def angle_diff(a: float, b: float) -> float:
         ("barnard", {"detectors": (1, 2, 3, 4, 5, 6)}, 10.39, 355.6, 0.05),
         # Eps Ind Ba/Bb system: ~4.7"/yr at PA ~122
         ("eps-indi-b", {}, 4.68, 121.8, 0.10),
-        pytest.param(
-            "eps-indi-b", {"stack": True}, 4.68, 121.8, 0.10,
-            marks=pytest.mark.xfail(strict=True, reason=STACK_ORDER_REASON),
-        ),
+        # Per-detector stacks: 4.58"/yr PA 123, 9 sigma (one co-add across
+        # detectors measured 4.28"/yr, under the 1 px mover bar).
+        ("eps-indi-b", {"stack": True}, 4.68, 121.8, 0.10),
     ],
 )
 def test_known_movers_are_the_only_movers(target, kw, pm, pa, pm_tol):
@@ -83,7 +77,7 @@ def test_north_ecliptic_pole_is_measured_in_time_windows():
     # At the pole SPHEREx (detectors 2 and 5 only) comes back every week or two
     # for the whole survey, so there are no gaps to split passes at. The field's
     # stars must still be tracked, across time windows, and none of them moves.
-    coord, r = run("270.0 66.5607", per_pass=4)
+    coord, r = run("nep", per_pass=4)
     assert len(r.passes) >= 9
     assert all(r.frames[p[-1]].mjd - r.frames[p[0]].mjd <= 60 for p in r.passes)
     assert not any("only one pass" in n for n in r.notes)
@@ -92,16 +86,13 @@ def test_north_ecliptic_pole_is_measured_in_time_windows():
     assert r.pm_floor_arcsec_yr < 0.5
 
 
-@pytest.mark.xfail(strict=True, reason=STACK_ORDER_REASON)
 def test_wise0855_motion_measured_in_stacks():
-    # Too faint for single frames; found in per-pass stacks. Direction and
-    # speed come out right, but its stacked positions scatter more than their
-    # errors allow (and more than a physical parallax explains), so its
-    # significance is ~3 sigma and the engine rightly withholds "mover".
-    # Literature: ~8.1"/yr at PA ~275.
+    # Too faint for single frames; found in per-detector, per-pass stacks. With
+    # position errors calibrated on the field's static stars it is a 10 sigma
+    # mover (7.05"/yr PA 276, 2026-11-14). Literature: ~8.1"/yr at PA ~275.
     coord, r = run("wise0855", stack=True)
-    assert r.movers == []
     (w,) = [o for o in r.objects if sep(coord, o) < 10]
+    assert r.movers == [w]
     assert w.pm_total == pytest.approx(8.1, rel=0.15)
     assert angle_diff(w.position_angle_deg, 275.0) < 12
-    assert w.pm_significance > 2.5
+    assert w.pm_significance >= 5

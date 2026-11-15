@@ -12,9 +12,18 @@ from .frames import Frame
 # SPHEREx PSFs are ~1.5 px FWHM, so a 3x3 box holds most of a point source's
 # flux and keeps neighbours out in crowded fields.
 _HALF = 1
-# Positional error can't beat this however bright the star (undersampled PSF,
-# residual distortion); keeps the motion fit from trusting one frame too much.
-CENTROID_FLOOR_PX = 0.05
+# Positional error of one detection: hypot(CENTROID_K * FWHM / SNR, CENTROID_FLOOR_PX).
+# Fitted (restricted maximum likelihood) to how static stars' pass positions
+# scatter between passes: 361 unsaturated tracks in six real fields (Barnard,
+# Eps Indi B, R Dra, RW Aur, WISE 0855, North Ecliptic Pole). The floor covers
+# what no SNR beats (undersampled PSF, residual distortion). The engine then
+# rescales errors per field from that field's own static stars.
+CENTROID_K = 1.2
+CENTROID_FLOOR_PX = 0.1
+# Same for per-pass stacks, fitted the same way to stacks of the same fields.
+# Resampling smooths a stack's noise, so its SNR means something different.
+STACK_CENTROID_K = 0.4
+STACK_CENTROID_FLOOR_PX = 0.065
 # Saturated stars are located from the shape of their masked patch, which
 # bleeding/blooming can skew.
 SATURATED_SIGMA_PX = 0.5
@@ -78,6 +87,10 @@ def detect_sources(frame: Frame, frame_index: int = 0, nsigma: float = 5.0) -> l
     pix_scale = frame.pixel_scale_arcsec
     ny, nx = data.shape
     fwhm_px = frame.psf_fwhm_arcsec / pix_scale if np.isfinite(frame.psf_fwhm_arcsec) else 1.5
+    if frame.meta.get("stacked"):
+        k_centroid, floor_px = STACK_CENTROID_K, STACK_CENTROID_FLOOR_PX
+    else:
+        k_centroid, floor_px = CENTROID_K, CENTROID_FLOOR_PX
     out = _saturated_sources(frame, frame_index, pix_scale, resid, noise)
     # Unsaturated detections in the halo of a saturated star are fragments of it.
     near_sat = (
@@ -116,10 +129,7 @@ def detect_sources(frame: Frame, frame_index: int = 0, nsigma: float = 5.0) -> l
         snr = flux / flux_err if flux_err > 0 else 0.0
         if snr < nsigma:
             continue
-        # FWHM/SNR rather than the textbook FWHM/(2.355 SNR): SPHEREx PSFs are
-        # undersampled and a 3x3 centroid is noisier than the ideal. Checked on
-        # WISE 0855 stacks (SNR ~10), where pass-to-pass scatter is ~1".
-        sigma_px = max(fwhm_px / snr, CENTROID_FLOOR_PX)
+        sigma_px = float(np.hypot(k_centroid * fwhm_px / snr, floor_px))
         contaminated = bool(
             frame.contaminated is not None and frame.contaminated[y0:y1, x0:x1].any()
         )

@@ -15,8 +15,10 @@ Pipeline (all in sky coordinates, so frames never need resampling):
    - "mover" links for sources left unmatched, allowing up to
      `max_pm_arcsec_yr` of motion and requiring similar brightness.
 6. Fit linear motion to every linked object; flag it as a mover when the
-   motion is significant against both its own errors and the field's
-   systematic floor (measured from the static stars).
+   motion is significant against its errors. Position errors are first
+   calibrated on the field's static stars (how far they stray from straight
+   lines), and a proper-motion floor is added if static stars' fitted
+   motions still exceed their errors.
 7. Compare per-pass fluxes in the same detector to flag variables.
 
 Intra-pass motion (fast asteroids moving within one visit) is not handled yet.
@@ -47,9 +49,27 @@ MAX_PASS_DAYS = 60.0
 # Per-pass position floor for saturated stars. Measured on Barnard's Star
 # against Gaia (detectors 1-3 and 4-6, 3 passes): per-axis scatter ~0.8"
 # (0.13 px). 0.2 px keeps ~50% margin; fits came out chi2/dof ~0.6-0.7 at
-# 0.25 px, i.e. errors overstated. Revisit with more saturated stars.
+# 0.25 px, i.e. errors overstated. The six calibration fields hold only two
+# saturated static stars, too few to re-derive it; revisit with more.
 SATURATED_PASS_FLOOR_PX = 0.2
-PASS_FLOOR_ARCSEC = 0.3
+# Per-pass position floor (alignment residuals and the like, which averaging a
+# pass's frames can't beat), fitted with the detect.CENTROID_* constants to
+# the pass-to-pass scatter of static stars; the second is for stacks.
+PASS_FLOOR_ARCSEC = 0.08
+STACK_PASS_FLOOR_ARCSEC = 0.0  # stacks: the fit put all of it in STACK_CENTROID_FLOOR_PX
+# Per-field calibration of position errors (`_error_scale`): static tracks
+# needed, and the weight (in degrees of freedom) of the fitted global model,
+# which a field's own static stars then pull the scale away from.
+CALIB_MIN_TRACKS = 5
+CALIB_PRIOR_DOF = 20
+# Static tracks off a straight line by more than this chance (blends, chance
+# links) don't take part in the calibration.
+CALIB_OUTLIER_PVALUE = 1e-3
+# Linking decisions (does this source continue that track?) add this to every
+# position error: a straight line can't follow parallax (Eps Indi B: 0.28",
+# WISE 0855: 0.44"), and calibrated errors of bright stars (~0.1") would
+# otherwise cut a nearby star's track in pieces. Fits don't use it.
+LINK_FLOOR_ARCSEC = 0.3
 # Saturated patch this large marks a very bright star (R Dra: ~90-100 px).
 BRIGHT_SAT_AREA_PX = 50
 BRIGHT_CAUTION_ARCSEC = 150.0
@@ -94,6 +114,9 @@ class TrackedObject:
     variability: dict | None = None
     # Passes whose frames covered the predicted position but saw nothing.
     missing_passes: list[int] = field(default_factory=list)
+    # Passes where the predicted position falls on another detection, which
+    # hides the object there (a blend), so the track has no source in them.
+    blended_passes: list[int] = field(default_factory=list)
     # Fitted only when it explains a poor straight-line fit (arcsec).
     parallax: float | None = None
     parallax_err: float | None = None
@@ -125,6 +148,9 @@ class EngineResult:
     input_frames: list[Frame] = field(default_factory=list)
     input_passes: list[list[int]] = field(default_factory=list)  # into input_frames
     stacked: bool = False
+    # Factor applied to unsaturated pass-position errors, from this field's
+    # static stars (1.0 when there were too few to tell).
+    position_error_scale: float = 1.0
 
     @property
     def movers(self) -> list[TrackedObject]:
@@ -315,6 +341,7 @@ def _merge_pass(
     min_detect_frac: float,
 ) -> list[PassSource]:
     """Average each object's detections within one pass."""
+    stacked = bool(frame_ids) and bool(frames[frame_ids[0]].meta.get("stacked"))
     dets = [d for fi in frame_ids for d in detections[fi]]
     dets.sort(key=lambda d: -d.snr)  # brightest seed clusters first
     if not dets:
@@ -337,18 +364,19 @@ def _merge_pass(
         w = weights[c]
         formal = float(1 / np.sqrt(w.sum()))
         n = len(members)
-        scatter = float(np.hypot(mx.std(), my.std()) / np.sqrt(2 * n)) if n > 2 else 0.0
-        # Alignment leaves ~0.1-0.3" residuals per pass (measured from static
-        # stars), which averaging many frames of a bright star can't beat.
-        sigma = float(np.hypot(max(formal, scatter), PASS_FLOOR_ARCSEC))
+        # (Not for stacks: a pass's few per-detector stacks differ by colour, not noise.)
+        scatter = float(np.hypot(mx.std(), my.std()) / np.sqrt(2 * n)) if n > 2 and not stacked else 0.0
+        # The within-pass scatter guards against passes worse than their
+        # detections' errors say (e.g. a neighbour pulling some centroids).
+        sigma = float(np.hypot(max(formal, scatter), STACK_PASS_FLOOR_ARCSEC if stacked else PASS_FLOOR_ARCSEC))
         if any(dets[m].saturated for m in members):
             # Saturated-patch centres share a bias that averaging can't remove.
             sigma = max(sigma, SATURATED_PASS_FLOOR_PX * frames[frame_ids[0]].pixel_scale_arcsec)
         ra, dec = float(ras[c]), float(decs[c])
         covering = [fi for fi, seen in zip(frame_ids, covered[:, c]) if seen]
         n_cover = len(covering)
-        # A stacked pass is a single frame, so one detection is all there is.
-        if n < (2 if len(frame_ids) > 1 else 1):
+        # A stack (one per detector) or a lone frame is all a pass has there.
+        if n < (1 if stacked or len(frame_ids) == 1 else 2):
             continue
         # Judge the detection rate per detector: red objects (Y dwarfs) are only
         # visible at 4-5 um, i.e. in a third of the frames or fewer.
@@ -364,20 +392,23 @@ def _merge_pass(
             continue  # flickering at the noise limit: not a solid detection
         # Core fluxes and saturated stars' wing fluxes measure different things,
         # so they're kept under separate keys and only compared like with like.
-        by_det: dict[str, list[float]] = {}
+        by_det: dict[str, list[tuple[float, float]]] = {}
         for m in members:
             d = dets[m]
             if d.saturated:
                 if np.isfinite(d.wing_flux):
-                    by_det.setdefault(f"D{d.detector}-wing", []).append(d.wing_flux)
+                    by_det.setdefault(f"D{d.detector}-wing", []).append((d.wing_flux, d.wing_flux_err))
             elif np.isfinite(d.flux):
-                by_det.setdefault(f"D{d.detector}", []).append(d.flux)
+                by_det.setdefault(f"D{d.detector}", []).append((d.flux, d.flux_err))
         flux_by_detector = {}
-        for det, fl in by_det.items():
-            fl = np.asarray(fl)
-            if len(fl) < 2:
+        for det, values in by_det.items():
+            fl = np.array([v for v, _ in values])
+            if len(fl) >= 2:
+                err = fl.std(ddof=1) / np.sqrt(len(fl))
+            elif stacked and np.isfinite(values[0][1]):
+                err = values[0][1]  # a stack's own noise: its frames' scatter is averaged in
+            else:
                 continue  # one frame gives no error estimate; don't compare it
-            err = fl.std(ddof=1) / np.sqrt(len(fl))
             flux_by_detector[det] = (float(np.median(fl)), float(err))
         out.append(
             PassSource(
@@ -531,7 +562,69 @@ def _line_pvalue(sources: list[PassSource], plane: SkyPlane) -> float:
     """
     x, y = _source_offsets(plane, sources)
     t = np.array([s.mjd for s in sources]) / DAYS_PER_YEAR
-    return float(_line_pvalues(x, y, t, np.array([s.sigma_arcsec for s in sources])))
+    sig = np.hypot(np.array([s.sigma_arcsec for s in sources]), LINK_FLOOR_ARCSEC)
+    return float(_line_pvalues(x, y, t, sig))
+
+
+def _error_scale(groups: list[list[PassSource]], plane: SkyPlane) -> tuple[float, int]:
+    """Factor by which this field's static stars say unsaturated pass errors are off.
+
+    How far static stars' pass positions stray from straight lines measures
+    the field's real position errors (crowding, PSF, alignment differ from
+    field to field). The squared factor is their chi2 per degree of freedom,
+    pulled towards 1 (the global error model) with weight `CALIB_PRIOR_DOF`
+    so a sparse field can't swing it far. Tracks fitting a line worse than
+    `CALIB_OUTLIER_PVALUE` at the current factor are left out (blends, chance
+    links). Saturated stars have their own floor and are left out too.
+
+    Returns (factor, static tracks used); (1.0, 0) when there are too few.
+    """
+    tracks = [
+        g for g in groups
+        if len(g) >= 3 and not any(d.saturated for s in g for d in s.detections)
+    ]
+    if len(tracks) < CALIB_MIN_TRACKS:
+        return 1.0, 0
+    chi2 = np.empty(len(tracks))
+    dof = np.empty(len(tracks))
+    for k, g in enumerate(tracks):
+        x, y = _source_offsets(plane, g)
+        t = np.array([s.mjd for s in g]) / DAYS_PER_YEAR
+        chi2[k] = _fit_line(x, y, t, np.array([s.sigma_arcsec for s in g]))[4]
+        dof[k] = 2 * (len(g) - 2)
+    scale2 = 1.0
+    for _ in range(5):
+        keep = chdtrc(dof, chi2 / scale2) >= CALIB_OUTLIER_PVALUE
+        new = (chi2[keep].sum() + CALIB_PRIOR_DOF) / (dof[keep].sum() + CALIB_PRIOR_DOF)
+        if np.isclose(new, scale2):
+            break
+        scale2 = new
+    return float(np.sqrt(scale2)), int(keep.sum())
+
+
+def _pm_floor(pm_x: np.ndarray, pm_y: np.ndarray, pm_err: np.ndarray) -> float:
+    """Extra proper-motion error (arcsec/yr) that static stars' fitted motions need.
+
+    Static stars should show motions consistent with their errors: then
+    (pm / err)^2 summed over both axes is chi2 with 2 degrees of freedom,
+    median 2 ln 2. If the median is larger, systematics their position errors
+    don't capture are at work, and the floor F added in quadrature to every
+    error brings it back. Real motions of field stars (mostly << 0.1"/yr) count
+    as such systematics, which only errs on the cautious side.
+    """
+    z2 = pm_x**2 + pm_y**2
+    target = 2 * np.log(2)
+
+    def excess(floor: float) -> float:
+        return float(np.median(z2 / (pm_err**2 + floor**2))) - target
+
+    if excess(0.0) <= 0:
+        return 0.0
+    lo, hi = 0.0, float(np.sqrt(z2.max()))
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if excess(mid) > 0 else (lo, mid)
+    return hi
 
 
 def _flux_compatible(a: PassSource, b: PassSource, max_ratio: float) -> bool:
@@ -589,8 +682,45 @@ def _brightness_epochs(sources: list[PassSource], epoch_of_pass: list[int]) -> l
     return list(merged.values())
 
 
+def _matched_pairs(
+    dets_a: list[Detection], dets_b: list[Detection], wave_tol: float
+) -> dict[str, list[tuple[float, float]]]:
+    """Independent same-wavelength pairs between two epochs' detections, per kind.
+
+    Returns kind -> [(log(flux_b / flux_a), its error)]. Closest wavelengths
+    are paired first and every detection is used at most once, so the pairs'
+    noise is independent.
+    """
+    kinds_a = [{k: (v, e) for k, v, e in _flux_kinds(d)} for d in dets_a]
+    kinds_b = [{k: (v, e) for k, v, e in _flux_kinds(d)} for d in dets_b]
+    candidates: dict[str, list[tuple[float, int, int]]] = {}
+    for i, da in enumerate(dets_a):
+        if not (np.isfinite(da.wavelength_um) and kinds_a[i]):
+            continue
+        for j, db in enumerate(dets_b):
+            if not np.isfinite(db.wavelength_um):
+                continue
+            dlam = abs(db.wavelength_um - da.wavelength_um) / da.wavelength_um
+            if dlam > wave_tol:
+                continue
+            for kind in kinds_a[i].keys() & kinds_b[j].keys():
+                candidates.setdefault(kind, []).append((dlam, i, j))
+    out: dict[str, list[tuple[float, float]]] = {}
+    for kind, cands in candidates.items():
+        used_a: set[int] = set()
+        used_b: set[int] = set()
+        for _, i, j in sorted(cands):
+            if i in used_a or j in used_b:
+                continue
+            used_a.add(i)
+            used_b.add(j)
+            (va, ea), (vb, eb) = kinds_a[i][kind], kinds_b[j][kind]
+            out.setdefault(kind, []).append((float(np.log(vb / va)), float(np.hypot(ea / va, eb / vb))))
+    return out
+
+
 def _variability(
-    obj_sources: list[PassSource], calib_frac: float, wave_tol: float = 0.01, min_pairs: int = 5
+    obj_sources: list[PassSource], calib_frac: float, wave_tol: float = 0.01, min_pairs: int = 3
 ) -> dict | None:
     """Brightness change between passes, from frames at matching wavelengths.
 
@@ -599,26 +729,17 @@ def _variability(
     are paired across passes only at the same detector, measurement kind and
     wavelength (within `wave_tol`, fractional); the median log flux ratio of
     those pairs, with a robust error, is the measured change.
+
+    Each detection takes part in at most one pair (`_matched_pairs`): pairing
+    one detection with every neighbour in wavelength would count its noise
+    several times and overstate the significance. `min_pairs` counts such
+    independent pairs (overlapping ones used to need 5, which could come from
+    as few as 2 + 3 detections).
     """
     best = None
     for a_i, a in enumerate(obj_sources):
         for b in obj_sources[a_i + 1:]:
-            logs: dict[str, list[tuple[float, float]]] = {}
-            for da in a.detections:
-                if not np.isfinite(da.wavelength_um):
-                    continue
-                for db in b.detections:
-                    if not np.isfinite(db.wavelength_um):
-                        continue
-                    if abs(db.wavelength_um - da.wavelength_um) > wave_tol * da.wavelength_um:
-                        continue
-                    kb = {k: (v, e) for k, v, e in _flux_kinds(db)}
-                    for kind, va, ea in _flux_kinds(da):
-                        if kind in kb:
-                            vb, eb = kb[kind]
-                            logs.setdefault(kind, []).append(
-                                (float(np.log(vb / va)), float(np.hypot(ea / va, eb / vb)))
-                            )
+            logs = _matched_pairs(a.detections, b.detections, wave_tol)
             for kind, pairs in logs.items():
                 if len(pairs) < min_pairs:
                     continue
@@ -752,33 +873,78 @@ def _merge_tracks(
     return [g for g, m in tracks if not m], [g for g, m in tracks if m]
 
 
-def _missing_passes(
+def _pass_source_trees(
+    per_pass: list[list[PassSource]], plane: SkyPlane
+) -> list[cKDTree | None]:
+    """Per pass, a k-d tree of its sources' offsets (same order as `per_pass`)."""
+    trees: list[cKDTree | None] = []
+    for srcs in per_pass:
+        trees.append(cKDTree(np.column_stack(_source_offsets(plane, srcs))) if srcs else None)
+    return trees
+
+
+# A source hides another in its pass only if it is about as bright or brighter:
+# the blend's flux is the sum of both, and a much fainter neighbour would leave
+# the object detected as a peak of its own.
+BLEND_MIN_FLUX_RATIO = 0.7
+
+
+def _hides(blocker: PassSource, obj: TrackedObject) -> bool:
+    """Whether `blocker` is bright enough, at the same detectors, to hide `obj`."""
+    own: dict[str, list[float]] = {}
+    for s in obj.sources:
+        for kind, (flux, _) in s.flux_by_detector.items():
+            own.setdefault(kind, []).append(flux)
+    common = blocker.flux_by_detector.keys() & own.keys()
+    # Without a like-for-like comparison nothing says the two are one blend.
+    return bool(common) and all(
+        blocker.flux_by_detector[k][0] >= BLEND_MIN_FLUX_RATIO * float(np.median(own[k])) for k in common
+    )
+
+
+def _absent_passes(
     obj: TrackedObject,
     frames: list[Frame],
     passes: list[list[int]],
     plane: SkyPlane,
     nsigma: float,
-) -> list[int]:
-    """Passes that covered the object's predicted position but didn't see it.
+    per_pass: list[list[PassSource]],
+    trees: list[cKDTree | None],
+    blend_arcsec: float,
+) -> tuple[list[int], list[int]]:
+    """Passes that covered the object's predicted position but have no source of it.
 
-    Only counts when the object is bright enough that it should have been
-    detected there (best single-detection SNR >= 2 * nsigma).
+    Returns (missing, blended). A pass is "blended" when a source of that pass
+    at least about as bright as the object (`_hides`) lies within
+    `blend_arcsec` (plus 3 sigma of the prediction) of where the object should
+    be: that source's light hides it there, so its absence says nothing
+    against the track. Otherwise the pass is "missing". Only counts when the
+    object is bright enough that it should have been detected there (best
+    single-detection SNR >= 2 * nsigma).
     """
     if max(s.snr for s in obj.sources) < 2 * nsigma:
-        return []
+        return [], []
     have = {s.pass_index for s in obj.sources}
-    missing = []
+    missing, blended = [], []
     x0, y0 = plane.offsets(obj.ra, obj.dec)
     for pi, ids in enumerate(passes):
         if pi in have:
             continue
         mjd = float(np.mean([frames[i].mjd for i in ids]))
         dt = (mjd - obj.ref_mjd) / DAYS_PER_YEAR
-        ra, dec = plane.sky(x0 + obj.pm_ra_cosdec * dt, y0 + obj.pm_dec * dt)
+        px, py = x0 + obj.pm_ra_cosdec * dt, y0 + obj.pm_dec * dt
+        ra, dec = plane.sky(px, py)
         covering = sum(bool(_covers(frames[i], ra, dec)[0]) for i in ids)
-        if covering >= max(1, 0.5 * len(ids)):
+        if covering < max(1, 0.5 * len(ids)):
+            continue
+        radius = blend_arcsec + 3 * obj.pm_err * abs(dt)
+        tree = trees[pi]
+        near = tree.query_ball_point([float(px), float(py)], radius) if tree is not None else []
+        if any(_hides(per_pass[pi][k], obj) for k in near):
+            blended.append(pi)
+        else:
             missing.append(pi)
-    return missing
+    return missing, blended
 
 
 def _caution_near_bright(objects: list[TrackedObject], plane: SkyPlane) -> None:
@@ -875,7 +1041,7 @@ def _link_movers(
         return [], []
     px, py = _source_offsets(plane, pool)
     pt = np.array([s.mjd for s in pool]) / DAYS_PER_YEAR
-    psig = np.array([s.sigma_arcsec for s in pool])
+    psig = np.hypot(np.array([s.sigma_arcsec for s in pool]), LINK_FLOOR_ARCSEC)
     ppass = np.array([s.pass_index for s in pool])
     in_pass = [np.nonzero(ppass == pk)[0] for pk in range(n_passes)]
     # A pair is never linked across more than the fastest motion over the
@@ -955,9 +1121,11 @@ def find_motion(
 ) -> EngineResult:
     """Run the full pipeline on frames of one patch of sky (any order, any detectors).
 
-    With `stack=True`, each pass's aligned frames are co-added and sources are
-    found on the stacks: deeper (faint brown dwarfs), but saturated-star and
-    per-detector flux information is coarser.
+    With `stack=True`, each pass's aligned frames are co-added per detector
+    and sources are found on the stacks: deeper (faint brown dwarfs), but
+    saturated-star and wavelength information is coarser (a stack's flux is a
+    band average at its frames' mean wavelength, so brightness is compared
+    only between stacks whose mean wavelengths match).
     """
     if not frames:
         raise ValueError("no frames")
@@ -1002,11 +1170,16 @@ def find_motion(
     if stack:
         n = int(round(max(frames[0].data.shape)))
         grid = stack_grid(SkyCoord(float(c_ra) * u.deg, float(c_dec) * u.deg), n, pix)
-        frames = [
-            stack_pass([input_frames[i] for i in ids], [offsets[i] for i in ids], grid, (n, n))
-            for ids in input_passes
-        ]
-        passes = [[k] for k in range(len(frames))]
+        # One stack per pass and detector, so red objects aren't diluted by
+        # frames at wavelengths where they're invisible, and each stack keeps
+        # a wavelength for brightness comparisons.
+        frames, passes = [], []
+        for ids in input_passes:
+            passes.append([])
+            for det in sorted({input_frames[i].detector for i in ids}):
+                mine = [i for i in ids if input_frames[i].detector == det]
+                frames.append(stack_pass([input_frames[i] for i in mine], [offsets[i] for i in mine], grid, (n, n)))
+                passes[-1].append(len(frames) - 1)
         detections = [detect_sources(f, k, nsigma) for k, f in enumerate(frames)]
         offsets = [(0.0, 0.0)] * len(frames)
     if len(passes) < 2:
@@ -1021,6 +1194,15 @@ def find_motion(
     groups = _link_static(per_pass, plane, static_arcsec)
     multi = [g for g in groups if len(g) >= 2]
     singles = [g[0] for g in groups if len(g) == 1]
+    # Calibrate position errors on this field's static stars before anything
+    # (linking, fits, significances) relies on them.
+    error_scale, n_calib = _error_scale(multi, plane)
+    if n_calib:
+        for srcs in per_pass:
+            for s in srcs:
+                if not any(d.saturated for d in s.detections):
+                    s.sigma_arcsec *= error_scale
+        notes.append(f"position errors scaled by {error_scale:.2f} to match {n_calib} static stars")
 
     # --- mover linking among sources seen in only one pass ---------------------
     # A single-pass source only counts as "missing" elsewhere if another pass
@@ -1046,14 +1228,14 @@ def find_motion(
             continue
     floor_pm = 0.0
     if len(raw) >= 5:
-        pms = np.hypot([r[3] for r in raw], [r[4] for r in raw])
-        # Static stars' apparent motions are what alignment and centroid
-        # systematics alone produce. Their 2-D magnitude is Rayleigh-distributed,
-        # whose median is sigma*sqrt(ln 4); invert for the per-axis sigma.
-        floor_pm = float(np.median(pms) / np.sqrt(np.log(4)))
+        floor_pm = _pm_floor(np.array([r[3] for r in raw]), np.array([r[4] for r in raw]), np.array([r[5] for r in raw]))
     else:
         notes.append("too few static stars to measure the systematic floor")
 
+    # Two point sources closer than about a PSF FWHM make one peak.
+    fwhms = [f.psf_fwhm_arcsec for f in frames if np.isfinite(f.psf_fwhm_arcsec)]
+    blend_arcsec = float(np.median(fwhms)) if fwhms else 1.5 * pix
+    trees = _pass_source_trees(per_pass, plane)
     objects: list[TrackedObject] = []
     for g, kind in [(g, "static") for g in multi] + [(g, "mover") for g in mover_groups]:
         try:
@@ -1094,19 +1276,32 @@ def find_motion(
             parallax=fit["plx"],
             parallax_err=fit["plx_err"],
         )
-        obj.missing_passes = _missing_passes(obj, frames, passes, plane, nsigma)
+        obj.missing_passes, obj.blended_passes = _absent_passes(
+            obj, frames, passes, plane, nsigma, per_pass, trees, blend_arcsec
+        )
         obj_span_yr = (obj.sources[-1].mjd - obj.sources[0].mjd) / DAYS_PER_YEAR
         # A mover must beat its errors, shift by > ~1 px over its own baseline,
         # and not be absent from a pass that covered its predicted position
         # (that pattern is a chance pairing of unrelated sources, not a track).
+        # A pass where it would sit on another source is no evidence either
+        # way: it counts towards the passes needed, not as a measurement.
         # Two points always fit a line, so with 3+ passes a mover needs 3+;
-        # with only 2 passes, demand twice the significance instead.
+        # with only 2 measured passes, demand twice the significance instead.
+        # A track that needs its blended passes to count must at least have
+        # measured one brightness alike in all its passes: in crowded fields,
+        # pieces of two different stars (seen in different detectors) can line
+        # up next to a third star.
+        needed_passes = min(3, len(passes))
+        enough_passes = len(obj.sources) >= needed_passes or (
+            len(obj.sources) + len(obj.blended_passes) >= needed_passes
+            and bool(set.intersection(*(set(s.flux_by_detector) for s in obj.sources)))
+        )
         needed_sigma = mover_sigma if len(obj.sources) >= 3 else 2 * mover_sigma
         obj.is_mover = (
             obj.pm_significance >= needed_sigma
             and obj.pm_total * obj_span_yr >= pix
             and not obj.missing_passes
-            and len(obj.sources) >= min(3, len(passes))
+            and enough_passes
         )
         var = _variability(_brightness_epochs(obj.sources, epoch_of_pass), calib_frac)
         obj.variability = var
@@ -1127,5 +1322,6 @@ def find_motion(
         objects=objects,
         unlinked=unlinked,
         pm_floor_arcsec_yr=floor_pm,
+        position_error_scale=error_scale,
         notes=notes,
     )
