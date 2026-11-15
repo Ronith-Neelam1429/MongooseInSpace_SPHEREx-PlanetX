@@ -70,15 +70,21 @@ class CheckResult:
     notes: list[str] = field(default_factory=list)
 
 
-def motion_kind(obj: TrackedObject, archive_says: bool | None, pixel_arcsec: float) -> str:
+def motion_kind(
+    obj: TrackedObject, archive_says: bool | None, pixel_arcsec: float, archive_candidate: bool = False
+) -> str:
     """mover | candidate | static from SPHEREx and the archival refit.
 
     `archive_says` is the refit's verdict (`FusedMotion.is_mover`); when it has
     one it overrides SPHEREx alone. A candidate is 3-5 sigma in SPHEREx with a
-    shift of at least one pixel, and the archive cannot settle it.
+    shift of at least one pixel, and the archive cannot settle it; or one whose
+    archival positions from a single survey family show the motion
+    (`FusedMotion.archive_candidate`), however faint it is in SPHEREx.
     """
     if archive_says if archive_says is not None else obj.is_mover:
         return "mover"
+    if archive_says is None and archive_candidate:
+        return "candidate"
     span_yr = (obj.sources[-1].mjd - obj.sources[0].mjd) / DAYS_PER_YEAR
     if (
         archive_says is None
@@ -92,7 +98,10 @@ def motion_kind(obj: TrackedObject, archive_says: bool | None, pixel_arcsec: flo
 
 def unchecked(objects: Sequence[TrackedObject], fused: Sequence[FusedMotion], pixel_arcsec: float) -> list[Known]:
     """The motion class of every object with no catalogue consulted (classification None)."""
-    return [Known(kind=motion_kind(o, f.is_mover, pixel_arcsec)) for o, f in zip(objects, fused, strict=True)]
+    return [
+        Known(kind=motion_kind(o, f.is_mover, pixel_arcsec, f.archive_candidate))
+        for o, f in zip(objects, fused, strict=True)
+    ]
 
 
 def field_cone(objects: Sequence[TrackedObject]) -> tuple[float, float, float]:
@@ -158,10 +167,12 @@ def check_objects(
     on_slow_stars = 0
     for i, (obj, fm) in enumerate(zip(objects, fused, strict=True)):
         archive_says = fm.is_mover
-        kind = motion_kind(obj, archive_says, pixel_arcsec)
+        kind = motion_kind(obj, archive_says, pixel_arcsec, fm.archive_candidate)
         lead = None
         false_track = fm.verdict is Verdict.REFUTED
-        if archive_says and archive_is_other_stars(catalog, obj.ra, obj.dec, obj.ref_mjd, fm.matched):
+        if (archive_says or fm.archive_candidate) and archive_is_other_stars(
+            catalog, obj.ra, obj.dec, obj.ref_mjd, fm.matched
+        ):
             archive_says = None
             kind = motion_kind(obj, None, pixel_arcsec)
             void_archive.add(i)

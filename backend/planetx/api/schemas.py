@@ -120,6 +120,10 @@ class ArchiveCheck(BaseModel):
     pm_err: float | None = None
     baseline_yr: float | None = None
     observatories: list[str] = Field(description="Observatories whose positions entered the fit")
+    notes: list[str] = Field(
+        default_factory=list,
+        description="Why the refit reached its verdict (e.g. which archival matches were likely chance alignments)",
+    )
 
 
 class KnownMatch(BaseModel):
