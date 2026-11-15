@@ -14,7 +14,6 @@ from planetx.api import spectrum as spectra
 from planetx.api.routes import candidates, evidence, motion, profile, results, sky, spectrum, survey
 from planetx.api.schemas import Health
 from planetx.config import settings
-from planetx.profile import service as profiles
 
 
 @asynccontextmanager
@@ -22,7 +21,6 @@ async def lifespan(_: FastAPI):
     yield
     runs.shutdown()  # queued engine runs would otherwise delay exit
     spectra.shutdown()
-    profiles.shutdown()
 
 
 app = FastAPI(title="SPHEREx PlanetX API", version="0.1.0", lifespan=lifespan)

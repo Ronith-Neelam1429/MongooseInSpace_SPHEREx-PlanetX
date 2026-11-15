@@ -158,8 +158,8 @@ def _why(**kw):
 
 
 def test_why_moving_for_barnard():
-    why = _why(pm_mas=10393.0, pm_err=0.04, motion_source="gaia", d_ly=5.96, space_kms=142.6,
-               tangential_kms=90.1, population="thick disk", parallax_mas=546.98)
+    why = _why(pm_mas=10393.0, pm_err=0.04, motion_source="gaia", d_ly=5.96, distance_good=True,
+               space_kms=142.6, tangential_kms=90.1, population="thick disk", parallax_mas=546.98)
     factors = [f for f, _ in why]
     assert factors[:3] == ["closeness", "speed", "population"] and "parallax" in factors
     assert "6.0 light-years" in why[0][1] and "7 times faster" in why[1][1]
@@ -189,6 +189,56 @@ def test_why_moving_without_any_motion_is_unknown():
     assert _why() == [("unknown", "No motion across the sky has been measured for it yet.")]
 
 
-def test_why_moving_mentions_a_poor_gaia_fit():
-    why = _why(pm_mas=300.0, pm_err=0.1, motion_source="gaia", d_ly=50.0, ruwe=2.5)
-    assert why[-1][0] == "companion" and "RUWE 2.5" in why[-1][1]
+def test_why_moving_leaves_the_wobble_to_the_gravity_summary():
+    why = _why(pm_mas=300.0, pm_err=0.1, motion_source="gaia", d_ly=50.0, distance_good=True)
+    text = " ".join(t for _, t in why)
+    assert "RUWE" not in text and "non-single" not in text and "companion" not in [f for f, _ in why]
+
+
+def test_why_moving_weak_distances_are_rough():
+    # 3-5 sigma parallax / GSP-Phot: no precise-looking distance or speed.
+    why = dict(_why(pm_mas=1500.0, pm_err=1.0, motion_source="gaia", d_ly=87.3, distance_good=False,
+                    tangential_kms=190.0))
+    assert why["closeness"].startswith("It is fairly close, roughly 87 light-years away")
+    assert "roughly 190 km/s" in why["speed"]
+    good = dict(_why(pm_mas=1500.0, pm_err=1.0, motion_source="gaia", d_ly=87.3, distance_good=True,
+                     tangential_kms=190.0))
+    assert "87 light-years" in good["closeness"] and "roughly" not in good["closeness"] + good["speed"]
+
+
+@pytest.mark.parametrize("d_ly, pm_err, far", [
+    (6500.0, 0.5, True),  # beyond ~1,000 ly: true
+    (50.0, 0.5, False),  # 100 km/s at 50 ly is ~1.4"/yr, easily measured: not true
+    (50.0, 2000.0, True),  # ...unless the measurement error is larger than that
+    (None, 0.5, False),
+])
+def test_why_moving_static_sentence_only_when_true(d_ly, pm_err, far):
+    (factor, text), = _why(pm_mas=0.3, pm_err=pm_err, motion_source="gaia", d_ly=d_ly, distance_good=True)
+    assert factor == "static"
+    assert ("even a fast object would barely shift" in text) is far
+    if not far:
+        assert "too small to measure" in text
+
+
+def test_parallax_is_described_as_the_half_amplitude():
+    why = dict(_why(pm_mas=10393.0, pm_err=0.04, motion_source="gaia", d_ly=5.96, distance_good=True,
+                    parallax_mas=546.98))
+    assert why["parallax"] == ('On top of that it shifts up to 0.55" either side of its average position '
+                               "each year because Earth orbits the Sun.")
+    assert "back and forth" not in why["parallax"]
+
+
+def test_motion_agreement_threshold():
+    # 30 % of the measured motion, or 3 sigma combined when larger.
+    assert ph.motion_agrees(-800.0, 10360.0, 0.05, -820.0, 10300.0, 50.0)
+    assert not ph.motion_agrees(0.0, 50.0, 0.1, 1200.0, -500.0, 80.0)
+    assert ph.motion_agrees(1000.0, 0.0, None, 1250.0, 0.0, 10.0)  # 25 % off
+    assert not ph.motion_agrees(1000.0, 0.0, None, 1500.0, 0.0, 10.0)  # 33 % off
+    assert ph.motion_agrees(0.0, 0.0, None, 300.0, 0.0, 100.0)  # 3 sigma: a noisy measurement
+
+
+def test_distance_quality():
+    assert ph.distance_from_parallax(546.98, 0.04, "gaia_parallax").is_good
+    assert not ph.distance_from_parallax(2.0, 0.5, "gaia_parallax").is_good  # 4 sigma
+    assert not ph.distance_from_parallax(2.0, None, "simbad_parallax").is_good  # no error quoted
+    assert not ph.Distance(100.0, 1.0, "photometric_estimate").is_good

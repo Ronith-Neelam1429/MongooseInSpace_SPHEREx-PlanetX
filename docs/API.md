@@ -252,38 +252,58 @@ curl 'http://127.0.0.1:8000/api/spectrum?ra=331.04415&dec=-56.78284&pmra=3982&pm
 Everything the catalogues say about one focused object (`ObjectProfile`): identity, distance,
 size and temperature, motion and Galactic population, a 20,000-year sky path with closest
 approach, plain `why_moving` sentences, and companions or a Gaia "wobble" hint. Answers in
-~3 s (at most ~30 s); the same request is served from memory for an hour (two minutes when
+~3 s (at most ~30 s: every catalogue call's timeouts are capped to the time left, and each
+request's lookups run on their own threads, so a slow catalogue cannot hold up other requests); the same request is served from memory for an hour (two minutes when
 a catalogue failed). **Every part may be null**, and a catalogue that fails or runs late
 becomes a sentence in `notes`: the status is 200 unless a parameter is invalid (422).
 - `ra`, `dec`: the object's position now (or engine-measured). `gaia_id` (digits) and `name`
   (SIMBAD name, at most 100 characters) skip the position search when known.
 - `pmra`, `pmdec`, `pm_err` (mas/yr, RA component includes cos dec, |value| <= 20,000): a
   motion measured on the page, used only when no catalogue has one (`motion.source: "measured"`).
-  `mag`: used only for `abs_mag_g` when Gaia has no G.
+  When it is significant (pm >= 3 `pm_err`), a Gaia star (from `gaia_id` or the position) or a
+  SIMBAD object whose motion differs by more than max(3 sigma combined, 30 % of the measured
+  motion) is not shown: its identity, distance and physical data are left out, the motion stays
+  `measured`, and `notes` says "The catalogued star at this position moves differently, so its
+  data are not shown." Non-stellar SIMBAD objects without a catalogued motion count as not
+  moving. The position search then also prefers a star moving like the measurement over a
+  brighter one. `mag`: used only for `abs_mag_g` when Gaia has no G.
 - Lookups: Gaia DR3 from IRSA Gator (`gaia_dr3_source`): the brightest star whose track since
   2025.3 passes within 5" (10" when `pmra/pmdec` >= 1"/yr). A fast star has moved far from its
   2016 position, so the search adds a 160" cone of stars faster than 1"/yr. SIMBAD (Harvard
   mirror) by name, else by Gaia id, else within 5" after moving J2000 positions by their
-  motion. Gaia FLAME/GSP-Phot parameters from VizieR `I/355/paramp` (Harvard mirror).
+  motion; when SIMBAD's 2,000-row list is cut off (crowded fields), the J2000 cone is narrowed
+  once and `notes` says so. Gaia FLAME/GSP-Phot parameters from VizieR `I/355/paramp` (Harvard mirror).
 - `distance.source`: `gaia_parallax` | `simbad_parallax` (>= 3 sigma; 3-5 sigma has a `note`) |
-  `photometric_estimate` (Gaia GSP-Phot). `light_left_year` is negative for BCE.
+  `photometric_estimate` (Gaia GSP-Phot). `light_left_year` is negative for BCE. Objects beyond
+  the Galaxy (SIMBAD galaxies, quasars, AGN, galaxy groups and clusters, and their candidates)
+  never get a distance; other non-stellar objects (nebulae, star clusters) only from a parallax
+  above 5 sigma, never from GSP-Phot, and no 20-100 km/s distance guess. `why_moving` says
+  "roughly" for any distance (and speed) that is not a >= 5 sigma parallax.
 - `physical`: Gaia FLAME values where they exist, otherwise estimates named in the `*_source`
   fields (Stefan-Boltzmann radius from luminosity and temperature, luminosity from absolute G
   and a bolometric correction, main-sequence mass). The JSON key is `class` (the Python model
-  field is `class_`). Added beyond the first contract: `luminosity_source`.
+  field is `class_`). Added beyond the first contract: `luminosity_source`. Temperature: Gaia
+  GSP-Phot first, except for ultracool dwarfs (L/T/Y types, brown dwarfs), where Gaia ESP-UCD
+  and then the spectral type come first.
 - `motion.source`: `gaia` | `simbad` | `measured` (`simbad` added beyond the first contract).
   `uvw_km_s` (U toward the Galactic centre) and `population` need a distance and a radial
   velocity. Population cuts on the speed relative to the local standard of rest: thin disk
   < 85 km/s, thick disk < 180, halo above. `estimated_distance_pc` = [lo, hi] for a motion
-  without a distance, assuming 20-100 km/s.
+  without a distance, assuming 20-100 km/s. `parallax_wobble_arcsec` is the parallax: how far
+  the object shifts either side of its average position each year (half the back-and-forth).
 - `path`: 41 points centred on now. With a distance: astropy `apply_space_motion` over
   20,000 years (`dist_ly` and `closest_approach` only with a radial velocity). Without a
-  distance: a great circle over 2,000 years.
+  distance: a great circle over 2,000 years. `closest_in_span` (added): true when
+  `closest_approach.year` lies within the points' years (false when there is no closest approach).
 - `gravity.companions`: Gaia stars within 0.5 pc projected (cone capped at 15') whose parallax
   agrees within 3 sigma plus the projected separation as depth, and whose motion agrees within
   10 % (at least 3 mas/yr); `likely` when within 5 % and 2 sigma. `period_yr` is Kepler III
   from the projected separation and estimated masses. Not searched for parallaxes under
-  5 sigma or motions under 20 mas/yr. `wobble_hint`: RUWE > 1.4.
+  5 sigma or motions under 20 mas/yr. The Gaia query is limited to those parallaxes and to
+  motions within the 10 % window, so ordinary fast stars stay far below its 2,000-row cap; a
+  field that still reaches it gets the summary "The field is too crowded to search Gaia for
+  companions." (not a failure). `wobble_hint`: RUWE > 1.4. The RUWE / non-single-star sentence
+  is in `gravity.summary` only (one sentence at most), not in `why_moving`.
 - `solar_system` is reserved for asteroids and comets and is always null for now.
 
 ```sh

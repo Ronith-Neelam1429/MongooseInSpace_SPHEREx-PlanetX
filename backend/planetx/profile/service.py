@@ -4,6 +4,9 @@ Two rounds of concurrent lookups inside one 30 s budget:
   1. Gaia DR3 star (by id, or by position) and SIMBAD (by name, Gaia id or position);
   2. what needs the star: Gaia astrophysical parameters, Gaia companions, and SIMBAD by
      Gaia id when round 1 found nothing in SIMBAD.
+Each round gets its own executor with one thread per lookup, so a lookup never waits in a
+queue behind another request's, and every fetcher gets the round's absolute deadline, so
+a lookup that runs late ends soon after its round instead of holding a thread.
 A service that fails or runs late becomes a sentence in `notes`, never an error.
 Whole profiles are kept in memory for an hour (two minutes when a service failed).
 """
@@ -45,10 +48,12 @@ COMPANION_MAX_SEP_PC = 0.5
 COMPANION_MAX_CONE_ARCSEC = 900.0
 COMPANION_MIN_PM_MAS = 20.0  # slower: field stars share the motion by chance
 COMPANION_LIMIT = 10
+# Companion motions agree within this fraction of the object's motion (at least the floor).
+COMPANION_PM_FRACTION = 0.10
+COMPANION_PM_FLOOR_MAS = 3.0
 SIMBAD_URL = "https://simbad.harvard.edu/simbad"
 VIZIER_URL = "https://vizier.cfa.harvard.edu/viz-bin/VizieR-4"
-
-_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="profile")
+MISMATCH_NOTE = "The catalogued star at this position moves differently, so its data are not shown."
 
 _LABELS = {
     "gaia": "Gaia DR3 (IRSA)",
@@ -65,11 +70,21 @@ _OTYPE_KINDS = {
     "H2G": "Galaxy", "rG": "Radio galaxy", "AGN": "Active galaxy", "SyG": "Active galaxy",
     "Sy1": "Active galaxy", "Sy2": "Active galaxy", "LIN": "Active galaxy", "QSO": "Quasar",
     "Bla": "Quasar (blazar)", "BLL": "Quasar (blazar)", "ClG": "Galaxy cluster", "GrG": "Galaxy group",
-    "PN": "Planetary nebula", "HII": "Glowing gas cloud", "SNR": "Supernova remnant",
+    "Q?": "Quasar (candidate)", "G?": "Galaxy (candidate)", "AG?": "Active galaxy (candidate)",
+    "Bz?": "Quasar (blazar candidate)", "BL?": "Quasar (blazar candidate)", "LeQ": "Lensed quasar image",
+    "LeG": "Lensed galaxy image", "PoG": "Part of a galaxy", "CGG": "Galaxy group", "Gr?": "Galaxy group",
+    "C?G": "Galaxy cluster", "SCG": "Galaxy supercluster", "PN": "Planetary nebula", "GNe": "Nebula", "HII": "Glowing gas cloud", "SNR": "Supernova remnant",
     "ISM": "Gas or dust cloud", "MoC": "Molecular cloud", "DNe": "Dark nebula", "RNe": "Reflection nebula",
     "Cld": "Gas or dust cloud", "Cl*": "Star cluster", "OpC": "Open star cluster",
     "GlC": "Globular star cluster", "As*": "Group of stars",
 }
+# Beyond the Galaxy: never a distance from a parallax (any parallax is noise) or from GSP-Phot.
+# Codes checked against SIMBAD's otypedef table (Harvard mirror, 2026-11-15).
+_EXTRAGALACTIC = frozenset({
+    "G", "GiG", "GiC", "GiP", "BiC", "IG", "PaG", "SBG", "LSB", "bCG", "EmG", "H2G", "rG", "AGN", "SyG",
+    "Sy1", "Sy2", "LIN", "QSO", "Bla", "BLL", "ClG", "GrG", "Q?", "G?", "AG?", "Bz?", "BL?", "LeQ", "LeG",
+    "PoG", "CGG", "Gr?", "C?G", "SCG",
+})
 _STAR_KINDS = {"**": "Double star", "EB*": "Eclipsing binary star", "SB*": "Spectroscopic binary star",
                "Mi*": "Mira variable star", "C*": "Carbon star", "Y*O": "Young star", "TT*": "Young star",
                "PM*": "High proper-motion star"}
@@ -96,6 +111,14 @@ class ProfileRequest:
         if self.pmra is None or self.pmdec is None:
             return None
         return math.hypot(self.pmra, self.pmdec)
+
+    @property
+    def significant_motion(self) -> fetchers.Measured | None:
+        """(pmra, pmdec, pm_err) when the page measured a motion of at least 3 sigma."""
+        pm = self.measured_pm
+        if pm is None or self.pm_err is None or pm < 3.0 * self.pm_err:
+            return None
+        return self.pmra, self.pmdec, self.pm_err
 
     def key(self) -> tuple:
         def r(v, nd):
@@ -141,22 +164,33 @@ def _short(exc: Exception) -> str:
     return text[:160]
 
 
-def _run(tasks: dict[str, Callable[[], Any]], budget_s: float, notes: list[str], failed: set[str],
+def _run(tasks: dict[str, Callable[[float], Any]], deadline: float, notes: list[str], failed: set[str],
          answered: set[str]) -> dict[str, Any]:
-    """Run lookups concurrently; collect results, and notes for the ones that failed or ran late."""
-    futures = {k: _pool.submit(fn) for k, fn in tasks.items()}
-    done, _ = wait(futures.values(), timeout=max(0.1, budget_s))
+    """Run lookups concurrently until `deadline` (time.monotonic()); each gets the deadline.
+
+    One thread per lookup in an executor of this round alone: no lookup waits in a queue,
+    and one left running past the deadline (its own HTTP timeouts end it soon after) keeps
+    only its own thread, never one another request needs.
+    """
+    pool = ThreadPoolExecutor(max_workers=len(tasks), thread_name_prefix="profile")
+    try:
+        futures = {k: pool.submit(fn, deadline) for k, fn in tasks.items()}
+        done, _ = wait(futures.values(), timeout=max(0.1, deadline - time.monotonic()))
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     out: dict[str, Any] = {}
     for key, fut in futures.items():
         label = _LABELS[key]
         if fut not in done:
-            fut.cancel()
             failed.add(key)
             notes.append(f"{label} did not answer in time.")
             continue
         try:
             out[key] = fut.result()
             answered.add(label)
+        except fetchers.OutOfTime:
+            failed.add(key)
+            notes.append(f"{label} did not answer in time.")
         except (ArchiveError, CatalogError) as exc:
             failed.add(key)
             notes.append(f"{label} was unavailable ({_short(exc)}).")
@@ -182,55 +216,89 @@ def build_profile(req: ProfileRequest, now_year: float | None = None) -> tuple[s
     answered: set[str] = set()
     fast = (req.measured_pm or 0.0) >= fetchers.FAST_PM_MAS
     tol = MATCH_FAST_ARCSEC if fast else MATCH_ARCSEC
+    measured = req.significant_motion
 
-    round1: dict[str, Callable[[], Any]] = {}
+    round1: dict[str, Callable[[float], Any]] = {}
     if req.gaia_id:
-        round1["gaia"] = lambda: fetchers.fetch_gaia_by_id(req.gaia_id)
+        round1["gaia"] = lambda dl: fetchers.fetch_gaia_by_id(req.gaia_id, deadline=dl)
     else:
-        round1["gaia"] = lambda: fetchers.find_gaia(req.ra, req.dec, tol, now)
+        round1["gaia"] = lambda dl: fetchers.find_gaia(req.ra, req.dec, tol, now, measured, deadline=dl)
     simbad_by_gaia_id = False
     if req.name:
-        round1["simbad"] = lambda: fetchers.fetch_simbad_by_ident(req.name)
+        round1["simbad"] = lambda dl: (fetchers.fetch_simbad_by_ident(req.name, deadline=dl), None)
     elif req.gaia_id:
         simbad_by_gaia_id = True
-        round1["simbad"] = lambda: fetchers.fetch_simbad_by_ident(f"Gaia DR3 {req.gaia_id}")
+        round1["simbad"] = lambda dl: (fetchers.fetch_simbad_by_ident(f"Gaia DR3 {req.gaia_id}", deadline=dl), None)
     else:
-        round1["simbad"] = lambda: fetchers.find_simbad(req.ra, req.dec, max(SIMBAD_MATCH_ARCSEC, tol), now)
-    r1 = _run(round1, ROUND1_BUDGET_S, notes, failed, answered)
+        round1["simbad"] = lambda dl: fetchers.find_simbad(req.ra, req.dec, max(SIMBAD_MATCH_ARCSEC, tol), now,
+                                                           measured, _OTYPE_KINDS, deadline=dl)
+    r1 = _run(round1, start + ROUND1_BUDGET_S, notes, failed, answered)
     star: fetchers.GaiaStar | None = r1.get("gaia")
-    simbad: fetchers.SimbadObject | None = r1.get("simbad")
-    if "gaia" not in failed and star is None:
+    simbad, simbad_note = r1.get("simbad", (None, None))
+    if simbad_note:
+        notes.append(simbad_note)
+    # A significant measured motion that the catalogue object does not share means it is
+    # another object: drop it rather than show its name, distance and size.
+    # Matched by position alone, it must also show that it moves the same way: a star with no
+    # catalogued motion next to a mover is far more often a bystander than the mover itself.
+    # (An id or name the page sent was already checked against the motion there.)
+    by_position_gaia = req.gaia_id is None
+    by_position_simbad = not req.name and not req.gaia_id
+    gaia_agrees = fetchers.gaia_motion_agrees(star, measured) if star is not None else None
+    simbad_agrees = (fetchers.simbad_motion_agrees(simbad, measured, _OTYPE_KINDS)
+                     if simbad is not None else None)
+    gaia_rejected = star is not None and (
+        gaia_agrees is False or (measured is not None and by_position_gaia and gaia_agrees is None))
+    simbad_rejected = simbad is not None and (
+        simbad_agrees is False or (measured is not None and by_position_simbad and simbad_agrees is None))
+    star = None if gaia_rejected else star
+    simbad = None if simbad_rejected else simbad
+    rejected = gaia_rejected or simbad_rejected
+    if "gaia" not in failed and star is None and not gaia_rejected:
         notes.append(f"Gaia DR3 source {req.gaia_id} was not found." if req.gaia_id
                      else "No Gaia DR3 star matches this position.")
-    if "simbad" not in failed and simbad is None and req.name:
+    if "simbad" not in failed and simbad is None and req.name and not simbad_rejected:
         notes.append(f"SIMBAD does not know the name {req.name!r}.")
 
     # Distance and motion as far as round 1 knows them, for the companion search.
     pre_plx, pre_plx_err, pre_pm, pre_pos = _astrometry(star, simbad)
 
-    round2: dict[str, Callable[[], Any]] = {}
+    round2: dict[str, Callable[[float], Any]] = {}
     if star is not None:
-        round2["params"] = lambda: fetchers.fetch_astro_params(star)
+        round2["params"] = lambda dl: fetchers.fetch_astro_params(star, deadline=dl)
     companion_note = None
     radius = None
-    if pre_plx is not None and pre_pm is not None:
+    if simbad is not None and simbad.otype in _EXTRAGALACTIC:
+        companion_note = "It lies beyond our Galaxy, so Gaia companions do not apply."
+    elif pre_plx is not None and pre_pm is not None:
         companion_note = _companion_precheck(pre_plx, pre_plx_err, pre_pm)
         if companion_note is None:
             radius, lo, hi = _companion_cone(pre_plx, pre_plx_err)
-            round2["companions"] = lambda: fetchers.fetch_companion_candidates(pre_pos[0], pre_pos[1], radius, lo, hi)
+            window = max(COMPANION_PM_FRACTION * math.hypot(*pre_pm), COMPANION_PM_FLOOR_MAS)
+            round2["companions"] = lambda dl: fetchers.fetch_companion_candidates(
+                pre_pos[0], pre_pos[1], radius, lo, hi, pre_pm[0], pre_pm[1], window, deadline=dl)
     if simbad is None and star is not None and "simbad" not in failed and not simbad_by_gaia_id:
-        round2["simbad2"] = lambda: fetchers.fetch_simbad_by_ident(f"Gaia DR3 {star.source_id}")
-    r2 = _run(round2, TOTAL_BUDGET_S - (time.monotonic() - start), notes, failed, answered) if round2 else {}
+        round2["simbad2"] = lambda dl: fetchers.fetch_simbad_by_ident(f"Gaia DR3 {star.source_id}", deadline=dl)
+    r2 = _run(round2, start + TOTAL_BUDGET_S, notes, failed, answered) if round2 else {}
     params: fetchers.AstroParams | None = r2.get("params")
-    simbad = simbad or r2.get("simbad2")
+    simbad2 = r2.get("simbad2")
+    if simbad2 is not None and fetchers.simbad_motion_agrees(simbad2, measured, _OTYPE_KINDS) is False:
+        simbad2, rejected = None, True
+    simbad = simbad or simbad2
     if star is not None and "params" not in failed and params is None:
         notes.append("Gaia has no astrophysical parameters for this star.")
+    if rejected:
+        notes.append(MISMATCH_NOTE)
 
-    profile = assemble(req, now, star, simbad, params, r2.get("companions"),
-                       companion_radius_arcsec=radius if "companions" in r2 else None,
-                       companion_note=companion_note,
+    search: fetchers.CompanionSearch | None = r2.get("companions")
+    crowded = search is not None and search.crowded
+    profile = assemble(req, now, star, simbad, params, search.stars if search else None,
+                       companion_radius_arcsec=radius if search is not None and not crowded else None,
+                       companion_note="The field is too crowded to search Gaia for companions." if crowded
+                       else companion_note,
                        companion_failed="companions" in failed, notes=notes,
-                       sources=[label for label in dict.fromkeys(_LABELS.values()) if label in answered])
+                       sources=[label for label in dict.fromkeys(_LABELS.values()) if label in answered],
+                       gaia_rejected=gaia_rejected)
     return profile, not failed
 
 
@@ -272,6 +340,7 @@ def companions(candidates: list[fetchers.GaiaStar], self_id: str | None, ra: flo
     agree within 10 % (at least 3 mas/yr). "likely" when within 5 % (1.5 mas/yr) and 2 sigma.
     """
     pm = math.hypot(pmra, pmdec)
+    pm_tol = max(COMPANION_PM_FRACTION * pm, COMPANION_PM_FLOOR_MAS)
     d_pc = 1000.0 / plx
     out = []
     for c in candidates:
@@ -284,7 +353,7 @@ def companions(candidates: list[fetchers.GaiaStar], self_id: str | None, ra: flo
         depth = plx * sep / ph.AU_PER_PC
         dplx = abs(c.parallax - plx)
         dpm = math.hypot(c.pmra - pmra, c.pmdec - pmdec)
-        if dplx > 3.0 * sigma + depth or dpm > max(0.10 * pm, 3.0):
+        if dplx > 3.0 * sigma + depth or dpm > pm_tol:
             continue
         likely = dplx <= 2.0 * sigma + depth and dpm <= max(0.05 * pm, 1.5)
         sep_au = sep * d_pc
@@ -335,14 +404,18 @@ def _kind(simbad, cls) -> str | None:
 
 
 def _distance(star, simbad) -> ph.Distance | None:
-    if star is not None:
-        d = ph.distance_from_parallax(star.parallax, star.parallax_error, "gaia_parallax")
-        if d:
+    """Gaia parallax, else SIMBAD's, else Gaia GSP-Phot. Objects beyond the Galaxy get none;
+    other non-stellar ones (nebulae, clusters) only a parallax above 5 sigma, never GSP-Phot."""
+    otype = simbad.otype if simbad is not None else None
+    if otype in _EXTRAGALACTIC:
+        return None
+    non_stellar = otype in _OTYPE_KINDS
+    for d in (ph.distance_from_parallax(star.parallax, star.parallax_error, "gaia_parallax") if star else None,
+              ph.distance_from_parallax(simbad.plx, simbad.plx_err, "simbad_parallax") if simbad else None):
+        if d is not None and (not non_stellar or (d.is_good and d.pc / d.pc_err > ph.GOOD_PARALLAX_SNR)):
             return d
-    if simbad is not None:
-        d = ph.distance_from_parallax(simbad.plx, simbad.plx_err, "simbad_parallax")
-        if d:
-            return d
+    if non_stellar:
+        return None
     if star is not None and star.distance_gspphot:
         return ph.Distance(star.distance_gspphot, None, "photometric_estimate",
                            "estimate from Gaia's colours (GSP-Phot), not a parallax")
@@ -351,8 +424,12 @@ def _distance(star, simbad) -> ph.Distance | None:
 
 def assemble(req: ProfileRequest, now: float, star, simbad, params, candidates, *,
              companion_radius_arcsec: float | None, companion_note: str | None, companion_failed: bool,
-             notes: list[str], sources: list[str]) -> s.ObjectProfile:
-    """Turn the lookups into the profile (pure: no network)."""
+             notes: list[str], sources: list[str], gaia_rejected: bool = False) -> s.ObjectProfile:
+    """Turn the lookups into the profile (pure: no network).
+
+    `star` and `simbad` must already be the object's own (build_profile drops a catalogue
+    match whose motion disagrees with the measured one; `gaia_rejected` says the Gaia id was).
+    """
     non_stellar = simbad is not None and simbad.otype in _OTYPE_KINDS
     ctx = ph.sky_context(req.ra, req.dec)
 
@@ -400,7 +477,7 @@ def assemble(req: ProfileRequest, now: float, star, simbad, params, candidates, 
                 uvw = ph.uvw(ref_pos[0], ref_pos[1], dist.pc, pmra, pmdec, rv)
                 pop, v_lsr = ph.population(uvw)
                 pop_basis = f"Toomre velocity {v_lsr:.0f} km/s relative to the local standard of rest"
-        elif pm_err is None or pm >= 3.0 * pm_err:
+        elif not non_stellar and (pm_err is None or pm >= 3.0 * pm_err):
             est = ph.estimated_distance_range(pm)
         motion = s.ProfileMotion(
             pmra=round(pmra, 3), pmdec=round(pmdec, 3), pm=round(pm, 3), pm_err=_round(pm_err, 3),
@@ -424,6 +501,7 @@ def assemble(req: ProfileRequest, now: float, star, simbad, params, candidates, 
     if pmra is not None and pm > 0:
         pr = ph.sky_path(ref_pos[0], ref_pos[1], ref_epoch, pmra, pmdec,
                          dist.pc if dist is not None else None, rv, now)
+        years = [pt[0] for pt in pr.points]
         note = "Straight-line motion; real paths curve slowly around the Galaxy."
         if dist is not None and rv is None:
             note += " No radial velocity is known, so the path assumes none and gives no distances."
@@ -435,6 +513,7 @@ def assemble(req: ProfileRequest, now: float, star, simbad, params, candidates, 
             span_years=pr.span_years,
             closest_approach=None if pr.closest is None else s.ClosestApproach(
                 year=pr.closest[0], dist_ly=_round(pr.closest[1], 3)),
+            closest_in_span=pr.closest is not None and min(years) <= pr.closest[0] <= max(years),
             note=note,
         )
 
@@ -467,11 +546,12 @@ def assemble(req: ProfileRequest, now: float, star, simbad, params, candidates, 
     why = ph.why_moving(ph.WhyInput(
         pm_mas=pm, pm_err=pm_err, motion_source=motion_source,
         d_ly=dist.ly if dist is not None else None, distance_source=dist.source if dist else None,
+        distance_good=dist is not None and dist.is_good,
         space_kms=space, tangential_kms=v_tan, population=pop, parallax_mas=plx_mas,
-        estimated_pc=est, n_companions=len(comps), companion_text=companion_text, ruwe=ruwe,
+        estimated_pc=est, n_companions=len(comps), companion_text=companion_text,
     ))
 
-    gaia_id = star.source_id if star is not None else req.gaia_id
+    gaia_id = star.source_id if star is not None else None if gaia_rejected else req.gaia_id
     identity = s.ProfileIdentity(
         name=simbad.name if simbad else (req.name.strip() if req.name else None),
         simbad_type=simbad.otype if simbad else None,
@@ -500,20 +580,22 @@ def _physical(star, simbad, params, dist, page_mag, notes) -> s.ProfilePhysical 
         abs_g = ph.abs_mag(page_mag, dist.pc)
         notes.append("Absolute magnitude uses the brightness the page supplied (its band may not be Gaia G).")
 
-    teff = teff_source = None
     gsp = (params.teff_gspphot if params else None) or (star.teff_gspphot if star else None)
+    ucd = params.teff_ucd if params else None
     sp_teff = ph.teff_from_spectral_type(sp)
-    cool_type = bool(sp) and (sp.lstrip().startswith(("L", "T", "Y", "D")) or otype in ("BD*", "WD*"))
-    if gsp:
-        teff, teff_source = gsp, "Gaia GSP-Phot"
-    elif params and params.teff_ucd:
-        teff, teff_source = params.teff_ucd, "Gaia ESP-UCD"
-    elif sp_teff and cool_type:
-        teff, teff_source = sp_teff, "estimate from spectral type"
-    elif ph.teff_from_bp_rp(bp_rp):
-        teff, teff_source = ph.teff_from_bp_rp(bp_rp), "estimate from Gaia BP-RP colour"
-    elif sp_teff:
-        teff, teff_source = sp_teff, "estimate from spectral type"
+    # GSP-Phot's models do not reach ultracool dwarfs (L/T/Y, brown dwarfs): ESP-UCD and the
+    # spectral type come first there. White dwarfs prefer their spectral type over the colour.
+    ultracool = ph.classify(abs_g, bp_rp, None, sp, otype)[0] == "brown dwarf"
+    white_dwarf = (bool(sp) and sp.lstrip().startswith("D")) or otype in ("WD*", "WD?")
+    by_colour = ph.teff_from_bp_rp(bp_rp)
+    choices = (
+        [(ucd, "Gaia ESP-UCD"), (sp_teff, "estimate from spectral type"), (gsp, "Gaia GSP-Phot"),
+         (by_colour, "estimate from Gaia BP-RP colour")] if ultracool else
+        [(gsp, "Gaia GSP-Phot"), (ucd, "Gaia ESP-UCD"),
+         (sp_teff if white_dwarf else None, "estimate from spectral type"),
+         (by_colour, "estimate from Gaia BP-RP colour"), (sp_teff, "estimate from spectral type")]
+    )
+    teff, teff_source = next(((v, src) for v, src in choices if v), (None, None))
 
     cls, basis = ph.classify(abs_g, bp_rp, teff, sp, otype)
 
@@ -584,9 +666,12 @@ def _gravity_summary(star, simbad, comps, searched_arcsec, precheck_note, search
         parts.append("No catalogue data, so companions and wobble could not be checked.")
     else:
         parts.append("Without a good distance and motion, companions could not be checked.")
-    if wobble:
+    if wobble and nss:
+        parts.append(f"Gaia lists it as a non-single star and its position fit is poor (RUWE {ruwe:.1f}): "
+                     "signs of an unseen companion.")
+    elif wobble:
         parts.append(f"Gaia's position fit is poor (RUWE {ruwe:.1f}), which suggests an unseen companion.")
-    if nss:
+    elif nss:
         parts.append("Gaia lists it as a non-single star (it fitted a binary orbit).")
     return " ".join(parts)
 
@@ -608,6 +693,3 @@ def _links(req, star, simbad) -> list[s.ProfileLink]:
         {"target": f"{req.ra:.6f} {req.dec:+.6f}", "fov": "0.1"})))
     return links
 
-
-def shutdown() -> None:
-    _pool.shutdown(wait=False, cancel_futures=True)

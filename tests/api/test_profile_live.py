@@ -55,3 +55,16 @@ def test_wise0855_by_its_designation():
     p = _profile(ra=133.79513, dec=-7.24515, name="WISE J085510.83-071442.5")
     assert p["identity"]["name"].startswith("WISEA J085510")
     assert p["distance"]["source"] == "simbad_parallax"
+
+
+def test_quasar_gets_no_distance():
+    p = _profile(ra=187.2779154, dec=2.0523883)  # 3C 273
+    assert p["identity"]["kind"].startswith("Quasar") and p["distance"] is None and p["physical"] is None
+    assert "light-years" not in " ".join(w["text"] for w in p["why_moving"])
+
+
+def test_barnard_with_a_different_measured_motion_is_not_shown():
+    p = _profile(ra=269.4473, dec=4.7685, pmra=1200, pmdec=-500, pm_err=80)
+    assert p["motion"]["source"] == "measured" and p["identity"]["name"] is None
+    assert p["identity"]["gaia_id"] != "4472832130942575872"
+    assert service.MISMATCH_NOTE in p["notes"]

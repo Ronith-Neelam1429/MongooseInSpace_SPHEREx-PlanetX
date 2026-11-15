@@ -44,6 +44,13 @@ GOOD_PARALLAX_SNR = 5.0
 SLOW_PM_MAS = 100.0
 SPHEREX_PIXEL_ARCSEC = 6.2
 RUWE_WOBBLE = 1.4
+# A catalogue motion disagrees with a measured one when they differ by more than
+# max(3 sigma combined, this fraction of the measured motion).
+MOTION_AGREE_FRACTION = 0.30
+# "Even a fast object would barely shift" holds beyond this distance (100 km/s is ~70 mas/yr
+# at 1,000 ly) or when 100 km/s at the object's distance is below the measurement error.
+FAR_LY = 1000.0
+FAST_STAR_KMS = 100.0
 
 PATH_POINTS = 41
 PATH_SPAN_WITH_DISTANCE_YR = 20_000
@@ -122,6 +129,12 @@ class Distance:
     def ly(self) -> float:
         return self.pc * LY_PER_PC
 
+    @property
+    def is_good(self) -> bool:
+        """A parallax distance of at least GOOD_PARALLAX_SNR sigma (anything else is an estimate)."""
+        return (self.source in ("gaia_parallax", "simbad_parallax") and self.pc_err is not None
+                and self.pc_err > 0 and self.pc / self.pc_err >= GOOD_PARALLAX_SNR)
+
 
 def distance_from_parallax(plx_mas: float | None, err_mas: float | None, source: str) -> Distance | None:
     """1/parallax with first-order error. None for a missing, negative or < 3 sigma parallax.
@@ -159,6 +172,15 @@ def pm_total_err(pmra: float, pmdec: float, e_ra: float | None, e_dec: float | N
     if pm == 0:
         return math.hypot(e_ra, e_dec) / math.sqrt(2)
     return math.hypot(pmra * e_ra, pmdec * e_dec) / pm
+
+
+def motion_agrees(pmra: float, pmdec: float, err: float | None,
+                  m_pmra: float, m_pmdec: float, m_err: float) -> bool:
+    """Whether a catalogue motion matches a measured one (mas/yr): the difference is at most
+    max(3 x combined error, MOTION_AGREE_FRACTION x the measured motion)."""
+    diff = math.hypot(pmra - m_pmra, pmdec - m_pmdec)
+    sigma = math.hypot(m_err, err or 0.0)
+    return diff <= max(3.0 * sigma, MOTION_AGREE_FRACTION * math.hypot(m_pmra, m_pmdec))
 
 
 def position_angle_deg(pmra: float, pmdec: float) -> float:
@@ -443,8 +465,11 @@ def closest_approach(d_pc: float, pmra: float, pmdec: float, rv: float, epoch: f
 # --- plain sentences ---------------------------------------------------------------------
 
 
-def _ly_words(ly: float) -> str:
-    return f"{ly:.1f} light-years" if ly < 10 else f"{ly:,.0f} light-years"
+def _ly_words(ly: float, good: bool = True) -> str:
+    """A distance in words; one that is not a >= 5 sigma parallax is "roughly", to 2 figures."""
+    if good:
+        return f"{ly:.1f} light-years" if ly < 10 else f"{ly:,.0f} light-years"
+    return f"roughly {float(f'{ly:.2g}'):,.0f} light-years" if ly >= 10 else f"roughly {ly:.0f} light-years"
 
 
 def _arcsec_words(arcsec: float) -> str:
@@ -458,6 +483,7 @@ class WhyInput:
     motion_source: str | None = None  # gaia | simbad | measured
     d_ly: float | None = None
     distance_source: str | None = None
+    distance_good: bool = False  # a >= 5 sigma parallax; otherwise the wording says "roughly"
     space_kms: float | None = None
     tangential_kms: float | None = None
     population: str | None = None
@@ -465,21 +491,27 @@ class WhyInput:
     estimated_pc: tuple[float, float] | None = None
     n_companions: int = 0
     companion_text: str | None = None
-    ruwe: float | None = None
 
 
 def why_moving(w: WhyInput) -> list[tuple[str, str]]:
-    """Ordered (factor, sentence) pairs explaining the object's motion; always at least one."""
+    """Ordered (factor, sentence) pairs explaining the object's motion; always at least one.
+
+    Wobble (RUWE, non-single star) is left to the gravity summary.
+    """
     out: list[tuple[str, str]] = []
     significant = w.pm_mas is not None and (w.pm_err is None or w.pm_mas >= 3.0 * w.pm_err)
+    dist = _ly_words(w.d_ly, w.distance_good) if w.d_ly is not None else None
     if w.pm_mas is None:
         out.append(("unknown", "No motion across the sky has been measured for it yet."))
     elif not significant:
-        far = f" At {_ly_words(w.d_ly)}, even a fast object would barely shift." if w.d_ly else ""
-        out.append(("static", "It shows no measurable motion across our sky." + far))
+        if w.d_ly is not None and _too_far_to_shift(w.d_ly, w.pm_err):
+            out.append(("static", f"It shows no measurable motion across our sky. At {dist}, even a "
+                                  "fast object would barely shift."))
+        else:
+            out.append(("static", "Its motion across our sky is too small to measure with the data so far."))
     elif w.pm_mas < SLOW_PM_MAS:
         years = SPHEREX_PIXEL_ARCSEC / (w.pm_mas / 1000.0)
-        far = f" It is {_ly_words(w.d_ly)} away, so its real speed hardly shows." if w.d_ly and w.d_ly > 300 else ""
+        far = f" It is {dist} away, so its real speed hardly shows." if w.d_ly and w.d_ly > 300 else ""
         out.append(("static", f"It drifts only {w.pm_mas:.1f} mas a year, so it would take about "
                               f"{years:,.0f} years to cross one SPHEREx pixel.{far}"))
     else:
@@ -488,13 +520,13 @@ def why_moving(w: WhyInput) -> list[tuple[str, str]]:
                                    "telescopes agree this stays a candidate motion."))
         if w.d_ly is not None:
             if w.d_ly < 33:
-                out.append(("closeness", f"It is only {_ly_words(w.d_ly)} away, so even ordinary speed "
+                out.append(("closeness", f"It is only {dist} away, so even ordinary speed "
                                          "shifts it fast across our sky."))
             elif w.d_ly < 330:
-                out.append(("closeness", f"It is fairly close, {_ly_words(w.d_ly)} away, which helps its "
+                out.append(("closeness", f"It is fairly close, {dist} away, which helps its "
                                          "motion show."))
             else:
-                out.append(("closeness", f"It is {_ly_words(w.d_ly)} away, so to shift this fast it must "
+                out.append(("closeness", f"It is {dist} away, so to shift this fast it must "
                                          "be moving very quickly."))
         elif w.estimated_pc is not None:
             lo, hi = (p * LY_PER_PC for p in w.estimated_pc)
@@ -504,12 +536,13 @@ def why_moving(w: WhyInput) -> list[tuple[str, str]]:
         speed = w.space_kms if w.space_kms is not None else w.tangential_kms
         if speed is not None:
             what = "travels" if w.space_kms is not None else "moves across our line of sight at"
+            rough = "" if w.distance_good else "roughly "
             ratio = speed / TYPICAL_STAR_KMS
             if ratio >= 2:
-                out.append(("speed", f"It also {what} {speed:.0f} km/s relative to the Sun, about "
+                out.append(("speed", f"It also {what} {rough}{speed:.0f} km/s relative to the Sun, about "
                                      f"{ratio:.0f} times faster than typical nearby stars."))
             else:
-                out.append(("speed", f"Its speed, {speed:.0f} km/s relative to the Sun, is ordinary "
+                out.append(("speed", f"Its speed, {rough}{speed:.0f} km/s relative to the Sun, is ordinary "
                                      "for a star near us."))
         if w.population == "thin disk":
             out.append(("population", "Its speed fits the Galaxy's thin disk, where the Sun lives too."))
@@ -523,11 +556,21 @@ def why_moving(w: WhyInput) -> list[tuple[str, str]]:
                                  "is the difference between its orbit and ours."))
     if w.parallax_mas is not None and w.parallax_mas >= 10.0:
         lead = "On top of that it" if out and out[0][0] not in ("static", "unknown") else "It"
-        out.append(("parallax", f"{lead} wobbles {_arcsec_words(w.parallax_mas / 1000.0)} back and forth "
-                                "each year because Earth orbits the Sun."))
+        out.append(("parallax", parallax_sentence(w.parallax_mas, lead)))
     if w.companion_text:
         out.append(("companion", w.companion_text))
-    if w.ruwe is not None and w.ruwe > RUWE_WOBBLE:
-        out.append(("companion", f"Gaia's fit of its position is poor (RUWE {w.ruwe:.1f}), which suggests "
-                                 "an unseen companion tugging it."))
     return out
+
+
+def parallax_sentence(parallax_mas: float, lead: str = "It") -> str:
+    """The parallax is the half-amplitude of the yearly back-and-forth."""
+    return (f"{lead} shifts up to {_arcsec_words(parallax_mas / 1000.0)} either side of its average "
+            "position each year because Earth orbits the Sun.")
+
+
+def _too_far_to_shift(d_ly: float, pm_err: float | None) -> bool:
+    """True when even FAST_STAR_KMS across the sky would hardly show at this distance."""
+    if d_ly > FAR_LY:
+        return True
+    fast_pm_mas = FAST_STAR_KMS / (K_KMS * d_ly / LY_PER_PC) * 1000.0
+    return pm_err is not None and fast_pm_mas < pm_err

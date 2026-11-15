@@ -627,7 +627,9 @@ class ProfileMotion(BaseModel):
     )
     population: str | None = Field(None, description="thin disk | thick disk | halo (Toomre cuts, LSR frame)")
     population_basis: str | None = None
-    parallax_wobble_arcsec: float | None = Field(None, description="= parallax: the yearly back-and-forth")
+    parallax_wobble_arcsec: float | None = Field(
+        None, description="= parallax: how far it shifts either side of its average position each year"
+    )
     estimated_distance_pc: list[float] | None = Field(
         None, description="[lo, hi] for motion without a distance, assuming 20-100 km/s"
     )
@@ -649,6 +651,9 @@ class ProfilePath(BaseModel):
     points: list[PathPoint]
     span_years: int
     closest_approach: ClosestApproach | None = None
+    closest_in_span: bool = Field(
+        False, description="Added: closest_approach.year lies within the points' years (false when none)"
+    )
     note: str
 
 

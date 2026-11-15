@@ -264,7 +264,11 @@ def query_table(
     a `[struct stat="ERROR"` body), sends something unreadable, or the list reaches
     `max_rows` (a cut-off list could hide the true counterpart; better none than partial).
     """
-    text = _get(params, timeout, retries)
+    return parse_table(_get(params, timeout, retries), what=what, max_rows=max_rows)
+
+
+def parse_table(text: str, *, what: str, max_rows: int | None = None) -> Table:
+    """A Gator answer as a Table; the checks of `query_table` (for callers with their own HTTP)."""
     if text.lstrip().startswith("[struct"):
         raise ArchiveError(f"Gator error for {what}: {text.strip()[:300]}")
     try:
