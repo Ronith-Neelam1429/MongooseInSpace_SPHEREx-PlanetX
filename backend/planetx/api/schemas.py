@@ -314,3 +314,31 @@ class SurveyStatus(BaseModel):
 # order = log2(nside). Pass straight to `A.MOCFromJSON(coverage)`. The list is
 # empty until the first patch is done (skip drawing then).
 SurveyCoverage = dict[str, list[int]]
+
+
+class SurveyCandidate(BaseModel):
+    """A notable object the offline survey stored: a mover, motion candidate or variable."""
+
+    id: int = Field(description="Row id; changes when the survey re-processes the patch")
+    ra: float = Field(description="Fitted position (deg, ICRS) at the mean date of the SPHEREx passes")
+    dec: float
+    name: str | None = Field(description="Catalogue name (Gaia/SIMBAD/SkyBoT), null when uncatalogued")
+    classification: str | None = Field(
+        description="known_star | known_asteroid | variable_star | artifact | unknown_candidate | static;"
+        " null when the catalogue check could not run"
+    )
+    is_variable: bool
+    pm_total: float = Field(description="SPHEREx proper motion, arcsec/yr")
+    pm_ra_cosdec: float = Field(description="arcsec/yr, east positive")
+    pm_dec: float = Field(description="arcsec/yr, north positive")
+    significance: float = Field(description="pm_total / its error (sigma)")
+    position_angle_deg: float = Field(description="Direction of motion, degrees east of north")
+    score: float = Field(ge=0, le=1, description="How interesting, 0-1 (see docs/API.md)")
+    nside: int = Field(description="HEALPix nside of the survey patch it was found in")
+    ipix: int = Field(description="NESTED index of that patch")
+    found: str = Field(description="UTC date (YYYY-MM-DD) of the run that stored it")
+
+
+class SurveyCandidates(BaseModel):
+    total: int = Field(description="Candidates matching the filter (all pages)")
+    candidates: list[SurveyCandidate] = Field(description="This page, best score first")

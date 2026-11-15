@@ -140,3 +140,52 @@ or COLD, plus non-finite pixels. IRSA's photometry tool rejects more flags
 (`PHOTOMETRY_BAD_FLAGS` in `planetx/cutouts.py`, which include BLOOM and SUR_ERROR).
 Those flags also cover the cores of bright stars such as Barnard's Star, so they are
 not applied to the images. The detection pipeline should apply them.
+
+## Survey candidates
+
+The offline crawler (`uv run python -m planetx.survey run --processor motion`) runs the
+same pipeline as `/api/motion` over every survey patch (HEALPix nside 64, ~0.92 deg).
+A patch is tiled into 64 fields of 0.2 deg centred on its nside-512 sub-pixels; an
+object seen by several overlapping fields is kept once, from the field whose centre
+is nearest. It stores the notable objects (movers, motion candidates and brightness
+variables) in the `candidates` table of the survey database (`PLANETX_DB`).
+Re-processing a patch replaces its rows, so ids are not stable across runs.
+
+### `GET /api/candidates?limit=100&offset=0&classification=`
+`SurveyCandidates` in `schemas.py`, best score first (ties by id):
+
+```json
+{ "total": 1,
+  "candidates": [{ "id": 1, "ra": 269.45, "dec": 4.74, "name": "Barnard's Star",
+    "classification": "known_star", "is_variable": false,
+    "pm_total": 10.4, "pm_ra_cosdec": -0.5, "pm_dec": 10.4, "significance": 6.1,
+    "position_angle_deg": 357.0, "score": 0.13, "nside": 64, "ipix": 23456,
+    "found": "2026-11-14" }] }
+```
+
+- `limit` 1-500 (default 100), `offset` >= 0. `classification` is one of
+  `known_star | known_asteroid | variable_star | artifact | unknown_candidate | static`
+  or empty for all (anything else is 422). Stored objects whose catalogue check could
+  not run have `classification: null` and appear only in the unfiltered list.
+- Motions are the SPHEREx fit in arcsec/yr, as `MotionObject` reports them; `found`
+  is the UTC date of the run that stored the row.
+- An empty list (`total: 0`), not an error, while the survey database or its
+  candidates table does not exist. The API only reads the database.
+- `score` (0-1) = tier + up to 0.09 for significance (linear from 3 to 10 sigma: the
+  motion's for movers and candidates, the brightness change's for variables):
+
+  | Tier | Object |
+  |-----:|--------|
+  | 0.9 | uncatalogued mover (`unknown_candidate`, significant motion) |
+  | 0.7 | mover, catalogue check did not run |
+  | 0.6 | uncatalogued 3-5 sigma motion candidate |
+  | 0.5 | uncatalogued brightness variable |
+  | 0.4 | motion candidate, catalogue check did not run |
+  | 0.3 | known asteroid; variable whose catalogue check did not run |
+  | 0.2 | catalogued variable star |
+  | 0.1 | catalogued star whose proper motion explains the motion |
+  | 0.0 | artifact |
+
+```sh
+curl 'http://127.0.0.1:8000/api/candidates?limit=20&classification=unknown_candidate'
+```
