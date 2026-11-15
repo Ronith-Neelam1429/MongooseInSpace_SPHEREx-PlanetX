@@ -227,7 +227,9 @@ def motion_object(found: pipeline.FieldObject) -> MotionObject:
             band=var["detector"], ratio=var["ratio"], significance=var["significance"],
             change=var["change"], caution=var.get("caution"),
         ) if var else None,
-        archive=ArchiveCheck(
+        # A confirmation built on other stars' positions is no evidence: report it as
+        # unconfirmed, without the refit's motion, so it cannot be read as a measurement.
+        archive=ArchiveCheck(verdict="unconfirmed", observatories=["spherex"]) if known.archive_void else ArchiveCheck(
             verdict=fm.verdict.value, pm_ra_cosdec=fm.pm_ra_cosdec, pm_dec=fm.pm_dec,
             pm_err=_finite(fm.pm_err), baseline_yr=fm.baseline_yr,
             observatories=[o.value for o in fm.observatories],

@@ -12,7 +12,7 @@ from planetx import pipeline
 from planetx.api import motion
 from planetx.api.app import app
 from planetx.api.schemas import Visit
-from planetx.classify import CatalogError, CatalogObject, check_objects
+from planetx.classify import CatalogError, CatalogObject, CheckResult, Known, check_objects
 from planetx.config import Settings
 from planetx.observatories import refine_objects, sources
 from planetx.spherex import archive, cutouts
@@ -184,6 +184,21 @@ def test_catalogue_outage_does_not_fail_the_run(fakes, monkeypatch):
     assert body["result"]["objects"][0]["kind"] == "mover"
     assert all(o["classification"] is None for o in body["result"]["objects"])
     assert any(n.startswith("Gaia unavailable (Gaia returned HTTP 503)") for n in body["result"]["notes"])
+
+
+def test_a_dropped_archival_confirmation_is_not_reported_as_a_measurement(fakes, monkeypatch):
+    # The catalogue check found the refit's archival positions to be other stars (Known.archive_void).
+    monkeypatch.setattr(sources, "settings", Settings(observatories="multi"))
+    monkeypatch.setattr(pipeline, "refine_objects", lambda objs, observatories: refine_objects(objs, observatories="spherex"))
+    monkeypatch.setattr(pipeline, "check_objects", lambda objs, fused, pixel: CheckResult(
+        known=[Known(kind="static", classification="static", archive_void=True) for _ in objs]
+    ))
+    objects = client.get("/api/motion", params=PARAMS).json()["result"]["objects"]
+    assert all(o["kind"] == "static" for o in objects)
+    assert objects[0]["archive"] == {
+        "verdict": "unconfirmed", "pm_ra_cosdec": None, "pm_dec": None, "pm_err": None, "baseline_yr": None,
+        "observatories": ["spherex"],
+    }
 
 
 def test_engine_data_is_kept_for_the_newest_runs_only(fakes, monkeypatch):

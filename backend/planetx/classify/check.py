@@ -59,6 +59,9 @@ class Known:
     classification: str | None = None  # None: the check could not run for this object
     name: str | None = None
     matches: list[Match] = field(default_factory=list)
+    # The archival refit "confirmed" a motion from positions that belong to other
+    # Gaia stars: its verdict and motion say nothing about this object.
+    archive_void: bool = False
 
 
 @dataclass
@@ -151,8 +154,9 @@ def check_objects(
     kinds: list[str] = []
     leads: list[int | None] = []
     false_tracks: list[bool] = []
-    void_archive = on_slow_stars = 0
-    for obj, fm in zip(objects, fused, strict=True):
+    void_archive: set[int] = set()
+    on_slow_stars = 0
+    for i, (obj, fm) in enumerate(zip(objects, fused, strict=True)):
         archive_says = fm.is_mover
         kind = motion_kind(obj, archive_says, pixel_arcsec)
         lead = None
@@ -160,7 +164,7 @@ def check_objects(
         if archive_says and archive_is_other_stars(catalog, obj.ra, obj.dec, obj.ref_mjd, fm.matched):
             archive_says = None
             kind = motion_kind(obj, None, pixel_arcsec)
-            void_archive += 1
+            void_archive.add(i)
         if kind != "static":
             # The motion the class rests on: the archival refit's when it confirmed, else SPHEREx's own.
             claim, claim_err = (
@@ -179,7 +183,7 @@ def check_objects(
         false_tracks.append(false_track)
     if void_archive:
         notes.append(
-            f"{void_archive} archival confirmation(s) dropped: the archival positions belong to other Gaia stars"
+            f"{len(void_archive)} archival confirmation(s) dropped: the archival positions belong to other Gaia stars"
         )
     if on_slow_stars:
         notes.append(f"{on_slow_stars} apparent mover(s) set to static: slow Gaia stars lie at every position")
@@ -206,6 +210,7 @@ def check_objects(
         named = bool(matches) and not false_tracks[i]
         known.append(Known(
             kind=kind, classification=classification, name=matches[0].name if named else None, matches=matches,
+            archive_void=i in void_archive,
         ))
     return CheckResult(known=known, notes=notes)
 

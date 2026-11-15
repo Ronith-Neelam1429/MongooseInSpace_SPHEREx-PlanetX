@@ -135,6 +135,7 @@ def test_barnard_field_keeps_barnard_and_drops_both_false_movers():
 
     # Gaia has a 7 mas/yr star here, and the archival "counterparts" are two other Gaia stars.
     assert (still.kind, still.classification, still.name) == ("static", "static", "Gaia DR3 4472837151752184576")
+    assert still.archive_void and not barnard.archive_void and not hop.archive_void
     # Positions on two different slow stars: a false track, so it carries no name of its own.
     assert (hop.kind, hop.classification, hop.name) == ("static", "artifact", None)
     assert hop.matches[0].name == "Gaia DR3 4472837834648241024"
