@@ -35,8 +35,8 @@ def field_object(
     return FieldObject(tracked=tracked, fused=fused, known=Known(kind=kind, classification=classification, name=name))
 
 
-def field_run(objects: list[FieldObject]) -> FieldRun:
-    return FieldRun(result=None, objects=objects, notes=[])
+def field_run(objects: list[FieldObject], catalogue_skipped: str | None = None) -> FieldRun:
+    return FieldRun(result=None, objects=objects, notes=[], catalogue_skipped=catalogue_skipped)
 
 
 def candidate(ra: float = 10.0, dec: float = 20.0, *, score: float = 0.5, classification: str | None = "known_star",

@@ -169,8 +169,40 @@ def _local_background(resid: np.ndarray, px: int, py: int) -> float:
     vals = vals[np.isfinite(vals)]
     if vals.size < 8:
         return 0.0
-    _, median, _ = sigma_clipped_stats(vals, sigma=2.5, maxiters=5)
-    return float(median)
+    return float(_clipped_median(vals, sigma=2.5, maxiters=5))
+
+
+def _clipped_median(vals: np.ndarray, sigma: float, maxiters: int) -> np.floating:
+    """`sigma_clipped_stats(vals, sigma=sigma, maxiters=maxiters)[1]` for finite 1-D `vals`.
+
+    The same steps as astropy's (median centre, population std, clip to
+    [centre - sigma*std, centre + sigma*std], repeat until nothing changes),
+    without its per-call overhead: it ran once per source and took ~40% of the
+    engine's time. On NaN-free input the median and std below are computed with
+    the same floating-point operations, in the same order, as the
+    np.nanmedian/np.nanstd astropy calls, so the result is identical (tested
+    against astropy).
+    """
+    for _ in range(maxiters):
+        centre = _median(vals)
+        dev = vals - vals.sum() / vals.size  # np.std(vals): mean, squared deviations, mean, sqrt
+        std = np.sqrt((dev * dev).sum() / vals.size)
+        keep = (vals >= centre - std * sigma) & (vals <= centre + std * sigma)
+        if keep.all():
+            break
+        vals = vals[keep]
+    return _median(vals)
+
+
+def _median(vals: np.ndarray) -> np.floating:
+    """np.median of non-empty, NaN-free 1-D `vals` (the same partition and mean of the middle pair)."""
+    n = vals.size
+    if n == 0:
+        return np.median(vals)
+    k = n // 2
+    first = k if n % 2 else k - 1
+    # Mean of the middle one or two by a sum reduction (it starts at +0.0, so -0.0 comes out 0.0, as there).
+    return np.partition(vals, (first, k))[first:k + 1].sum() / (k + 1 - first)
 
 
 def _saturated_sources(
