@@ -2,7 +2,7 @@
 // list of known objects, and each engine detection is matched against them so it can be shown
 // with a name. All positions are compared at the same date: Gaia DR3 is epoch 2016.0, SIMBAD
 // entries arrive already moved to today (see querySimbad), engine tracks carry their own dates.
-import { decimalYear, propagate, separation } from './coords.js';
+import { epochNow, propagate, separation } from './coords.js';
 import { lightYears, positionAngle } from './plain.js';
 
 /** Match radius: one SPHEREx pixel (6.2″) plus room for centroid error. */
@@ -65,7 +65,7 @@ const gaiaMatch = ({ entry: s, sep }) => ({
  * loaded. A SIMBAD name is preferred; then "Gaia DR3 <id>"; a null name with `checked` true means
  * uncatalogued, with `checked` false that no list was there to look in.
  */
-export function identify(o, lists, nowYear = decimalYear()) {
+export function identify(o, lists, nowYear = epochNow()) {
   if (o.classification != null || o.name || o.matches?.length) {
     return { name: o.name || o.matches?.[0]?.name || null, matches: o.matches || [], checked: true };
   }
@@ -92,7 +92,7 @@ export function identify(o, lists, nowYear = decimalYear()) {
  * (`listed`, rows of { o, who }), else matched now against the field's lists (as identify). A
  * static object opened from a catalogued star's card is in no open list, but keeps its name.
  */
-export function identityOf(o, listed, lists, nowYear = decimalYear()) {
+export function identityOf(o, listed, lists, nowYear = epochNow()) {
   return listed.find((r) => r.o === o)?.who || identify(o, lists, nowYear);
 }
 
@@ -132,7 +132,7 @@ const isFast = (row) => row.pm != null && row.pm >= FAST_ARCSEC_YR;
  * where `of` gives the row for a SIMBAD entry or a Gaia star picked on the map (an unlisted Gaia
  * star gets a row of its own).
  */
-export function knownObjects(simbad, gaia, nowYear = decimalYear()) {
+export function knownObjects(simbad, gaia, nowYear = epochNow()) {
   const close = (a, b, limit) => Math.abs(a.dec - b.dec) * ARCSEC <= limit && separation(a.ra, a.dec, b.ra, b.dec) * ARCSEC <= limit;
   const places = []; // { o, also }
   for (const o of [...simbad].sort((a, b) => (a.mag ?? 99) - (b.mag ?? 99))) {

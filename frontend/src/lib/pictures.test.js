@@ -97,7 +97,8 @@ describe('where a catalogued star was', () => {
     const patch = picturePatch(m, 2026.87);
     const then = positionAt(m, 1999), now = positionAt(m, 2026.87);
     const a = separation(patch.ra, patch.dec, then.ra, then.dec), b = separation(patch.ra, patch.dec, now.ra, now.dec);
-    expect(a).toBeCloseTo(b, 6);
+    // Centres are snapped to 0.001 deg (snapCentre): up to 2.6" off the midpoint, so |a - b| <= 5.2".
+    expect(Math.abs(a - b) * 3600).toBeLessThan(5.2);
     // 27.9 years x 10.39″/yr = 290″ of track, plus 75″ either side.
     expect(patch.side).toBeGreaterThan(430);
     expect(patch.side).toBeLessThan(450);

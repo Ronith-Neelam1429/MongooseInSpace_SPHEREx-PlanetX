@@ -1,7 +1,7 @@
 // The telescope pictures of one object, oldest first: 2MASS (~2000), WISE (~2010) and SPHEREx
 // (2025 on). Pure logic: which SPHEREx exposures to show, where a catalogued star was on each
 // date, and the views the picture viewer steps through. The fetching is at the bottom.
-import { propagate } from './coords.js';
+import { propagate, snapCentre } from './coords.js';
 import { checkPatch, fromOffsets, passSpan, surveyMarks, toOffsets } from './evidence.js';
 import { mjdToYear } from './names.js';
 import { API_BASE, apiJson } from './services.js';
@@ -107,7 +107,7 @@ export function picturePatch(motion, nowYear) {
   const then = positionAt(motion, PLAN_YEAR);
   const now = positionAt(motion, nowYear);
   const d = toOffsets(now.ra, now.dec, then.ra, then.dec);
-  const centre = fromOffsets(now.ra, now.dec, d.east / 2, d.north / 2);
+  const centre = snapCentre(fromOffsets(now.ra, now.dec, d.east / 2, d.north / 2));
   const span = Math.hypot(d.east, d.north);
   const side = Math.round(Math.min(MAX_SIDE_ARCSEC, Math.max(MIN_SIDE_ARCSEC, span + 2 * MARGIN_ARCSEC)));
   return { ...centre, side };

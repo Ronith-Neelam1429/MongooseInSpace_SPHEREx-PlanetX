@@ -26,7 +26,7 @@ describe('timelapsePatch', () => {
     const then = rowAt(barnard, 1999.5);
     const toThen = separation(p.ra, p.dec, then.ra, then.dec) * 3600;
     const toNow = separation(p.ra, p.dec, barnard.ra, barnard.dec) * 3600;
-    expect(toThen).toBeCloseTo(toNow, 0);
+    expect(Math.abs(toThen - toNow)).toBeLessThan(5.2); // snapCentre: up to 2.6" off the midpoint
     expect(p.side).toBeGreaterThan(p.span + 150);
     expect(p.side).toBeLessThanOrEqual(900);
   });

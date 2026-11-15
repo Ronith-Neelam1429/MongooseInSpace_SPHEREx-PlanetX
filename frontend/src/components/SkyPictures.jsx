@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { prefersReducedMotion } from '../lib/camera.js';
-import { decimalYear } from '../lib/coords.js';
+import { epochNow } from '../lib/coords.js';
 import { fetchPatchSurveys, scaleBar } from '../lib/evidence.js';
 import {
   angleText, fetchPatchFrames, frameImageUrl, imageSrc, isRemote, knownMotion, knownViews, offFrame, picturePatch, stepKey,
@@ -359,7 +359,7 @@ function usePatchRequest(id, attempt, request) {
  * patch, each marked where its catalogued motion puts it on that date.
  */
 export function KnownPictures({ row, title }) {
-  const nowYear = useMemo(() => decimalYear(), []);
+  const nowYear = useMemo(() => epochNow(), []);
   const motion = useMemo(() => knownMotion(row, nowYear), [row, nowYear]);
   const patch = useMemo(() => picturePatch(motion, nowYear), [motion, nowYear]);
   // Requests depend on the numbers only, so a re-rendered row does not ask again.

@@ -1,5 +1,5 @@
 import { Component, Fragment, useMemo } from 'react';
-import { decimalYear, formatDec, formatRa } from '../lib/coords.js';
+import { epochNow, formatDec, formatRa } from '../lib/coords.js';
 import { FAST_ARCSEC_YR, displayName, identityOf } from '../lib/names.js';
 import {
   archiveSentence, claim, compass, plainType, confidence, distanceText, measuredMotion, moonCrossing, motionsAgree, motionVerdict,
@@ -234,7 +234,7 @@ function KnownCard({ row, measured, tracked, onPick, onBack, onClose }) {
     row.mag != null && `magnitude ${row.mag.toFixed(1)}`,
   ].filter(Boolean).join(' · ');
   const result = measured?.o || tracked;
-  const spectrumTarget = useMemo(() => knownTarget(row, decimalYear()), [row]);
+  const spectrumTarget = useMemo(() => knownTarget(row, epochNow()), [row]);
   return (
     <>
       <Head tone={fast ? 'signal-bg' : 'plain-bg'} kicker={`In the ${source} catalogue${o && s ? 's' : ''}`} title={row.name} onBack={onBack} onClose={onClose} />

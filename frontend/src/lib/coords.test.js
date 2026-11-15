@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  equatorialToEcliptic, equatorialToGalactic, formatDec, formatRa, parseCoords, propagate, separation,
+  decimalYear, epochNow, equatorialToEcliptic, equatorialToGalactic, formatDec, formatRa, parseCoords, propagate,
+  separation, snapCentre,
 } from './coords.js';
 import { parseVizierTsv } from './services.js';
 import { readViewFromUrl, viewToSearch } from './url.js';
@@ -123,5 +124,23 @@ describe('camera flight path', async () => {
     expect(mid.ra < 1 || mid.ra > 359).toBe(true);
     const far = flightPath({ ra: 0, dec: 0, fov: 0.3 }, { ra: 90, dec: 0, fov: 0.3 });
     expect(far.at(0.5).fov).toBeGreaterThan(10);
+  });
+});
+
+describe('epochNow', () => {
+  it('is the same all month: the start of the UTC month', () => {
+    const start = decimalYear(new Date(Date.UTC(2026, 10, 1)));
+    expect(epochNow(new Date(Date.UTC(2026, 10, 1)))).toBe(start);
+    expect(epochNow(new Date(Date.UTC(2026, 10, 15, 13, 7)))).toBe(start);
+    expect(epochNow(new Date(Date.UTC(2026, 10, 30, 23, 59, 59)))).toBe(start);
+    expect(epochNow(new Date(Date.UTC(2026, 11, 1)))).toBeGreaterThan(start);
+  });
+});
+
+describe('snapCentre', () => {
+  it('rounds to 0.001 deg so nearby catalogue positions give one patch', () => {
+    expect(snapCentre({ ra: 331.070717, dec: -56.791873 })).toEqual(snapCentre({ ra: 331.070731, dec: -56.791866 }));
+    expect(snapCentre({ ra: 133.788957, dec: -7.244587 })).toEqual({ ra: 133.789, dec: -7.245 });
+    expect(snapCentre({ ra: 359.9998, dec: 0 }).ra).toBe(0);
   });
 });

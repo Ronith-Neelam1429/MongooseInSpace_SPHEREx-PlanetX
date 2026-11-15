@@ -1,4 +1,4 @@
-import { decimalYear, propagate, separation } from './coords.js';
+import { epochNow, propagate, separation } from './coords.js';
 
 // Client-side access to SIMBAD, VizieR (Gaia DR3), Sesame and the project backend.
 // CDS hosts mirrors; we try them in order and remember whichever answered last.
@@ -86,7 +86,7 @@ const PM_MARGIN_DEG = 0.09;
  */
 export async function querySimbad(ra, dec, radiusDeg, { limit = 200, signal } = {}) {
   const searchR = radiusDeg + PM_MARGIN_DEG;
-  const years = decimalYear() - 2000;
+  const years = epochNow() - 2000;
   const q = `SELECT TOP ${limit * 3} b.main_id, b.otype, d.description, d.path, b.ra, b.dec, b.pmra, b.pmdec, f.V, f.G, f.K,
     DISTANCE(POINT('ICRS', b.ra, b.dec), POINT('ICRS', ${ra}, ${dec})) AS dist
     FROM basic AS b LEFT JOIN otypedef AS d ON b.otype = d.otype LEFT JOIN allfluxes AS f ON b.oid = f.oidref
@@ -356,7 +356,7 @@ export async function runSpectrum(target, { signal, onProgress } = {}) {
   const { ra, dec, pmra = 0, pmdec = 0, epoch } = target;
   const moving = Number.isFinite(pmra) && Number.isFinite(pmdec) && (pmra !== 0 || pmdec !== 0);
   let url = `${API_BASE}/spectrum?ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}`;
-  if (moving) url += `&pmra=${pmra.toFixed(1)}&pmdec=${pmdec.toFixed(1)}&epoch=${(epoch ?? decimalYear()).toFixed(3)}`;
+  if (moving) url += `&pmra=${pmra.toFixed(1)}&pmdec=${pmdec.toFixed(1)}&epoch=${(epoch ?? epochNow()).toFixed(3)}`;
   for (;;) {
     const t = withTimeout(signal, 30000);
     let job;

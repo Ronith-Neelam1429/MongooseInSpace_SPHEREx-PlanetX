@@ -45,7 +45,7 @@ def test_sky_patch_slow_star_is_small_and_fast_star_is_capped_on_today():
     runaway = prewarm.Target("x", "x", 10.0, 0.0, 0.0, 100000.0)  # 100"/yr: path longer than the largest patch
     far = prewarm.sky_patch(runaway, 2026.9, 1999.5, 90, 180)
     assert far["side"] == prewarm.MAX_SIDE
-    assert far["dec"] == pytest.approx(prewarm.propagate(10.0, 0.0, 0.0, 100000.0, 26.9)[1], abs=1e-9)
+    assert far["dec"] == pytest.approx(prewarm.propagate(10.0, 0.0, 0.0, 100000.0, 26.9)[1], abs=5e-4)  # snapped
 
 
 def test_cutout_size_clamps():
@@ -210,3 +210,41 @@ def test_dry_run_downloads_nothing(tmp_path, monkeypatch, capsys):
     assert prewarm.main(["--dry-run", "--targets", "barnard,wise0855"]) == 0
     out = capsys.readouterr().out
     assert "barnard" in out and "spectrum=no" in out and "wise0855" in out
+
+
+def test_epoch_now_is_the_month_start_like_the_website():
+    from datetime import UTC, datetime
+    start = prewarm.decimal_year(datetime(2026, 11, 1, tzinfo=UTC))
+    assert prewarm.epoch_now(datetime(2026, 11, 15, 13, 7, tzinfo=UTC)) == start
+    assert prewarm.epoch_now(datetime(2026, 11, 30, 23, 59, tzinfo=UTC)) == start
+    assert prewarm.epoch_now(datetime(2026, 12, 1, tzinfo=UTC)) > start
+
+
+def test_barnard_timelapse_patch_matches_the_website_request():
+    # What the website requested on 2026-11-15 (epochNow = 2026-11-01), read off the browser.
+    from datetime import UTC, datetime
+    year = prewarm.epoch_now(datetime(2026, 11, 15, tzinfo=UTC))
+    t = prewarm.select_targets("barnard")[0]
+    s = prewarm.sky_patch(t, year, prewarm.OLD_YEAR_TIMELAPSE, prewarm.MARGIN_TIMELAPSE, prewarm.MIN_SIDE_TIMELAPSE)
+    assert (s["ra"], s["dec"], s["side"]) == (269.449, 4.731, 464)
+
+
+def test_requests_match_what_the_website_sent():
+    # Patch centres and spectrum queries the website's object cards sent on 2026-11-15, read off
+    # the browser (before snapping; the website snaps the same way since).
+    from datetime import UTC, datetime
+    year = prewarm.epoch_now(datetime(2026, 11, 15, tzinfo=UTC))
+    site_patch = {"eps-indi-b": (331.070717, -56.791873, 308), "wise0855": (133.788957, -7.244587, 403)}
+    for tid, (ra, dec, side) in site_patch.items():
+        t = prewarm.select_targets(tid)[0]
+        s = prewarm.sky_patch(t, year, prewarm.OLD_YEAR_TIMELAPSE, prewarm.MARGIN_TIMELAPSE, prewarm.MIN_SIDE_TIMELAPSE)
+        assert (s["ra"], s["dec"], s["side"]) == (*prewarm.snap_centre(ra, dec), side), tid
+    by_id = {t.id: t for t in prewarm.TARGETS}
+    assert prewarm.spectrum_query(by_id["eps-indi-b"], year) == (
+        "ra=331.076453&dec=-56.793812&pmra=3982.0&pmdec=-2466.8&epoch=2016.000")
+    assert prewarm.spectrum_query(by_id["wise0855"], year) == (
+        "ra=133.757870&dec=-7.242030&pmra=-8123.7&pmdec=673.2&epoch=2026.833")
+
+
+def test_snap_centre_wraps_ra():
+    assert prewarm.snap_centre(359.9998, 0.0) == (0.0, 0.0)

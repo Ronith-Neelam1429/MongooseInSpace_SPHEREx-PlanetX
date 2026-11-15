@@ -2,7 +2,7 @@
 // AllWISE (~2010) and SPHEREx (one exposure per pass, 2025 on), with the star's catalogued motion
 // marked on each. Independent of the motion engine: it needs only the star's position and proper
 // motion. Endpoints: GET /frames and GET /motion/evidence/surveys (docs/API.md).
-import { decimalYear, propagate } from './coords.js';
+import { epochNow, propagate, snapCentre } from './coords.js';
 import { toOffsets } from './evidence.js';
 import { mjdToYear } from './names.js';
 import { API_BASE, plainError } from './services.js';
@@ -31,14 +31,14 @@ export function rowAt(row, year) {
  * is now, wide enough for both. { ra, dec, side (arcsec), span (arcsec moved since 1999.5) }.
  * A path longer than the largest patch is centred on today's position (the old one falls outside).
  */
-export function timelapsePatch(row, nowYear = decimalYear()) {
+export function timelapsePatch(row, nowYear = epochNow()) {
   const then = rowAt(row, OLDEST_YEAR);
   const now = rowAt(row, nowYear);
   const d = toOffsets(now.ra, now.dec, then.ra, then.dec);
   const span = Math.hypot(d.east, d.north);
   const want = span + 2 * MARGIN_ARCSEC;
   const side = Math.round(Math.min(MAX_SIDE_ARCSEC, Math.max(MIN_SIDE_ARCSEC, want)));
-  const centre = want > MAX_SIDE_ARCSEC ? now : midpoint(then, now);
+  const centre = snapCentre(want > MAX_SIDE_ARCSEC ? now : midpoint(then, now));
   return { ra: centre.ra, dec: centre.dec, side, span };
 }
 

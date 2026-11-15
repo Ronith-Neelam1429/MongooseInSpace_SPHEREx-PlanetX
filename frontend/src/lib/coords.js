@@ -63,6 +63,26 @@ export function decimalYear(date = new Date()) {
   return y + (date.getTime() - start) / (end - start);
 }
 
+/**
+ * "Now" for every position the site asks the API about: the decimal year at the start of the
+ * current UTC month. The API keeps its answers per position (to 1e-6 deg), and a fast star at
+ * the live time drifts past that in hours, so cached and preloaded pictures (tools/prewarm.py,
+ * same rule) would stop matching. Barnard's Star moves 0.9" in a month, far under a 6.2" pixel.
+ */
+export function epochNow(date = new Date()) {
+  return decimalYear(new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)));
+}
+
+/**
+ * A picture patch's centre rounded to 0.001 deg (3.6", about half a SPHEREx pixel). The same star
+ * reaches the patch code from Gaia, SIMBAD or the target list with positions that differ in the
+ * 5th-6th decimal; rounded, they ask the API for the same patch, so its cache (and what
+ * tools/prewarm.py loaded, same rule) is hit.
+ */
+export function snapCentre({ ra, dec }) {
+  return { ra: normRa(Math.round(ra * 1000) / 1000), dec: Math.round(dec * 1000) / 1000 };
+}
+
 function sexa(value, decimals) {
   const sign = value < 0 ? -1 : 1;
   let v = Math.abs(value);

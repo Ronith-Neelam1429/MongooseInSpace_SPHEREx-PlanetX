@@ -8,7 +8,7 @@ import { candidateField, matchCandidate } from './lib/crawl.js';
 import Search from './components/Search.jsx';
 import ClassFilter from './components/ClassFilter.jsx';
 import { SHOW_ALL, SHOW_MOVING, countClasses, engineClass, isMovingOnly, knownClass } from './lib/classes.js';
-import { decimalYear, formatDec, formatFov, formatRa, parseCoords, propagate, separation } from './lib/coords.js';
+import { epochNow, formatDec, formatFov, formatRa, parseCoords, propagate, separation } from './lib/coords.js';
 import { API_BASE, fetchSurvey, fetchVisits, queryGaia, querySimbad, resolveName, runMotion } from './lib/services.js';
 import { StarField, arrowYears } from './lib/starfield.js';
 import { Camera } from './lib/camera.js';
@@ -302,7 +302,7 @@ export default function App() {
   }, [focus, trail]);
 
   const goTarget = useCallback((t) => {
-    const p = propagate(t.ra, t.dec, t.pmra, t.pmdec, decimalYear() - 2000);
+    const p = propagate(t.ra, t.dec, t.pmra, t.pmdec, epochNow() - 2000);
     setQuery(t.label);
     setSearch({ status: 'idle' });
     select(p.ra, p.dec, { fov: TARGET_FOV, label: t.label });

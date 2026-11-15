@@ -51,14 +51,18 @@ class Target:
     view: tuple[float, float] | None = None  # shared-URL centre when it is not the moved position
     fov: float = 0.25
     spectrum: bool = False  # warm the spectrum by default (~290 MB of cutouts each)
+    # Gaia DR3 (ra, dec, pmra, pmdec) at epoch 2016.0, as the website's object card sends them to
+    # /api/spectrum (read off its requests, 2026-11-15). None: not in Gaia, so the card sends the
+    # SIMBAD J2000 position moved to epoch_now(), which `spectrum_query` reproduces.
+    gaia: tuple[float, float, float, float] | None = None
 
 
 # Mirrors TARGETS in frontend/src/lib/targets.js (a test keeps them in step).
 TARGETS = [
     Target("barnard", "Barnard's Star", 269.4520769586187, 4.693364966576667, -801.551, 10362.394,
-           view=(269.4473, 4.7685)),  # CLAUDE.md: the J2000 position is 4.5' off now
+           view=(269.4473, 4.7685), gaia=(269.448503, 4.739420, -801.6, 10362.4)),  # CLAUDE.md: the J2000 position is 4.5' off now
     Target("eps-indi-b", "Epsilon Indi B", 331.04414658852124, -56.782844195116105, 3981.977, -2466.832,
-           spectrum=True),
+           spectrum=True, gaia=(331.076453, -56.793812, 3982.0, -2466.8)),
     Target("wise0855", "WISE 0855-0714", 133.81890825, -7.247048, -8123.7, 673.2, spectrum=True),
     Target("rw-aur", "RW Aurigae", 76.95652603458333, 30.401438173888888, 7.23, -20.33),
     Target("r-dra", "R Draconis", 248.16761083295, 66.75497941722, -20.643, 6.149),
@@ -72,6 +76,14 @@ def decimal_year(now: datetime | None = None) -> float:
     start = datetime(now.year, 1, 1, tzinfo=UTC)
     end = datetime(now.year + 1, 1, 1, tzinfo=UTC)
     return now.year + (now - start) / (end - start)
+
+
+def epoch_now(now: datetime | None = None) -> float:
+    """The website's "now" (epochNow in frontend/src/lib/coords.js): the start of the UTC month.
+    Every position it asks the API about is computed at this epoch, so warming the same
+    positions only works with the same rule; a re-run is needed after the month changes."""
+    now = now or datetime.now(UTC)
+    return decimal_year(datetime(now.year, now.month, 1, tzinfo=UTC))
 
 
 def propagate(ra: float, dec: float, pmra: float, pmdec: float, years: float) -> tuple[float, float]:
@@ -96,7 +108,24 @@ def sky_patch(t: Target, now_year: float, old_year: float, margin: float, min_si
     want = span + 2 * margin
     side = round(min(MAX_SIDE, max(min_side, want)))
     centre = now if want > MAX_SIDE else ((then[0] + now[0]) / 2, (then[1] + now[1]) / 2)
-    return {"ra": centre[0], "dec": centre[1], "side": side}
+    ra, dec = snap_centre(*centre)
+    return {"ra": ra, "dec": dec, "side": side}
+
+
+def snap_centre(ra: float, dec: float) -> tuple[float, float]:
+    """snapCentre in frontend/src/lib/coords.js: round to 0.001 deg (JS Math.round, half up) so
+    the website's Gaia/SIMBAD positions and these give the same patch, i.e. the same cache entry."""
+    return (math.floor(ra * 1000 + 0.5) / 1000) % 360, math.floor(dec * 1000 + 0.5) / 1000
+
+
+def spectrum_query(t: Target, now_year: float) -> str:
+    """The /api/spectrum query string the website's object card sends for this target."""
+    if t.gaia:
+        ra, dec, pmra, pmdec = t.gaia
+        epoch = 2016.0
+    else:
+        (ra, dec), pmra, pmdec, epoch = propagate(t.ra, t.dec, t.pmra, t.pmdec, now_year - 2000.0), t.pmra, t.pmdec, now_year
+    return f"ra={ra:.6f}&dec={dec:.6f}&pmra={pmra:.1f}&pmdec={pmdec:.1f}&epoch={epoch:.3f}"
 
 
 def cutout_size_deg(side_arcsec: float) -> float:
@@ -299,7 +328,7 @@ class Runner:
         return f"{len(objs)} objects, {len(movers)} movers (fastest {pm:.2f} arcsec/yr), evidence for {min(2, len(notable))}"
 
     def spectrum(self, t: Target) -> str:
-        q = (f"ra={t.ra:.6f}&dec={t.dec:.6f}&pmra={t.pmra:.1f}&pmdec={t.pmdec:.1f}&epoch=2000.000")
+        q = spectrum_query(t, self.now_year)
         job = self.api.poll(f"/api/spectrum?{q}", self.motion_timeout, label="spectrum")
         res = job["result"]
         return f"{len(res.get('points', []))} exposures, {len(res.get('bands', []))} bands"
@@ -374,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cache_dir = Path(os.environ.get("PLANETX_CACHE_DIR", ".cache/planetx")).resolve()
     cap_mb = int(os.environ.get("PLANETX_CACHE_MAX_MB", "2048"))
-    now_year = decimal_year()
+    now_year = epoch_now()
     targets = select_targets(args.targets)
     if args.spectrum == "default":
         spec_ids = {t.id for t in targets if t.spectrum}
