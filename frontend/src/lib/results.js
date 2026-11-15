@@ -89,7 +89,7 @@ export function surveySummary(stats, now = Date.now()) {
     rate = doneLastDay / Math.max(spanH, 1);
   }
   const classes = Object.entries(stats.by_classification || {})
-    .map(([key, count]) => ({ key, label: key === 'unchecked' ? 'Not checked against catalogues' : classLabel(key), count }))
+    .map(([key, count]) => ({ key, label: key === 'unchecked' ? 'Not checked yet' : classLabel(key), count }))
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
   return {
     available: Boolean(stats.available),
@@ -212,15 +212,15 @@ export function confusionText(confusion) {
 
 /** Each cause of a fake motion, in plain words. Keys are docs/RESULTS.md's `cause` values. */
 export const CAUSES = {
-  blend: { label: 'Two stars in one pixel', sentence: 'Two stars sit so close that SPHEREx sees one blob, and the blob’s centre shifts between visits as their light mixes differently.' },
-  saturated_halo: { label: 'Glare of a bright star', sentence: 'A very bright star floods its neighbourhood with light; faint spots in that glare jump around and look like they move.' },
-  edge: { label: 'Edge of the image', sentence: 'Part of the star fell off the edge of the picture in one visit, so its measured centre was pulled inward.' },
-  flagged_pixels: { label: 'Damaged pixels', sentence: 'Some of its pixels were marked faulty (hot, cold or overflowing) in one visit, which skews where it seems to be.' },
-  low_snr: { label: 'Too faint to pin down', sentence: 'The star is so faint that its position is mostly noise, and noise sometimes lines up into a fake track.' },
-  wavelength_centroid: { label: 'Colour shift', sentence: 'Each SPHEREx picture is taken in a different colour; a pair of stars of different colours seems to shift as the colour changes.' },
-  parallax_misfit: { label: 'Near star’s yearly wobble', sentence: 'A nearby star wobbles back and forth over the year as Earth orbits the Sun; with only a few visits that wobble was read as motion.' },
-  chance_link: { label: 'Wrong stars joined up', sentence: 'Two unrelated faint stars, one in each visit, happened to line up and were joined into one “moving” object.' },
-  other: { label: 'Not explained yet', sentence: 'We have not worked out why these look like they move; they are kept out of the candidate list until we have.' },
+  blend: { label: 'Two stars in one pixel', sentence: 'Two stars look like one blob, and the blob seems to shift.' },
+  saturated_halo: { label: 'Glare of a bright star', sentence: 'Faint spots in a bright star’s glare jump around.' },
+  edge: { label: 'Edge of the image', sentence: 'The star was cut off by the edge of the picture.' },
+  flagged_pixels: { label: 'Damaged pixels', sentence: 'Bad pixels in one picture moved its centre.' },
+  low_snr: { label: 'Too faint to pin down', sentence: 'Too faint: its position is mostly noise.' },
+  wavelength_centroid: { label: 'Colour shift', sentence: 'Two stars of different colours seem to shift as the colour changes.' },
+  parallax_misfit: { label: 'Near star’s yearly wobble', sentence: 'A nearby star’s yearly wobble looked like motion.' },
+  chance_link: { label: 'Wrong stars joined up', sentence: 'Two unrelated faint dots were joined into one track.' },
+  other: { label: 'Not explained yet', sentence: 'Cause not found yet; kept off the candidate list.' },
 };
 
 /**

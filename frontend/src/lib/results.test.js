@@ -223,7 +223,7 @@ describe('surveySummary', () => {
     expect(s).toMatchObject({ done: 8, failed: 1, total: 100, objects: 20000, candidates: 5, doneLastDay: 8 });
     expect(s.rate).toBeCloseTo(2); // 8 patches in the 4 hours since the first
     expect(s.fraction).toBeCloseTo(0.08);
-    expect(s.classes[0]).toEqual({ key: 'unchecked', label: 'Not checked against catalogues', count: 3 });
+    expect(s.classes[0]).toEqual({ key: 'unchecked', label: 'Not checked yet', count: 3 });
   });
   it('has no rate when nothing finished in the last day', () => {
     expect(surveySummary({ ...stats, last_day: [hour(0, 0)] }, now).rate).toBeNull();
