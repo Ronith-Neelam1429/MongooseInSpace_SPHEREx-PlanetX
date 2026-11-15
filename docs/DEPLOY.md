@@ -39,7 +39,26 @@ No secrets are needed. First boot runs `planetx.survey init` automatically.
 - Rollback: Render -> Events/Deploys -> Rollback to a previous deploy. Disk data is kept.
   Frontend: re-run the Pages workflow on an earlier commit, or unset `VITE_API_BASE`.
 
+## Results files
+
+The image copies the tracked `results/` directory to `/app/results` and sets
+`PLANETX_RESULTS_DIR=/app/results`; `GET /api/results/{name}` must read that variable (default:
+the repo's `results/`), because the installed package no longer sits next to the repo. New result
+files need a new image (push to `main`); they are not written at runtime.
+
+## Before the demo
+
+- A Starter instance has 512 MB of RAM and a motion run holds about 54 frames: watch the first
+  "Find what moves" in the logs, and move to a larger plan if the service restarts (not measured).
+- Fill the disk cache from your laptop: `uv run python tools/prewarm.py --base https://<service>.onrender.com`
+  (docs/DEMO.md). First start of the container can take a minute (the health check waits 60 s).
+
 ## Local check
+
+No Docker was available when this was written, so the image itself is unbuilt. What was run instead
+is its exact install step (`uv sync --locked --no-dev --no-editable`, non-editable package) plus
+`deploy/entrypoint.sh` as a non-root user, `/api/health`, `/docs` and `planetx.survey init`.
+With Docker:
 
 ```
 docker build -t planetx-api .

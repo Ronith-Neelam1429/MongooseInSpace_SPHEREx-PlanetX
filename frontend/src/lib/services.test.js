@@ -127,6 +127,16 @@ describe('fetchCandidates', () => {
     ]);
   });
 
+  it('asks the server to leave out fake motion only when told to', async () => {
+    const { services, fetchMock } = await load([ok({ total: 0, candidates: [] }), ok({ total: 0, candidates: [] })]);
+    await services.fetchCandidates({ hideFake: true, classification: 'unknown_candidate' });
+    await services.fetchCandidates({ hideFake: false });
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
+      'http://api.test/api/candidates?limit=100&offset=0&classification=unknown_candidate&hide_fake=true',
+      'http://api.test/api/candidates?limit=100&offset=0',
+    ]);
+  });
+
   it('builds thumbnail URLs on the API, and none without a server', async () => {
     const { services } = await load([]);
     expect(services.candidateThumbnailUrl(7)).toBe('http://api.test/api/candidates/7/thumbnail.png');

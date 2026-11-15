@@ -130,6 +130,29 @@ class ArchiveCheck(BaseModel):
     )
 
 
+class MotionVerdict(BaseModel):
+    """Is the motion real? One verdict from every check (planetx.classify.reliability).
+
+    `verdict` replaces reading `kind` as yes/no: an engine "mover" can be `fake_motion`
+    (Gaia or older surveys show it is not moving) and a "static" track can be
+    `fake_motion` too (SPHEREx showed motion that a guard set aside). No probability is
+    given: nothing measured yet says how often each rule is right.
+    """
+
+    verdict: str = Field(description="moving | not_moving | fake_motion | unsure")
+    certainty: str | None = Field(
+        None, description="moving only: confirmed (a catalogue or older surveys agree) | candidate (SPHEREx alone, "
+        "or one older survey family)"
+    )
+    cause: str | None = Field(
+        None, description="What most likely made a fake (always set for fake_motion; for unsure, the suspected "
+        "problem when there is one): blend | saturated_halo | edge | flagged_pixels | low_snr | "
+        "wavelength_centroid | parallax_misfit | chance_link | other (as docs/RESULTS.md)"
+    )
+    reason: str = Field(description="Why, in one or two plain sentences with the numbers that decided it")
+    decided_by: str = Field(description="spherex | archive | catalogue | evidence_checks: the evidence that settled it")
+
+
 class KnownMatch(BaseModel):
     """A catalogued object that an engine object was matched to."""
 
@@ -176,6 +199,9 @@ class MotionObject(BaseModel):
         "null when the catalogue check did not run",
     )
     matches: list[KnownMatch] = Field(default_factory=list, description="Catalogue matches, best first")
+    motion_verdict: MotionVerdict | None = Field(
+        None, description="Is the motion real? Read this, not `kind`, to tell real motion from fake"
+    )
 
 
 class MotionPass(BaseModel):
@@ -332,6 +358,10 @@ class MotionEvidence(BaseModel):
         description="Passes whose frames covered the fitted track but found nothing there: the engine then "
         "takes the positions for different objects, so the object is not a mover whatever its fitted motion",
     )
+    motion_verdict: MotionVerdict | None = Field(
+        None, description="MotionObject.motion_verdict after the image tests in `checks`; null when the run's "
+        "verdicts are not known"
+    )
 
 
 class SurveyImage(BaseModel):
@@ -432,6 +462,10 @@ class SurveyCandidate(BaseModel):
     )
     field_dec: float
     ref_mjd: float = Field(description="MJD (UTC) at which ra, dec hold (the SPHEREx fit's reference date)")
+    motion_verdict: MotionVerdict | None = Field(
+        None, description="Is the motion real? Rows stored before verdicts were get one from their stored columns "
+        "(decided with less detail)"
+    )
 
 
 class SurveyCandidates(BaseModel):
