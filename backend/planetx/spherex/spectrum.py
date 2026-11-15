@@ -33,6 +33,7 @@ combined, so a variable object's spectrum mixes its states.
 """
 from __future__ import annotations
 
+import functools
 import math
 import warnings
 from dataclasses import dataclass
@@ -40,7 +41,6 @@ from dataclasses import dataclass
 import numpy as np
 from astropy.io import fits
 from astropy.stats import sigma_clipped_stats
-from astropy.time import Time
 from astropy.wcs import WCS, FITSFixedWarning
 from astropy.wcs.utils import proj_plane_pixel_area
 from scipy.ndimage import map_coordinates
@@ -111,7 +111,7 @@ def position_at(ra: float, dec: float, pmra_mas: float, pmdec_mas: float, epoch_
 
     Linear in RA/Dec (no parallax): fine over the few years and few arcmin involved.
     """
-    years = Time(mjd, format="mjd").jyear - epoch_yr
+    years = 2000.0 + (mjd - 51544.5) / 365.25 - epoch_yr  # Julian years, as Time(mjd).jyear
     cosd = math.cos(math.radians(dec))
     d_ra = pmra_mas * years / 3.6e6 / cosd if cosd > 1e-9 else 0.0
     return (ra + d_ra) % 360.0, max(-90.0, min(90.0, dec + pmdec_mas * years / 3.6e6))
@@ -131,62 +131,98 @@ class Measurement:
     aperture_correction: float | None = None  # total / aperture flux
 
 
+class FrameMeasurer:
+    """One cutout prepared once for forced photometry at any number of positions.
+
+    Parsing the WCSs (celestial, wavelength, detector) costs far more than the photometry,
+    so a survey-scale run measures every object of a field in one pass per cutout.
+    """
+
+    def __init__(self, hdul: fits.HDUList):
+        self.hdul = hdul
+        header = self.header = hdul["IMAGE"].header
+        det = header.get("DETECTOR")
+        self.detector = int(det) if det is not None else None
+        self.mjd = float(header["MJD-AVG"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FITSFixedWarning)
+            self.wcs = WCS(header)
+            self.wave_wcs = WCS(without_sip(header), fobj=hdul, key="W")
+        self.data = np.asarray(hdul["IMAGE"].data, dtype=np.float64)
+        self.flags = np.asarray(hdul["FLAGS"].data)
+        self.variance = np.asarray(hdul["VARIANCE"].data, dtype=np.float64) if "VARIANCE" in hdul else None
+        bad = ~np.isfinite(self.data) | ((self.flags & flag_mask(REJECT_FLAGS)) != 0)
+        if self.variance is not None:
+            bad |= ~np.isfinite(self.variance)
+        self.bad = bad
+        self.yy, self.xx = np.indices(self.data.shape)
+        area = proj_plane_pixel_area(self.wcs.celestial)
+        self.to_mjy = area * (math.pi / 180) ** 2 * MJY_PER_MJY
+        self.scale_arcsec = math.sqrt(area) * 3600
+        self._a_wcs: WCS | None | bool = False  # False: not built yet; None: the file has none
+
+    def a_wcs(self) -> WCS | None:
+        if self._a_wcs is False:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", FITSFixedWarning)
+                    self._a_wcs = WCS(without_sip(self.header), key="A")
+            except (KeyError, ValueError):
+                self._a_wcs = None
+        return self._a_wcs
+
+    def measure(self, ra: float, dec: float) -> Measurement:
+        """Forced aperture photometry at (ra, dec) (see the module doc)."""
+        detector, mjd, data = self.detector, self.mjd, self.data
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FITSFixedWarning)
+            x, y = (float(v) for v in self.wcs.world_to_pixel_values(ra, dec))
+            wave, width = (float(v) for v in self.wave_wcs.all_pix2world(x, y, 0))
+        ny, nx = data.shape
+        r_out = ANNULUS_PX[1]
+        if not (np.isfinite(x) and np.isfinite(y)) or x < r_out or y < r_out or x > nx - 1 - r_out or y > ny - 1 - r_out:
+            return Measurement("off_image", detector, mjd)
+        if not np.isfinite(wave) or wave <= 0:
+            return Measurement("no_wavelength", detector, mjd)
+        common = {"detector": detector, "mjd": mjd, "wavelength_um": wave, "bandwidth_um": width if np.isfinite(width) else None}
+
+        flags, variance, bad, xx, yy = self.flags, self.variance, self.bad, self.xx, self.yy
+        r = np.hypot(xx - x, yy - y)
+        aperture = r <= APERTURE_PX
+        if ((flags[aperture] & flag_mask(SATURATION_FLAGS)) != 0).any():
+            return Measurement("saturated", **common)
+        if bad[aperture].any():
+            return Measurement("masked", **common)
+        annulus = (r >= ANNULUS_PX[0]) & (r <= ANNULUS_PX[1]) & ~bad
+        if annulus.sum() < MIN_ANNULUS_PIXELS:
+            return Measurement("masked", **common)
+        _, bkg, bkg_std = sigma_clipped_stats(data[annulus], sigma=3.0, maxiters=5)
+        n_ap, n_bkg = int(aperture.sum()), int(annulus.sum())
+
+        to_mjy = self.to_mjy
+        flux_ap = float((data[aperture] - bkg).sum()) * to_mjy
+        pixel_var = float(variance[aperture].sum()) if variance is not None else n_ap * bkg_std**2
+        # Error of the background level (median: pi/2 times the variance of a mean).
+        var_ap = (pixel_var + n_ap**2 * (math.pi / 2) * bkg_std**2 / n_bkg) * to_mjy**2
+
+        fraction = aperture_fraction(self.hdul, self.header, x, y, aperture, xx, yy,
+                                     a_wcs=self.a_wcs(), scale_arcsec=self.scale_arcsec)
+        flux = flux_ap / fraction
+        return Measurement(
+            "ok", **common, flux_mjy=flux, flux_err_mjy=math.hypot(math.sqrt(var_ap) / fraction, SYSTEMATIC_FRAC * flux),
+            aperture_correction=1.0 / fraction,
+        )
+
+
 def measure(hdul: fits.HDUList, ra: float, dec: float) -> Measurement:
     """Forced aperture photometry at (ra, dec) in one SPHEREx cutout (see the module doc)."""
-    header = hdul["IMAGE"].header
-    det = header.get("DETECTOR")
-    detector = int(det) if det is not None else None
-    mjd = float(header["MJD-AVG"])
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", FITSFixedWarning)
-        wcs = WCS(header)
-        x, y = (float(v) for v in wcs.world_to_pixel_values(ra, dec))
-        wave, width = (float(v) for v in WCS(without_sip(header), fobj=hdul, key="W").all_pix2world(x, y, 0))
-    data = np.asarray(hdul["IMAGE"].data, dtype=np.float64)
-    ny, nx = data.shape
-    r_out = ANNULUS_PX[1]
-    if not (np.isfinite(x) and np.isfinite(y)) or x < r_out or y < r_out or x > nx - 1 - r_out or y > ny - 1 - r_out:
-        return Measurement("off_image", detector, mjd)
-    if not np.isfinite(wave) or wave <= 0:
-        return Measurement("no_wavelength", detector, mjd)
-    common = {"detector": detector, "mjd": mjd, "wavelength_um": wave, "bandwidth_um": width if np.isfinite(width) else None}
-
-    flags = np.asarray(hdul["FLAGS"].data)
-    variance = np.asarray(hdul["VARIANCE"].data, dtype=np.float64) if "VARIANCE" in hdul else None
-    yy, xx = np.indices(data.shape)
-    r = np.hypot(xx - x, yy - y)
-    aperture = r <= APERTURE_PX
-    bad = ~np.isfinite(data) | ((flags & flag_mask(REJECT_FLAGS)) != 0)
-    if variance is not None:
-        bad |= ~np.isfinite(variance)
-    if ((flags[aperture] & flag_mask(SATURATION_FLAGS)) != 0).any():
-        return Measurement("saturated", **common)
-    if bad[aperture].any():
-        return Measurement("masked", **common)
-    annulus = (r >= ANNULUS_PX[0]) & (r <= ANNULUS_PX[1]) & ~bad
-    if annulus.sum() < MIN_ANNULUS_PIXELS:
-        return Measurement("masked", **common)
-    _, bkg, bkg_std = sigma_clipped_stats(data[annulus], sigma=3.0, maxiters=5)
-    n_ap, n_bkg = int(aperture.sum()), int(annulus.sum())
-
-    omega_sr = proj_plane_pixel_area(wcs.celestial) * (math.pi / 180) ** 2
-    to_mjy = omega_sr * MJY_PER_MJY
-    flux_ap = float((data[aperture] - bkg).sum()) * to_mjy
-    pixel_var = float(variance[aperture].sum()) if variance is not None else n_ap * bkg_std**2
-    # Error of the background level (median: pi/2 times the variance of a mean).
-    var_ap = (pixel_var + n_ap**2 * (math.pi / 2) * bkg_std**2 / n_bkg) * to_mjy**2
-
-    fraction = aperture_fraction(hdul, header, x, y, aperture, xx, yy)
-    flux = flux_ap / fraction
-    return Measurement(
-        "ok", **common, flux_mjy=flux, flux_err_mjy=math.hypot(math.sqrt(var_ap) / fraction, SYSTEMATIC_FRAC * flux),
-        aperture_correction=1.0 / fraction,
-    )
+    return FrameMeasurer(hdul).measure(ra, dec)
 
 
 def aperture_fraction(
     hdul: fits.HDUList, header: fits.Header, x: float, y: float,
     aperture: np.ndarray, xx: np.ndarray, yy: np.ndarray,
+    a_wcs: WCS | None = None, scale_arcsec: float | None = None,
 ) -> float:
     """Fraction of a point source's flux at (x, y) that falls in the `aperture` pixels.
 
@@ -195,9 +231,10 @@ def aperture_fraction(
     sampled OVSMPX times finer than the pixels; its value at a pixel's offset from the
     source is proportional to that pixel's share of the flux. Shares are normalised
     over the EPSF box (about 6.6 pixels), so flux beyond the box (~1-2%) is ignored.
+    `a_wcs` (detector pixels) and `scale_arcsec` may be passed in when already known.
     """
     dx, dy = xx[aperture] - x, yy[aperture] - y
-    epsf = _epsf_near(hdul, header, x, y)
+    epsf = _epsf_near(hdul, header, x, y, a_wcs)
     if epsf is not None:
         psf, ov = epsf
         c = (np.array(psf.shape) - 1) / 2
@@ -212,10 +249,11 @@ def aperture_fraction(
             return float(inside / total)
     fwhm_arcsec = header.get("PSF_FWHM")
     if fwhm_arcsec:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", FITSFixedWarning)
-            scale = math.sqrt(proj_plane_pixel_area(WCS(header).celestial)) * 3600
-        sigma = float(fwhm_arcsec) / scale / (2 * math.sqrt(2 * math.log(2)))
+        if scale_arcsec is None:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", FITSFixedWarning)
+                scale_arcsec = math.sqrt(proj_plane_pixel_area(WCS(header).celestial)) * 3600
+        sigma = float(fwhm_arcsec) / scale_arcsec / (2 * math.sqrt(2 * math.log(2)))
         share = _gauss_1d(dx, sigma) * _gauss_1d(dy, sigma)
         return float(share.sum())
     return 1.0
@@ -227,7 +265,9 @@ def _gauss_1d(offset: np.ndarray, sigma: float) -> np.ndarray:
     return 0.5 * (erf((offset + 0.5) / s) - erf((offset - 0.5) / s))
 
 
-def _epsf_near(hdul: fits.HDUList, header: fits.Header, x: float, y: float) -> tuple[np.ndarray, int] | None:
+def _epsf_near(
+    hdul: fits.HDUList, header: fits.Header, x: float, y: float, a_wcs: WCS | None = None,
+) -> tuple[np.ndarray, int] | None:
     """The EPSF of the detector zone nearest the object, and its oversampling factor."""
     if "EPSF" not in hdul:
         return None
@@ -239,7 +279,7 @@ def _epsf_near(hdul: fits.HDUList, header: fits.Header, x: float, y: float) -> t
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", FITSFixedWarning)
-            ax, ay = WCS(without_sip(header), key="A").all_pix2world(x, y, 0)
+            ax, ay = (a_wcs or WCS(without_sip(header), key="A")).all_pix2world(x, y, 0)
     except (KeyError, ValueError):
         return None
     zone = int(np.argmin(np.hypot(table.data["XCENTER"] - ax, table.data["YCENTER"] - ay)))
@@ -351,6 +391,11 @@ def _window(bands: list[BandFlux], lo: float, hi: float) -> tuple[float, float, 
     return float((w * f).sum() / w.sum()), float(1 / math.sqrt(w.sum())), float(math.exp((w * np.log(lam)).sum() / w.sum()))
 
 
+def window_flux(bands: list[BandFlux], lo_um: float, hi_um: float) -> tuple[float, float, float] | None:
+    """Inverse-variance mean flux of the bands centred in [lo_um, hi_um]: (flux mJy, error, wavelength um)."""
+    return _window(bands, lo_um, hi_um)
+
+
 def measure_feature(bands: list[BandFlux], fd: FeatureDef) -> Feature:
     """Depth of one absorption feature against a simple continuum.
 
@@ -422,3 +467,152 @@ def interpret(features: list[Feature], n_bands: int, saturated: bool) -> tuple[s
         f"No clear methane or water absorption in the {len(known)} of {len(features)} features that "
         "could be measured: no sign of a cool brown dwarf."
     )
+
+
+# --- neighbours -------------------------------------------------------------------------
+#
+# A SPHEREx pixel is 6.2", so a catalogued star a few arcsec away puts much of its light
+# into the aperture. WISE 0855 is the case in point: a Gaia G 16.3 star ~4" away supplies
+# all the light below 2.5 um, where the Y dwarf itself is invisible. The check predicts,
+# per band, how much flux the known neighbours (Gaia DR3 / 2MASS) add to the measured
+# total flux and calls a band dominated when that is at least half of what was measured.
+
+# PSF_FWHM header value / 6.15" per detector; the same in every cached file checked
+# (528 cutouts, 2026-11-14).
+PSF_FWHM_PX = {1: 1.22, 2: 1.21, 3: 1.21, 4: 1.41, 5: 1.40, 6: 1.47}
+# Neighbours further away than this put < 0.1% of their flux in the aperture (FWHM <= 1.5 px).
+NEIGHBOUR_SEARCH_PX = 3.5
+DOMINATED_FRAC = 0.5  # a band is dominated when the neighbours' flux >= this x what was measured
+
+# Zero points of catalogue magnitudes: (effective wavelength um, flux density in Jy at mag 0).
+# 2MASS: Cohen et al. 2003. Gaia G: Vega zero point 25.6874 vs AB 25.8010 (Riello et al. 2021),
+# i.e. G_AB = G + 0.114, so mag 0 is 3631 Jy * 10**(-0.4 * 0.114).
+MAG_ZERO_POINTS = {
+    "G": (0.622, 3631.0 * 10 ** (-0.4 * 0.114)),
+    "J": (1.235, 1594.0),
+    "H": (1.662, 1024.0),
+    "Ks": (2.159, 666.7),
+}
+
+
+@dataclass(frozen=True)
+class Neighbour:
+    """A catalogued source near the object, as seen in the SPHEREx epochs."""
+
+    name: str
+    separation_px: float
+    sed: tuple[tuple[float, float], ...]  # (wavelength um, flux density mJy), shortest first
+
+    def flux_mjy(self, wavelength_um: float) -> float:
+        """F_nu at `wavelength_um` from the catalogue points: a power law between neighbouring
+        points, flat bluewards of the first, a Rayleigh-Jeans tail (lambda^-2) redwards of the
+        last. A stellar model: a cool neighbour's 3-5 um flux comes out somewhat low, and a
+        neighbour known only at one wavelength needs a second (estimated) point to be useful."""
+        if not self.sed:
+            return 0.0
+        lam = np.array([p[0] for p in self.sed])
+        f = np.array([p[1] for p in self.sed])
+        if wavelength_um <= lam[0]:
+            return float(f[0])
+        if wavelength_um >= lam[-1]:
+            return float(f[-1] * (wavelength_um / lam[-1]) ** RJ_SLOPE)
+        return float(np.exp(np.interp(math.log(wavelength_um), np.log(lam), np.log(f))))
+
+
+def sed_from_magnitudes(**mags: float | None) -> tuple[tuple[float, float], ...]:
+    """Catalogue magnitudes (keywords G, J, H, Ks; Vega) as (wavelength um, mJy) points, shortest first."""
+    points = []
+    for band, mag in mags.items():
+        if band not in MAG_ZERO_POINTS:
+            raise ValueError(f"unknown band {band!r}")
+        if mag is not None and math.isfinite(mag):
+            lam, zp_jy = MAG_ZERO_POINTS[band]
+            points.append((lam, zp_jy * 1e3 * 10 ** (-0.4 * mag)))
+    return tuple(sorted(points))
+
+
+_PHASES = (np.arange(8) + 0.5) / 8 - 0.5  # centres of 8 equal steps across a pixel
+
+
+def _aperture_shares(dx: float, dy: float, fwhm_px: float) -> np.ndarray:
+    """Share of a point source's flux (pixel-integrated Gaussian) inside the APERTURE_PX aperture
+    when the source sits (dx, dy) px from the aperture centre, for a grid of sub-pixel phases
+    of the aperture centre (different in every exposure)."""
+    sigma = fwhm_px / (2 * math.sqrt(2 * math.log(2)))
+    px, py = np.meshgrid(np.arange(-5, 6), np.arange(-5, 6))  # pixel centres around the nearest pixel
+    shares = []
+    for fx in _PHASES:
+        for fy in _PHASES:
+            inside = np.hypot(px - fx, py - fy) <= APERTURE_PX
+            share = _gauss_1d(px[inside] - fx - dx, sigma) * _gauss_1d(py[inside] - fy - dy, sigma)
+            shares.append(share.sum())
+    return np.array(shares)
+
+
+@functools.lru_cache(maxsize=4096)
+def neighbour_share(separation_px: float, fwhm_px: float) -> float:
+    """Flux a neighbour adds to the object's aperture-corrected total flux, per unit neighbour flux.
+
+    Each exposure's aperture correction divides by the share of the object's own (centred) PSF
+    in the aperture at that exposure's sub-pixel phase, so a neighbour adds
+    share(at its offset) / share(centred), averaged over phases and directions (the field
+    rotates between exposures)."""
+    if not separation_px >= 0:
+        raise ValueError(f"separation must be >= 0, got {separation_px}")
+    centred = _aperture_shares(0.0, 0.0, fwhm_px)
+    angles = np.linspace(0, math.pi / 2, 9)  # the pixel grid repeats every 90 deg
+    ratios = [_aperture_shares(separation_px * math.cos(t), separation_px * math.sin(t), fwhm_px) / centred
+              for t in angles]
+    return float(np.mean(ratios))
+
+
+@dataclass(frozen=True)
+class BandContamination:
+    band: Band
+    neighbour_mjy: float  # predicted flux the neighbours add to this band's measured flux
+    fraction: float  # neighbour_mjy / max(measured flux, 2 x its error)
+    dominated: bool
+
+
+def contamination(bands: list[BandFlux], neighbours: list[Neighbour]) -> list[BandContamination]:
+    """Per measured band: how much of its flux the catalogued neighbours could supply.
+
+    The reference is the measured flux, or twice its error when that is larger, so a
+    neighbour below the noise never dominates, and an object invisible in a band (a Y dwarf
+    below 2.5 um) is dominated there by any neighbour that is detected.
+    """
+    near = [n for n in neighbours if n.separation_px <= NEIGHBOUR_SEARCH_PX]
+    shares: dict[tuple[str, float], float] = {}
+    out = []
+    for b in bands:
+        fwhm = PSF_FWHM_PX.get(b.band.detector, 1.4)
+        add = 0.0
+        for n in near:
+            key = (n.name, fwhm)
+            if key not in shares:
+                shares[key] = neighbour_share(n.separation_px, fwhm)
+            add += n.flux_mjy(b.band.center_um) * shares[key]
+        ref = max(b.flux_mjy, 2 * b.flux_err_mjy)
+        frac = add / ref if ref > 0 else (math.inf if add > 0 else 0.0)
+        out.append(BandContamination(b.band, float(add), float(frac), frac >= DOMINATED_FRAC))
+    return out
+
+
+def subtract_neighbours(
+    bands: list[BandFlux], contam: list[BandContamination], model_frac_err: float = 0.3,
+) -> list[BandFlux]:
+    """Bands with the predicted neighbour flux removed. The prediction's own uncertainty
+    (`model_frac_err` of it: catalogue colours extrapolated, PSF approximated) is added to the
+    error. Only as good as the neighbour model: a cross-check, not a measurement."""
+    by_index = {c.band.index: c for c in contam}
+    out = []
+    for b in bands:
+        c = by_index.get(b.band.index)
+        if c is None or c.neighbour_mjy == 0:
+            out.append(b)
+            continue
+        out.append(BandFlux(
+            b.band, b.flux_mjy - c.neighbour_mjy,
+            math.hypot(b.flux_err_mjy, model_frac_err * c.neighbour_mjy), b.n_used, b.n_rejected,
+        ))
+    return out
