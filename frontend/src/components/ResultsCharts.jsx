@@ -274,15 +274,16 @@ export function LightCurveChart({ curve, folded = false }) {
   }
   const label = folded
     ? `R Draconis brightness folded on a ${curve.period}-day period: the visits from different passes line up into one cycle.`
-    : `R Draconis brightness in mJy measured by SPHEREx on ${pts.length} dates; it changes by a factor of ${curve.ratio?.toFixed(1)}.`;
+    : `R Draconis brightness relative to its average, measured by SPHEREx on ${pts.length} dates; it changes by a factor of ${curve.ratio?.toFixed(1)}.`;
+  // Fluxes are relative: each point divided by its own wavelength's mean level (the file's notes).
   return (
     <svg className="rc" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label}>
       <Axes x={x} y={y} xTicks={xTicks} yTicks={yTicks} box={box}
         xFmt={folded ? (v) => v.toFixed(2) : (v) => monthYear(mjdToDate(v))} yFmt={(v) => fmt(v)}
-        xLabel={folded ? `phase (period ${curve.period} days)` : 'date'} yLabel="mJy" />
+        xLabel={folded ? `phase (period ${Math.round(curve.period)} days)` : 'date'} yLabel="× average" />
       {pts.map((p, i) => (
         <g key={i} className="rc-pt">
-          <title>{`${mjdToDate(p.mjd).toISOString().slice(0, 10)}: ${fmt(Math.round(p.flux))} ± ${fmt(Math.round(p.err))} mJy${Number.isFinite(p.wavelength) ? ` at ${p.wavelength.toFixed(2)} µm` : ''}`}</title>
+          <title>{`${mjdToDate(p.mjd).toISOString().slice(0, 10)}: ${p.flux.toFixed(2)} ± ${p.err.toFixed(2)} × average${Number.isFinite(p.wavelength) ? ` at ${p.wavelength.toFixed(2)} µm` : ''}`}</title>
           {p.err > 0 && <line x1={x(folded ? p.phase : p.mjd)} x2={x(folded ? p.phase : p.mjd)} y1={y(p.flux - p.err)} y2={y(p.flux + p.err)} />}
           <circle cx={x(folded ? p.phase : p.mjd)} cy={y(p.flux)} r="2.6" />
         </g>

@@ -358,15 +358,25 @@ export function spectralPoints(doc) {
 }
 
 /** "2 of our 12 moving candidates have both dips, which suggests a brown dwarf." */
-export function spectralText(points) {
+export function spectralText(points, summary) {
   const movers = points.filter((p) => p.kind === 'mover');
   const cool = movers.filter((p) => p.flag === 'suggests_brown_dwarf').length;
   const known = points.filter((p) => p.kind === 'known_brown_dwarf');
   const knownCool = known.filter((p) => p.flag === 'suggests_brown_dwarf').length;
   const parts = [];
   if (known.length) parts.push(`${fmt(knownCool)} of ${fmt(known.length)} known brown dwarfs show both dips`);
-  if (movers.length) parts.push(`${fmt(cool)} of our ${fmt(movers.length)} moving candidates do too, which suggests ${cool === 1 ? 'it is a brown dwarf' : 'brown dwarfs'}`);
-  return parts.length ? `${parts.join('; ')}.` : null;
+  if (movers.length) {
+    parts.push(`${fmt(cool)} of our ${fmt(movers.length)} moving candidates do too${cool ? `, which suggests ${cool === 1 ? 'a brown dwarf' : 'brown dwarfs'}` : ''}`);
+  } else if (summary?.n_movers > 0) {
+    // Movers measured but not plotted: neither dip could be read (no methane-band exposure yet,
+    // or a neighbour's light dominates).
+    const m = summary.by_kind?.mover || {};
+    const why = [m.too_faint && `${fmt(m.too_faint)} have no exposure at methane wavelengths yet`,
+      m.contaminated && `${fmt(m.contaminated)} sit next to a star whose light dominates`].filter(Boolean);
+    parts.push(`none of our ${fmt(summary.n_movers)} moving candidates could be checked yet${why.length ? ` (${why.join(', ')})` : ''}`);
+  }
+  const text = parts.join('; ');
+  return text ? `${text[0].toUpperCase()}${text.slice(1)}.` : null;
 }
 
 const MJD_UNIX0 = 40587;
@@ -385,14 +395,35 @@ export function lightCurve(doc) {
   const period = Number.isFinite(doc.period_days_fit) && doc.period_days_fit > 0 ? doc.period_days_fit : null;
   const t0 = points[0].mjd;
   const folded = period ? points.map((p) => ({ ...p, phase: (((p.mjd - t0) / period) % 1 + 1) % 1 })) : null;
-  const fluxes = points.map((p) => p.flux);
+  // Brightness range from the 5th to the 95th percentile: max/min is set by a few extreme
+  // points (R Dra: 9.1x against 4.0x, which matches its 0.75-1.6 mag amplitudes).
+  const sorted = points.map((p) => p.flux).sort((a, b) => a - b);
+  const q = (f) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(f * (sorted.length - 1))))];
+  const fluxes = sorted.length >= 20 ? [q(0.05), q(0.95)] : sorted;
+  // The fitted period moves with the binning; that spread is its honest uncertainty.
+  const alt = (doc.period_days_by_binning || []).map((b) => b.period_days).filter(Number.isFinite);
+  const periodRange = alt.length > 1 ? [Math.min(...alt), Math.max(...alt)] : null;
   return {
     points,
     folded,
     period,
+    periodRange,
+    constrained: doc.period_constrained !== false,
     literature: Number.isFinite(doc.period_days_literature) ? doc.period_days_literature : null,
     ratio: Math.min(...fluxes) > 0 ? Math.max(...fluxes) / Math.min(...fluxes) : null,
   };
+}
+
+/** ", repeating roughly every 207-287 days (...)": the period as honestly as the fit allows, or ''. */
+export function periodText(curve) {
+  if (!curve?.period || !curve.constrained) return '';
+  const books = curve.literature ? `books say ${Math.round(curve.literature)}` : '';
+  const [lo, hi] = curve.periodRange || [];
+  if (lo != null && hi - lo > 0.1 * curve.period) {
+    return `, repeating roughly every ${Math.round(lo)} to ${Math.round(hi)} days (the fit moves with how the data are grouped, `
+      + `since SPHEREx has seen under two cycles${books ? `; ${books}` : ''})`;
+  }
+  return `, repeating every ${Math.round(curve.period)} days${books ? ` (${books})` : ''}`;
 }
 
 // ---------- the precision headline ----------

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { API_BASE } from '../lib/services.js';
 import {
   CAUSES, PRECISION, RESULT_NAMES, SPECTRAL_KINDS, causeRows, confusionText, falsePositiveText, fetchResult,
-  fetchResultsIndex, fetchSurveyStats, gaiaPoints, generatedText, injectionGrid, injectionText, lightCurve, precisionGain,
+  fetchResultsIndex, fetchSurveyStats, gaiaPoints, generatedText, injectionGrid, injectionText, lightCurve, periodText, precisionGain,
   rateText, spectralPoints, spectralText, stdDev, surveySummary,
 } from '../lib/results.js';
 import {
@@ -373,7 +373,7 @@ function OnlySpherex({ bd, lc, index }) {
       lede="SPHEREx photographs every spot of sky in 102 colours of infrared light. That gives every star a spectrum, and a brightness in each of its visits.">
       <div className="rp-grid">
         <Figure title="Methane and water in every spectrum" wide
-          caption={`The coolest brown dwarfs have methane and water in their air, which take bites out of their infrared light. Ordinary stars show neither.${spectralText(pts) ? ` ${spectralText(pts)}` : ''}`}>
+          caption={`The coolest brown dwarfs have methane and water in their air, which take bites out of their infrared light. Ordinary stars show neither.${spectralText(pts, bdDoc?.summary) ? ` ${spectralText(pts, bdDoc?.summary)}` : ''}`}>
           <FileState name="brown_dwarfs" file={bd} index={index} />
           {bdDoc && pts.length > 0 && (
             <>
@@ -386,7 +386,7 @@ function OnlySpherex({ bd, lc, index }) {
           {bdDoc && pts.length === 0 && <p className="line dim">No object had both dips measured.</p>}
         </Figure>
         <Figure title="R Draconis breathing in and out"
-          caption={curve ? `A Mira variable: a giant star that swells and shrinks. SPHEREx saw it change ${curve.ratio ? `${curve.ratio.toFixed(1)}×` : ''} in brightness${curve.period ? `, repeating every ${Math.round(curve.period)} days${curve.literature ? ` (books say ${Math.round(curve.literature)})` : ''}` : ''}.` : 'A Mira variable: a giant star that swells and shrinks over about 245 days.'}>
+          caption={curve ? `A Mira variable: a giant star that swells and shrinks. SPHEREx saw it change ${curve.ratio ? `${curve.ratio.toFixed(1)}×` : ''} in brightness${periodText(curve)}.` : 'A Mira variable: a giant star that swells and shrinks over about 245 days.'}>
           <FileState name="light_curve_r_dra" file={lc} index={index} />
           {curve && (
             <>

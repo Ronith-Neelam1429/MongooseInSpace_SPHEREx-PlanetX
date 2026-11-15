@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   causeRows, confusionText, crossing, edges, falsePositiveText, gaiaPoints, gaussianCurve, generatedText, histogram,
   injectionHeatmap, injectionText, lightCurve, mjdToDate, niceTicks, precisionGain, rateText, spectralPoints, spectralText,
-  stdDev, surveySummary, symlog,
+  periodText, stdDev, surveySummary, symlog,
 } from './results.js';
 
 // Small fixtures in docs/RESULTS.md shapes (the backend's live-like ones are in tests/fixtures/results/).
@@ -90,6 +90,26 @@ describe('causeRows', () => {
   });
 });
 
+describe('spectral and light-curve wording', () => {
+  it('says "suggests a brown dwarf", never "is"', () => {
+    const t = spectralText([{ kind: 'mover', flag: 'suggests_brown_dwarf' }]);
+    expect(t).toContain('which suggests a brown dwarf');
+    expect(t).not.toMatch(/\bis a brown dwarf/);
+  });
+  it('explains movers that could not be checked', () => {
+    const t = spectralText([], { n_movers: 9, by_kind: { mover: { contaminated: 6, too_faint: 3 } } });
+    expect(t).toBe('None of our 9 moving candidates could be checked yet (3 have no exposure at methane wavelengths yet, 6 sit next to a star whose light dominates).');
+  });
+  it('gives a period range when the fit moves with the binning', () => {
+    const curve = lightCurve({ points: [{ mjd: 1, flux: 1 }, { mjd: 2, flux: 2 }], period_days_fit: 206.6,
+      period_days_literature: 245, period_constrained: true,
+      period_days_by_binning: [{ period_days: 206.6 }, { period_days: 287.2 }, { period_days: 218 }] });
+    expect(periodText(curve)).toMatch(/roughly every 207 to 287 days .*books say 245/);
+    expect(periodText({ ...curve, periodRange: null })).toBe(', repeating every 207 days (books say 245)');
+    expect(periodText({ ...curve, constrained: false })).toBe('');
+  });
+});
+
 describe('gaia points clean flag', () => {
   it('keeps the clean flag, treating rows without it as clean', () => {
     const row = { spherex_pm_ra: 0, spherex_pm_dec: 0, spherex_pm_err: 1, gaia_pm_ra: 0, gaia_pm_dec: 0 };
@@ -166,7 +186,7 @@ describe('spectral points', () => {
   });
   it('says "suggests", never more', () => {
     expect(spectralText(spectralPoints(doc)))
-      .toBe('1 of 1 known brown dwarfs show both dips; 1 of our 2 moving candidates do too, which suggests it is a brown dwarf.');
+      .toBe('1 of 1 known brown dwarfs show both dips; 1 of our 2 moving candidates do too, which suggests a brown dwarf.');
   });
 });
 
