@@ -4,13 +4,24 @@ import { FAST_ARCSEC_YR, displayName } from '../lib/names.js';
 import {
   archiveSentence, claim, compass, confidence, distanceText, measuredMotion, moonCrossing, motionsAgree, speed, verdict,
 } from '../lib/plain.js';
+import { knownClass } from '../lib/classes.js';
 import { trackedAt } from '../lib/evidence.js';
-import MotionEvidence from './MotionEvidence.jsx';
+import { EnginePictures, Exposures, Chart, Proof } from './MotionEvidence.jsx';
+import { useChecks, useEvidence, useVerdict } from './useEvidence.js';
+import { KnownPictures } from './SkyPictures.jsx';
 
 const n = (v, d = 2) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
 const signed = (v, d) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`;
 const CATALOG = { gaia: 'Gaia', simbad: 'SIMBAD', skybot: 'SkyBoT' };
 const OBSERVATORY = { '2mass': '2MASS', allwise: 'AllWISE', catwise: 'CatWISE', neowise: 'NEOWISE' };
+// What a catalogued object is, in a few words, by its class (lib/classes.js).
+const KNOWN_VERDICT = {
+  fast: 'A fast-moving star',
+  variable: 'Changes brightness',
+  galaxy: 'Far away: it does not move',
+  star: 'Stays put',
+  other: 'Catalogued source',
+};
 
 export const CloseIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.25" /></svg>
@@ -25,7 +36,7 @@ function Arrow({ pa }) {
   );
 }
 
-/** The evidence view is another module's; if it throws, say so instead of taking the page down. */
+/** The evidence views are another module's; if one throws, say so instead of taking the page down. */
 class EvidenceBoundary extends Component {
   state = { failed: false };
 
@@ -34,13 +45,13 @@ class EvidenceBoundary extends Component {
   componentDidCatch(error) { console.error('Evidence view failed', error); }
 
   render() {
-    return this.state.failed ? <p className="line dim">The evidence view could not be shown.</p> : this.props.children;
+    return this.state.failed ? <p className="line dim">This part of the evidence could not be shown.</p> : this.props.children;
   }
 }
 
-function Head({ tone, kicker, title, sub, onBack, onClose }) {
+function Head({ tone, kicker, title, onBack, onClose }) {
   return (
-    <header className="panel-head">
+    <header className="panel-head card-head">
       <div className="panel-tools">
         {/* The list this card replaced is gone, so keyboard focus moves to the way back. */}
         <button type="button" className="textbtn back" autoFocus onClick={onBack}>
@@ -53,7 +64,6 @@ function Head({ tone, kicker, title, sub, onBack, onClose }) {
       </div>
       <p className="kicker object-kicker"><i className={`dot ${tone}`} />{kicker}</p>
       <h2 className={`title ${title.length > 18 ? 'title-long' : ''}`}>{title}</h2>
-      {sub && <p className="coords">{sub}</p>}
     </header>
   );
 }
@@ -79,6 +89,10 @@ function CatalogueLine({ o, who, m }) {
 function EngineCard({ o, who, field, onBack, onClose }) {
   const m = measuredMotion(o);
   const moving = o.kind !== 'static';
+  const ev = useEvidence(o, field);
+  const said = useVerdict(o, ev);
+  const checks = useChecks(o, ev);
+  const name = displayName(who);
   const best = who.matches[0];
   const far = who.matches.find((x) => x.distance_ly != null);
   const about = [
@@ -91,13 +105,18 @@ function EngineCard({ o, who, field, onBack, onClose }) {
   const crossing = moving ? moonCrossing(m.pm) : null;
   return (
     <>
-      <Head tone="measured-bg" kicker="Measured in SPHEREx images" title={displayName(who)} sub={verdict(o)} onBack={onBack} onClose={onClose} />
+      <Head tone="measured-bg" kicker={`Measured in SPHEREx images · ${verdict(o)}`} title={name} onBack={onBack} onClose={onClose} />
       <div className="panel-body">
-        <section>
+        <section className="card-pictures ev" aria-label="Telescope pictures">
+          <EvidenceBoundary><EnginePictures object={o} ev={ev} title={name} /></EvidenceBoundary>
+        </section>
+
+        <section className="card-verdict">
+          <p className={`verdict-line ${said?.tone === 'moved' ? 'measured' : ''}`}>{said ? said.headline : verdict(o)}</p>
           {moving && (
             <p className="lede">
-              Moves <b className="measured">{speed(m.pm)}″</b> per year toward <b>{compass(m.pa)}</b> <Arrow pa={m.pa} />.
-              {crossing && <span className="dim"> At that rate it crosses the width of the full Moon in {crossing}.</span>}
+              Moves <b className="measured">{speed(m.pm)}″</b> per year toward <b>{compass(m.pa)}</b> <Arrow pa={m.pa} />
+              {' '}<span className="dim">· {confidence(m.sigma).toLowerCase()} ({m.sigma.toFixed(1)}× its error{m.fused ? ', with older surveys' : ''})</span>
             </p>
           )}
           {o.is_variable && o.variability && (
@@ -105,34 +124,39 @@ function EngineCard({ o, who, field, onBack, onClose }) {
               {moving ? 'Its brightness also' : 'Its brightness'} changed by a factor of <b className="measured">{o.variability.ratio.toFixed(2)}</b> between SPHEREx passes.
             </p>
           )}
+          <p className="line card-cat"><CatalogueLine o={o} who={who} m={m} /></p>
+          {o.kind === 'candidate' && <p className="line dim">A candidate, not a discovery: it stays one until other data confirm it.</p>}
+        </section>
+
+        {checks && <section className="ev"><EvidenceBoundary><Proof checks={checks} /></EvidenceBoundary></section>}
+        {ev.status === 'ok' && (
+          <section className="ev" aria-labelledby="chart-title">
+            <h3 id="chart-title">Position over time</h3>
+            <EvidenceBoundary><Chart object={o} evidence={ev.evidence} /></EvidenceBoundary>
+          </section>
+        )}
+        {ev.status === 'ok' && ev.evidence.passes.some((p) => p.exposures?.length) && (
+          <details className="more ev">
+            <summary>Single exposures</summary>
+            <EvidenceBoundary><Exposures evidence={ev.evidence} /></EvidenceBoundary>
+          </details>
+        )}
+
+        <details className="more">
+          <summary>Details</summary>
+          {said && <div className="card-said">{said.lines.map((line) => <p key={line} className="line">{line}</p>)}</div>}
           <dl className="facts">
-            {moving && (
-              <>
-                <dt>How sure</dt>
-                <dd>
-                  {confidence(m.sigma)}: the motion is {m.sigma.toFixed(1)} times its measurement error{m.fused ? ', counting older surveys' : ''}.
-                  {o.kind === 'candidate' && ' It stays a candidate until other data confirm it.'}
-                </dd>
-              </>
-            )}
-            <dt>Catalogues</dt>
-            <dd><CatalogueLine o={o} who={who} m={m} /></dd>
+            {moving && crossing && <><dt>Scale</dt><dd>At that rate it crosses the width of the full Moon in {crossing}.</dd></>}
             {moving && <><dt>Older surveys</dt><dd>{archiveSentence(a)}</dd></>}
             {o.variability?.caution && <><dt>Caution</dt><dd>{o.variability.caution}</dd></>}
             {about && <><dt>About it</dt><dd>{about}</dd></>}
           </dl>
-        </section>
-
-        <Evidence o={o} field={field} />
-
-        <details className="more">
-          <summary>Details</summary>
           <dl className="kv">
             {/* A static object's fit is a slope through its positions, which the engine did not accept as motion. */}
             <dt>{moving ? 'Motion' : 'Fitted slope'}</dt>
             <dd>
               {n(o.pm_total)} ± {n(o.pm_err)} ″/yr in SPHEREx alone ({n(o.significance, 1)}σ)
-              {!moving && ', not accepted as motion (see the evidence)'}
+              {!moving && ', not accepted as motion'}
             </dd>
             <dt>East, north</dt><dd>{signed(o.pm_ra_cosdec, 2)}, {signed(o.pm_dec, 2)} ″/yr · {n(o.position_angle_deg, 0)}° east of north</dd>
             {others.length > 0 && a.pm_ra_cosdec != null && a.pm_err != null && (
@@ -159,51 +183,40 @@ function EngineCard({ o, who, field, onBack, onClose }) {
   );
 }
 
-/** The evidence section of a card: the SPHEREx images of one engine object. */
-function Evidence({ o, field }) {
-  return (
-    <section className="evidence" aria-labelledby="evidence-title">
-      <h3 id="evidence-title">Evidence</h3>
-      <div className="evidence-body">
-        <EvidenceBoundary><MotionEvidence object={o} field={field} /></EvidenceBoundary>
-      </div>
-    </section>
-  );
-}
-
-function KnownCard({ row, measured, tracked, field, onPick, onBack, onClose }) {
+function KnownCard({ row, measured, tracked, onPick, onBack, onClose }) {
   const { simbad: o, gaia: s } = row;
-  const fast = row.pm >= FAST_ARCSEC_YR;
+  const cls = knownClass(row);
+  const fast = cls === 'fast';
   const source = [o && 'SIMBAD', s && 'Gaia'].filter(Boolean).join(' and ');
+  const about = [
+    row.type,
+    row.distanceLy != null && distanceText(row.distanceLy),
+    row.mag != null && `magnitude ${row.mag.toFixed(1)}`,
+  ].filter(Boolean).join(' · ');
+  const result = measured?.o || tracked;
   return (
     <>
-      <Head tone={fast ? 'signal-bg' : 'plain-bg'} kicker={`In the ${source} catalogue${o && s ? 's' : ''}`} title={row.name} sub={row.type} onBack={onBack} onClose={onClose} />
+      <Head tone={fast ? 'signal-bg' : 'plain-bg'} kicker={`In the ${source} catalogue${o && s ? 's' : ''}`} title={row.name} onBack={onBack} onClose={onClose} />
       <div className="panel-body">
-        <section>
-          {row.pm != null ? (
+        <section className="card-pictures" aria-label="Telescope pictures">
+          <EvidenceBoundary><KnownPictures row={row} title={row.name} /></EvidenceBoundary>
+        </section>
+        <section className="card-verdict">
+          <p className={`verdict-line ${fast ? 'signal' : ''}`}>{KNOWN_VERDICT[cls]}</p>
+          {row.pm != null && row.pm >= FAST_ARCSEC_YR / 10 ? (
             <p className="lede">
               The catalogue lists it moving <b className={fast ? 'signal' : ''}>{speed(row.pm)}″</b> per year toward <b>{compass(row.pa)}</b> <Arrow pa={row.pa} />.
-              {fast && <span className="dim"> At that rate it crosses the width of the full Moon in {moonCrossing(row.pm)}.</span>}
+              {fast && <span className="dim"> It crosses the width of the full Moon in {moonCrossing(row.pm)}.</span>}
             </p>
-          ) : <p className="lede">The catalogue lists no motion for it.</p>}
-          <dl className="facts">
-            {row.distanceLy != null && <><dt>Distance</dt><dd>{distanceText(row.distanceLy)}</dd></>}
-            {row.mag != null && <><dt>Brightness</dt><dd>magnitude {row.mag.toFixed(1)} ({row.band} band; lower is brighter)</dd></>}
-            {row.also.length > 0 && <><dt>Also here</dt><dd>{row.also.map((x) => (x.type ? `${x.name} (${x.type})` : x.name)).join(' · ')}</dd></>}
-            {measured && (
-              <>
-                <dt>Our result</dt>
-                <dd>
-                  {claim(measured.o)}.{' '}
-                  <button type="button" className="textbtn" onClick={() => onPick({ kind: 'engine', obj: measured.o })}>See the measurement</button>
-                </dd>
-              </>
-            )}
-            {!measured && tracked && <><dt>Our result</dt><dd>{claim(tracked)} in the SPHEREx images: see the evidence below.</dd></>}
-          </dl>
+          ) : <p className="lede">{row.pm != null ? 'The catalogue lists almost no motion for it.' : 'The catalogue lists no motion for it.'}</p>}
+          {about && <p className="line dim">{about}</p>}
+          {result && (
+            <p className="line card-cat">
+              Our SPHEREx measurement: {claim(result).toLowerCase()}.{' '}
+              <button type="button" className="textbtn" onClick={() => onPick({ kind: 'engine', obj: result })}>See the measurement</button>
+            </p>
+          )}
         </section>
-        {/* Static stars are not listed as results, but their images show what "not moving" looks like. */}
-        {!measured && tracked && field && <Evidence o={tracked} field={field} />}
         <details className="more">
           <summary>Details</summary>
           <dl className="kv">
@@ -212,6 +225,8 @@ function KnownCard({ row, measured, tracked, field, onPick, onBack, onClose }) {
             <dt>Position today</dt><dd>{formatRa(row.ra)} {formatDec(row.dec)}</dd>
             {s?.pmra != null && s.pmdec != null && <><dt>East, north</dt><dd>{signed(s.pmra, 1)}, {signed(s.pmdec, 1)} mas/yr (Gaia)</dd></>}
             {s?.plx != null && <><dt>Parallax</dt><dd>{n(s.plx)}{s.plxErr != null ? ` ± ${n(s.plxErr)}` : ''} mas</dd></>}
+            {row.mag != null && <><dt>Brightness</dt><dd>magnitude {row.mag.toFixed(1)} ({row.band} band; lower is brighter)</dd></>}
+            {row.also.length > 0 && <><dt>Also here</dt><dd>{row.also.map((x) => (x.type ? `${x.name} (${x.type})` : x.name)).join(' · ')}</dd></>}
           </dl>
         </details>
       </div>
@@ -230,5 +245,5 @@ export default function ObjectCard({ focus, results, others, objects, field, onP
   const measured = results.find(({ who }) => who.matches.some((x) => names.has(x.name)));
   // After a run, the tracked object at this star's position, whatever the engine made of it.
   const tracked = objects ? trackedAt(objects, row.ra, row.dec) : null;
-  return <KnownCard row={row} measured={measured} tracked={tracked} field={field} onPick={onPick} onBack={onBack} onClose={onClose} />;
+  return <KnownCard row={row} measured={measured} tracked={tracked} onPick={onPick} onBack={onBack} onClose={onClose} />;
 }

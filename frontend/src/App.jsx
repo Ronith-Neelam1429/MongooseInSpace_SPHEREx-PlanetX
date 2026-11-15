@@ -425,9 +425,8 @@ export default function App() {
   const fr = SPHEREX_FRAMES[frameIdx];
   const isCube = surveyById(survey).cube;
   const panel = listOpen ? 'list' : sel ? 'patch' : null;
-  // An engine object's card carries its evidence images, so it gets half the window; so does a
-  // catalogued object's card once a run is done (it shows the images of the tracked object there).
-  const wide = panel === 'patch' && (focus?.kind === 'engine' || (focus?.kind === 'known' && motion.status === 'ok'));
+  // Every object's card opens with its telescope pictures (they need the backend), so it gets half the window.
+  const wide = panel === 'patch' && Boolean(focus) && Boolean(API_BASE);
 
   return (
     <div className={`app ${panel ? 'with-panel' : ''} ${wide ? 'wide' : ''}`}>
