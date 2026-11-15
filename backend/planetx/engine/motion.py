@@ -34,7 +34,7 @@ import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 from scipy.spatial import cKDTree
-from scipy.special import chdtrc, chdtri
+from scipy.special import bdtrc, chdtrc, chdtri, ndtr
 
 from .detect import Detection, detect_sources, frame_background
 from .frames import Frame
@@ -117,6 +117,9 @@ class TrackedObject:
     # Passes where the predicted position falls on another detection, which
     # hides the object there (a blend), so the track has no source in them.
     blended_passes: list[int] = field(default_factory=list)
+    # Passes that covered the predicted position but have no source of it, at
+    # any brightness (`missing_passes` only counts them for bright objects).
+    unseen_passes: list[int] = field(default_factory=list)
     # Fitted only when it explains a poor straight-line fit (arcsec).
     parallax: float | None = None
     parallax_err: float | None = None
@@ -332,6 +335,31 @@ def _cluster(xs: np.ndarray, ys: np.ndarray, frame_of: list[int], link_arcsec: f
     return clusters
 
 
+def _disagreement(x: np.ndarray, y: np.ndarray, w: np.ndarray, centre: np.ndarray) -> float:
+    """Factor (>= 1) by which one pass's detections of an object disagree beyond their errors.
+
+    `x`, `y` are the detections' offsets (arcsec), `w` their weights (1/sigma^2),
+    `centre` the weighted mean. When the scatter about the mean is improbable
+    for the stated errors (chi2 p-value below CALIB_OUTLIER_PVALUE), the errors
+    are wrong for this object and the mean's error is scaled by sqrt(chi2/dof).
+
+    Seen in blends of two stars a few arcsec apart: depending on the frame's
+    wavelength and PSF orientation the peak falls on one star or the other, so
+    a pass's detections sit at two spots. Their mean lands anywhere between them
+    with the small error of an isolated star, and three such passes made a
+    static Gaia star a 9.5 sigma "moving" track (Barnard field, stacks). Ordinary
+    passes are left alone: the gate only opens far out in the tail.
+    """
+    n = len(x)
+    if n < 2:
+        return 1.0
+    chi2 = float((w * ((x - centre[0]) ** 2 + (y - centre[1]) ** 2)).sum())
+    dof = 2 * (n - 1)
+    if chdtrc(dof, chi2) >= CALIB_OUTLIER_PVALUE:
+        return 1.0
+    return float(np.sqrt(chi2 / dof))
+
+
 def _merge_pass(
     pass_index: int,
     frame_ids: list[int],
@@ -363,7 +391,7 @@ def _merge_pass(
     for c, members in enumerate(clusters):
         mx, my = xs[members], ys[members]
         w = weights[c]
-        formal = float(1 / np.sqrt(w.sum()))
+        formal = float(1 / np.sqrt(w.sum())) * _disagreement(mx, my, w, centres[c])
         n = len(members)
         # (Not for stacks: a pass's few per-detector stacks differ by colour, not noise.)
         scatter = float(np.hypot(mx.std(), my.std()) / np.sqrt(2 * n)) if n > 2 and not stacked else 0.0
@@ -682,13 +710,30 @@ def _pm_floor(pm_x: np.ndarray, pm_y: np.ndarray, pm_err: np.ndarray) -> float:
     return hi
 
 
+# Two pass fluxes this many sigma apart (or closer) can be the same object's,
+# whatever their ratio.
+FLUX_AGREE_SIGMA = 3.0
+
+
 def _flux_compatible(a: PassSource, b: PassSource, max_ratio: float) -> bool:
+    """Whether two pass sources can be one object by brightness, detector by detector.
+
+    Fluxes differ too much when their ratio exceeds `max_ratio` and the
+    difference is beyond FLUX_AGREE_SIGMA of their errors. A flux at the noise
+    level has no meaningful ratio: Eps Indi B, a T dwarf nearly invisible to
+    detector 1, measured 4.8 +- 6.8 there in one pass and 17 +- 4 in another,
+    and that "3.6x" brightness change split its 4-pass track in two halves too
+    short to count as a mover.
+    """
     common = set(a.flux_by_detector) & set(b.flux_by_detector)
     if not common:
         return True  # different detectors: brightness can't be compared
     for det in common:
-        fa, fb = a.flux_by_detector[det][0], b.flux_by_detector[det][0]
-        if fa <= 0 or fb <= 0 or max(fa, fb) / min(fa, fb) > max_ratio:
+        (fa, ea), (fb, eb) = a.flux_by_detector[det], b.flux_by_detector[det]
+        if fa > 0 and fb > 0 and max(fa, fb) / min(fa, fb) <= max_ratio:
+            continue
+        err = math.hypot(ea, eb)
+        if not (np.isfinite(err) and abs(fa - fb) <= FLUX_AGREE_SIGMA * err):
             return False
     return True
 
@@ -985,22 +1030,23 @@ def _absent_passes(
     trees: list[cKDTree | None],
     blend_arcsec: float,
     track_of: dict[int, list[PassSource]],
-) -> tuple[list[int], list[int]]:
+) -> tuple[list[int], list[int], list[int]]:
     """Passes that covered the object's predicted position but have no source of it.
 
-    Returns (missing, blended). A pass is "blended" when a source of that pass
+    Returns (missing, blended, unseen). A pass is "blended" when a source of that pass
     lies within `blend_arcsec` (plus 3 sigma of the prediction) of where the
     object should be and is brighter there than in its other passes by about
     the object's flux (`_hides`): the object's light is in that source, so its
     absence says nothing against the track. `track_of` maps id(source) to its
-    object's sources. Otherwise the pass is "missing". Only counts when the
-    object is bright enough that it should have been detected there (best
-    single-detection SNR >= 2 * nsigma).
+    object's sources. Every other such pass is "unseen"; it is also "missing"
+    when the object is bright enough that it should have been detected there
+    (best single-detection SNR >= 2 * nsigma). A fainter object may drop below
+    the threshold in a pass, so one unseen pass says little against it, but
+    being unseen in most of them does (see `find_motion`).
     """
-    if max(s.snr for s in obj.sources) < 2 * nsigma:
-        return [], []
+    bright = max(s.snr for s in obj.sources) >= 2 * nsigma
     have = {s.pass_index for s in obj.sources}
-    missing, blended = [], []
+    unseen, blended = [], []
     x0, y0 = plane.offsets(obj.ra, obj.dec)
     for pi, ids in enumerate(passes):
         if pi in have:
@@ -1018,8 +1064,25 @@ def _absent_passes(
         if any(_hides(per_pass[pi][k], track_of.get(id(per_pass[pi][k])), obj) for k in near):
             blended.append(pi)
         else:
-            missing.append(pi)
-    return missing, blended
+            unseen.append(pi)
+    return (list(unseen) if bright else []), blended, unseen
+
+
+def _absence_pvalue(obj: TrackedObject, nsigma: float) -> float:
+    """Chance that a real source as bright as this track goes undetected in its unseen passes.
+
+    Each pass detects it unless noise pulls it under `nsigma`. Its true SNR is
+    taken as the median of its passes' measured SNRs less one sigma (passes
+    that caught a faint source caught it bright), so a source seen at SNR 6
+    may well vanish from a few passes, while one seen at SNR 9 is missed in 3
+    of 6 passes about once in 10^5.
+    """
+    unseen = len(obj.unseen_passes)
+    if unseen == 0:
+        return 1.0
+    p_miss = float(ndtr(nsigma - (float(np.median([s.snr for s in obj.sources])) - 1.0)))
+    covered = len(obj.sources) + len(obj.blended_passes) + unseen
+    return float(bdtrc(unseen - 1, covered, p_miss))  # P(at least `unseen` misses)
 
 
 def _caution_near_bright(objects: list[TrackedObject], plane: SkyPlane) -> None:
@@ -1363,7 +1426,7 @@ def find_motion(
             parallax=fit["plx"],
             parallax_err=fit["plx_err"],
         )
-        obj.missing_passes, obj.blended_passes = _absent_passes(
+        obj.missing_passes, obj.blended_passes, obj.unseen_passes = _absent_passes(
             obj, frames, passes, plane, nsigma, per_pass, trees, blend_arcsec, track_of
         )
         obj_span_yr = (obj.sources[-1].mjd - obj.sources[0].mjd) / DAYS_PER_YEAR
@@ -1384,10 +1447,18 @@ def find_motion(
             and bool(set.intersection(*(set(s.flux_by_detector) for s in obj.sources)))
         )
         needed_sigma = mover_sigma if len(obj.sources) >= 3 else 2 * mover_sigma
+        # A faint object may drop out of a few passes, but not out of most of
+        # those that observed its path, nor out of more than its brightness
+        # allows: in fields of many passes (7-9 near the ecliptic poles) noise
+        # peaks and faint stars line up by chance in 3 of them (stack "movers"
+        # at SNR ~6-9, no Gaia star under any position, seen in 3 of 6-9 passes).
+        seen = len(obj.sources) + len(obj.blended_passes)
         obj.is_mover = (
             obj.pm_significance >= needed_sigma
             and obj.pm_total * obj_span_yr >= pix
             and not obj.missing_passes
+            and len(obj.unseen_passes) <= seen
+            and _absence_pvalue(obj, nsigma) >= CALIB_OUTLIER_PVALUE
             and enough_passes
             and not (len(obj.sources) < 3 and any(_weak(s) for s in obj.sources))
         )

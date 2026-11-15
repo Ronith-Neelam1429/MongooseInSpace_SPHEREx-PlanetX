@@ -613,3 +613,162 @@ def test_marginal_detections_cannot_make_a_two_pass_mover():
     assert _weak(src(5, 17, 9.0))
     assert not _weak(src(5, 17, 30.0))  # bright, just partly covered by detectors
     assert not _weak(src(12, 17, 9.0))  # faint but solidly detected
+
+
+def _flipping_blend_frames(rng, layout):
+    """Frames of a static field plus one object whose light sits at spot A or at
+    spot B, 3.5" further north, depending on pass and detector (`layout[pass][det - 1]`).
+
+    That is how a blend of two stars looks to SPHEREx: which of the pair the
+    peak falls on depends on the frame's wavelength and PSF orientation.
+    """
+    stars = field_stars(rng, flux=(400, 2000))
+    e0, n0 = clear_spot(stars)
+    spots = {"A": (e0, n0, 0.0, 0.0, 1500.0), "B": (e0, n0 + 3.5, 0.0, 0.0, 1500.0)}
+    frames = []
+    for p, m0 in enumerate(PASS_MJDS):
+        for k in range(6 * len(layout[p])):
+            det = 1 + k % len(layout[p])
+            frames.append(make_frame(
+                stars + [spots[layout[p][det - 1]]], m0 + 0.5 * k, 0.6 + 0.7 * det, rng,
+                rot_deg=rng.uniform(0, 360), wcs_error=tuple(rng.normal(0, 0.7, 2)), detector=det,
+            ))
+    return frames, (e0, n0)
+
+
+def test_pass_whose_detections_disagree_gets_an_error_that_covers_them(monkeypatch):
+    # Per-detector stacks of a blend, as seen for a static G 15.9 Gaia star with
+    # a G 17.5 neighbour 3.1" away near Barnard's Star (stacks: 1.53"/yr at 9.5
+    # sigma): pass 1 finds spot A in all five detectors, pass 2 finds B in one,
+    # pass 3 in two. The pass means walk north without either star moving, and
+    # each pass's error was that of an isolated star. The passes' own
+    # detections disagree far beyond their errors, so they are not that precise.
+    from planetx.engine import motion
+
+    layout = ["AAAAA", "AAAAB", "AAABB"]
+    frames, (e0, n0) = _flipping_blend_frames(np.random.default_rng(23), layout)
+    o = nearest(find_motion(frames, stack=True), e0, n0 + 1.0)
+    assert len(o.sources) == 3
+    assert o.pm_significance < motion_sigma(), (o.pm_total, o.pm_err)
+    # The disagreeing passes carry it; the consistent one keeps its small error.
+    sig = [s.sigma_arcsec for s in o.sources]
+    assert sig[0] < 0.15 < min(sig[1:])
+    # Without the factor, the same frames gave a significant motion.
+    monkeypatch.setattr(motion, "_disagreement", lambda *args: 1.0)
+    frames, (e0, n0) = _flipping_blend_frames(np.random.default_rng(23), layout)
+    old = nearest(find_motion(frames, stack=True), e0, n0 + 1.0)
+    assert old.pm_significance >= motion_sigma()
+
+
+def _seven_window_frames(rng, stars, start, shown, flux):
+    """Seven passes 60 days apart, 4 frames each; a faint -8"/yr object in passes `shown`."""
+    frames = []
+    for p in range(7):
+        for k in range(4):
+            mjd = PASS_MJDS[0] + 60 * p + 3 * k
+            dt = (mjd - PASS_MJDS[0]) / 365.25
+            extra = [(start[0] - 8.0 * dt, start[1], 0.0, 0.0, flux)] if p in shown else []
+            frames.append(make_frame(stars + extra, mjd, WAVES[k], rng, rot_deg=rng.uniform(0, 360),
+                                     wcs_error=tuple(rng.normal(0, 0.7, 2))))
+    return frames
+
+
+def test_faint_track_seen_in_few_of_the_passes_covering_it_is_not_a_mover():
+    # Near the ecliptic poles a field has many passes. Faint sources (SNR < 10,
+    # where a pass without them is no evidence on its own) lined up in 3 of 7
+    # passes and made stack "movers" with no Gaia star under any of their
+    # positions. A real source at that brightness is seen in most passes.
+    rng = np.random.default_rng(7)
+    stars = field_stars(rng, flux=(400, 2000))
+    e0, n0 = clear_spot(stars, drift=(-8.0, 0.0))
+    r = find_motion(_seven_window_frames(rng, stars, (e0 + 4, n0), {0, 3, 6}, 24.5))
+    o = nearest(r, e0, n0)
+    span = (o.sources[-1].mjd - o.sources[0].mjd) / 365.25
+    # Everything else says "mover": significant, > 1 px, faint enough that no pass counts as missing.
+    assert len(o.sources) == 3 and o.pm_significance >= motion_sigma() and o.pm_total * span >= PIX
+    assert o.missing_passes == [] and o.unseen_passes == [1, 2, 4, 5]
+    assert not o.is_mover
+    # Seen in 4 of 7: more than half, but at SNR ~9 a real source is missed in
+    # 3 passes far less often than once in a thousand.
+    rng = np.random.default_rng(5)
+    stars = field_stars(rng, flux=(400, 2000))
+    e5, n5 = clear_spot(stars, drift=(-8.0, 0.0))
+    r = find_motion(_seven_window_frames(rng, stars, (e5 + 4, n5), {0, 2, 4, 6}, 24.5))
+    o = nearest(r, e5, n5)
+    assert len(o.sources) == 4 and o.unseen_passes == [1, 3, 5] and o.missing_passes == []
+    assert o.pm_significance >= motion_sigma()
+    assert not o.is_mover
+    # The same object in every pass is a mover, though at this brightness it
+    # may drop out of a pass or so.
+    rng = np.random.default_rng(7)
+    stars = field_stars(rng, flux=(400, 2000))
+    r = find_motion(_seven_window_frames(rng, stars, (e0 + 4, n0), set(range(7)), 24.5))
+    o = nearest(r, e0, n0)
+    assert o.is_mover and len(o.sources) >= 5 and len(o.unseen_passes) <= 1
+
+
+def motion_sigma() -> float:
+    """find_motion's default mover significance."""
+    import inspect
+
+    return inspect.signature(find_motion).parameters["mover_sigma"].default
+
+
+def test_disagreement_factor_leaves_ordinary_scatter_alone():
+    from planetx.engine.motion import _disagreement
+
+    rng = np.random.default_rng(22)
+    w = np.full(6, 1 / 0.4**2)
+    ordinary = [_disagreement(*rng.normal(0, 0.4, (2, 6)), w, np.zeros(2)) for _ in range(200)]
+    assert sum(f > 1 for f in ordinary) <= 2  # the gate opens at p < 1e-3
+    assert _disagreement(np.array([0.0]), np.array([0.0]), w[:1], np.zeros(2)) == 1.0
+    x = np.array([0.0, 0.0, 0.0, 3.5, 3.5, 3.5])
+    f = _disagreement(x, np.zeros(6), w, np.array([1.75, 0.0]))
+    assert f == pytest.approx(np.sqrt((6 * 1.75**2 / 0.4**2) / 10))
+
+
+def _pass_source(pass_index, plane, east, north, mjd, fluxes):
+    ra, dec = plane.sky(east, north)
+    return PassSource(pass_index, float(ra), float(dec), 0.12, mjd, 6, 6, 190.0, fluxes, [])
+
+
+def test_flux_at_the_noise_level_does_not_veto_a_link():
+    from planetx.engine.motion import _flux_compatible
+
+    plane = SkyPlane(331.1, -56.8)
+
+    def src(fluxes):
+        return _pass_source(0, plane, 0.0, 0.0, 60800.0, fluxes)
+
+    # Eps Indi B in detector 1 (website sample, 2026-11-14): 4.8 +- 6.8 and 17.4 +- 4.5.
+    assert _flux_compatible(src({"D1": (4.8, 6.8)}), src({"D1": (17.4, 4.5)}), 3.0)
+    # Non-positive, but consistent with the other pass's flux.
+    assert _flux_compatible(src({"D1": (-2.0, 6.0)}), src({"D1": (9.0, 4.0)}), 3.0)
+    # Well-measured fluxes 3.6x apart are still different objects.
+    assert not _flux_compatible(src({"D2": (5.0, 0.5)}), src({"D2": (18.0, 0.6)}), 3.0)
+    assert not _flux_compatible(src({"D2": (-1.0, 0.5)}), src({"D2": (18.0, 0.6)}), 3.0)
+
+
+def test_mover_split_into_two_static_halves_is_joined_again():
+    # Eps Indi B on the website's sample (detectors 1-3, 4 passes): passes 1-2
+    # and 3-4 are each < 2" apart and linked as "static", while passes 1 and 4
+    # are 7" apart. The halves must merge into one moving track although
+    # detector 1, where the T dwarf is at the noise level, read 4.8 in one pass
+    # and 17 in another (it came out as two 10 sigma static tracks under 1 px).
+    from planetx.engine.motion import _merge_tracks
+
+    plane = SkyPlane(331.1, -56.8)
+    mjds = [60806.0, 60958.0, 61157.0, 61311.0]
+    pm = (3.98, -2.47)
+    fluxes = [
+        {"D2": (31.5, 5.6), "D3": (32.5, 4.5)},
+        {"D2": (19.6, 5.6), "D3": (20.2, 4.0), "D1": (4.8, 6.8)},
+        {"D2": (25.4, 5.8), "D3": (19.7, 3.0), "D1": (17.4, 4.5)},
+        {"D2": (14.7, 6.1), "D3": (21.5, 3.9)},
+    ]
+    track = [
+        _pass_source(p, plane, pm[0] * (m - mjds[0]) / 365.25, pm[1] * (m - mjds[0]) / 365.25, m, f)
+        for p, (m, f) in enumerate(zip(mjds, fluxes))
+    ]
+    static, movers = _merge_tracks([track[:2], track[2:]], [], plane, 15.0, 3.0, 1e-3)
+    assert static == [] and len(movers) == 1 and len(movers[0]) == 4
