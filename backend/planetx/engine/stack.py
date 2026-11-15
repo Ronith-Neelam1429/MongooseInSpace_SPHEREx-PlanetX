@@ -53,7 +53,8 @@ def stack_pass(
     Each frame is background-subtracted first. The frames should come from one
     detector; they still span that detector's wavelengths, so the stack's
     `wavelength_um` is their weighted mean and its flux is that of a band
-    average (comparable with stacks of the same detector and mean wavelength).
+    average, comparable only with stacks of the same detector and mean
+    wavelength (the engine doesn't compare stack fluxes for variability).
     """
     num = np.zeros(shape)
     den = np.zeros(shape)

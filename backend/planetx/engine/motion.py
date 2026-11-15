@@ -34,7 +34,7 @@ import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 from scipy.spatial import cKDTree
-from scipy.special import chdtrc
+from scipy.special import chdtrc, chdtri
 
 from .detect import Detection, detect_sources, frame_background
 from .frames import Frame
@@ -148,8 +148,9 @@ class EngineResult:
     input_frames: list[Frame] = field(default_factory=list)
     input_passes: list[list[int]] = field(default_factory=list)  # into input_frames
     stacked: bool = False
-    # Factor applied to unsaturated pass-position errors, from this field's
-    # static stars (1.0 when there were too few to tell).
+    # Factor applied to unsaturated pass-position errors of bright sources
+    # (the top SNR band), from this field's static stars (1.0 when there were
+    # too few to tell); `notes` gives every band's.
     position_error_scale: float = 1.0
 
     @property
@@ -566,18 +567,33 @@ def _line_pvalue(sources: list[PassSource], plane: SkyPlane) -> float:
     return float(_line_pvalues(x, y, t, sig))
 
 
-def _error_scale(groups: list[list[PassSource]], plane: SkyPlane) -> tuple[float, int]:
+# A pass source seen in under half the frames that covered it, at low SNR, is a
+# star at the detection limit: which few frames caught it moves its pass mean
+# by more than its error says, so two such passes can fake a motion (a G = 19.4
+# Gaia star with no motion came out as a 6"/yr two-pass "mover" near Barnard's).
+WEAK_DETECT_FRAC = 0.5
+WEAK_SNR = 10.0
+
+
+def _weak(s: PassSource) -> bool:
+    """Whether a pass source is too marginal to anchor a two-pass motion."""
+    return s.n_cover > 1 and s.n_det < WEAK_DETECT_FRAC * s.n_cover and s.snr < WEAK_SNR
+
+
+def _error_scale(
+    groups: list[list[PassSource]], plane: SkyPlane, prior_scale: float = 1.0
+) -> tuple[float, int]:
     """Factor by which this field's static stars say unsaturated pass errors are off.
 
     How far static stars' pass positions stray from straight lines measures
     the field's real position errors (crowding, PSF, alignment differ from
     field to field). The squared factor is their chi2 per degree of freedom,
-    pulled towards 1 (the global error model) with weight `CALIB_PRIOR_DOF`
+    pulled towards `prior_scale` (1: the global error model) with weight `CALIB_PRIOR_DOF`
     so a sparse field can't swing it far. Tracks fitting a line worse than
     `CALIB_OUTLIER_PVALUE` at the current factor are left out (blends, chance
     links). Saturated stars have their own floor and are left out too.
 
-    Returns (factor, static tracks used); (1.0, 0) when there are too few.
+    Returns (factor, static tracks considered); (1.0, 0) when there are too few.
     """
     tracks = [
         g for g in groups
@@ -592,14 +608,53 @@ def _error_scale(groups: list[list[PassSource]], plane: SkyPlane) -> tuple[float
         t = np.array([s.mjd for s in g]) / DAYS_PER_YEAR
         chi2[k] = _fit_line(x, y, t, np.array([s.sigma_arcsec for s in g]))[4]
         dof[k] = 2 * (len(g) - 2)
-    scale2 = 1.0
-    for _ in range(5):
+    # Start from a robust estimate (each track's chi2 against the median chi2
+    # of its degrees of freedom), so errors stated far too small don't make
+    # every track look like an outlier; then iterate to convergence.
+    scale2 = float(np.median(chi2 / chdtri(dof, 0.5)))
+    keep = np.ones(len(tracks), bool)
+    for _ in range(50):
         keep = chdtrc(dof, chi2 / scale2) >= CALIB_OUTLIER_PVALUE
-        new = (chi2[keep].sum() + CALIB_PRIOR_DOF) / (dof[keep].sum() + CALIB_PRIOR_DOF)
-        if np.isclose(new, scale2):
+        if not keep.any():
+            break  # keep the robust estimate: it is never "errors are fine"
+        new = (chi2[keep].sum() + CALIB_PRIOR_DOF * prior_scale**2) / (dof[keep].sum() + CALIB_PRIOR_DOF)
+        if np.isclose(new, scale2, rtol=1e-6):
+            scale2 = new
             break
         scale2 = new
-    return float(np.sqrt(scale2)), int(keep.sum())
+    return float(np.sqrt(scale2)), len(tracks)
+
+
+# Pass sources are calibrated in bands of SNR: faint stars' errors are off by
+# more than bright ones' (partial detection near the limit, crowding), and one
+# factor per field, set mostly by the many brighter stars, left faint static
+# stars with motions at 5-10 sigma (Barnard 0.2 deg field).
+CALIB_SNR_EDGES = (15.0, 40.0)
+
+
+def _snr_band(snr: float) -> int:
+    return int(np.searchsorted(CALIB_SNR_EDGES, snr, side="right"))
+
+
+def _error_scales(groups: list[list[PassSource]], plane: SkyPlane) -> tuple[list[float], list[int]]:
+    """`_error_scale` per SNR band (`CALIB_SNR_EDGES`), each pulled towards the field's.
+
+    Tracks fall in the band of their median pass SNR. A band with too few
+    tracks uses the field's factor. Returns (factor per band, tracks per band).
+    """
+    field_scale, n_field = _error_scale(groups, plane)
+    scales, counts = [], []
+    for band in range(len(CALIB_SNR_EDGES) + 1):
+        mine = [g for g in groups if _snr_band(float(np.median([s.snr for s in g]))) == band]
+        scale, n = _error_scale(mine, plane, prior_scale=field_scale) if n_field else (1.0, 0)
+        scales.append(scale if n else field_scale)
+        counts.append(n)
+    return scales, counts
+
+
+def _band_labels() -> list[str]:
+    e = CALIB_SNR_EDGES
+    return [f"<{e[0]:g}"] + [f"{a:g}-{b:g}" for a, b in zip(e[:-1], e[1:])] + [f">={e[-1]:g}"]
 
 
 def _pm_floor(pm_x: np.ndarray, pm_y: np.ndarray, pm_err: np.ndarray) -> float:
@@ -883,23 +938,41 @@ def _pass_source_trees(
     return trees
 
 
-# A source hides another in its pass only if it is about as bright or brighter:
-# the blend's flux is the sum of both, and a much fainter neighbour would leave
-# the object detected as a peak of its own.
-BLEND_MIN_FLUX_RATIO = 0.7
+# Blend evidence: in the pass where the object hides, the source hiding it must
+# be brighter than in its other passes by at least this fraction of the
+# object's own flux (a blend's flux is the sum of both), and by 3 sigma.
+BLEND_MIN_EXCESS = 0.5
 
 
-def _hides(blocker: PassSource, obj: TrackedObject) -> bool:
-    """Whether `blocker` is bright enough, at the same detectors, to hide `obj`."""
+def _hides(blocker: PassSource, track: list[PassSource] | None, obj: TrackedObject) -> bool:
+    """Whether `blocker` shows the object's light added to its own.
+
+    `track` is the blocker's object across passes. It must have been seen in
+    at least two other passes, and in every detector where the object, the
+    blocker and those passes all have a flux, the blocker must be brighter by
+    ~the object's flux. A star that merely sits near the predicted spot, with
+    its usual brightness, is no evidence of a blend.
+    """
+    if track is None:
+        return False
+    others = [s for s in track if s.pass_index != blocker.pass_index]
+    if len(others) < 2:
+        return False
     own: dict[str, list[float]] = {}
     for s in obj.sources:
         for kind, (flux, _) in s.flux_by_detector.items():
             own.setdefault(kind, []).append(flux)
-    common = blocker.flux_by_detector.keys() & own.keys()
-    # Without a like-for-like comparison nothing says the two are one blend.
-    return bool(common) and all(
-        blocker.flux_by_detector[k][0] >= BLEND_MIN_FLUX_RATIO * float(np.median(own[k])) for k in common
-    )
+    checked = 0
+    for kind, (f_blend, e_blend) in blocker.flux_by_detector.items():
+        usual = [s.flux_by_detector[kind] for s in others if kind in s.flux_by_detector]
+        if kind not in own or len(usual) < 2:
+            continue
+        excess = f_blend - float(np.median([f for f, _ in usual]))
+        err = float(np.hypot(e_blend, np.median([e for _, e in usual])))
+        if excess < BLEND_MIN_EXCESS * float(np.median(own[kind])) or excess < 3 * err:
+            return False
+        checked += 1
+    return checked > 0
 
 
 def _absent_passes(
@@ -911,14 +984,16 @@ def _absent_passes(
     per_pass: list[list[PassSource]],
     trees: list[cKDTree | None],
     blend_arcsec: float,
+    track_of: dict[int, list[PassSource]],
 ) -> tuple[list[int], list[int]]:
     """Passes that covered the object's predicted position but have no source of it.
 
     Returns (missing, blended). A pass is "blended" when a source of that pass
-    at least about as bright as the object (`_hides`) lies within
-    `blend_arcsec` (plus 3 sigma of the prediction) of where the object should
-    be: that source's light hides it there, so its absence says nothing
-    against the track. Otherwise the pass is "missing". Only counts when the
+    lies within `blend_arcsec` (plus 3 sigma of the prediction) of where the
+    object should be and is brighter there than in its other passes by about
+    the object's flux (`_hides`): the object's light is in that source, so its
+    absence says nothing against the track. `track_of` maps id(source) to its
+    object's sources. Otherwise the pass is "missing". Only counts when the
     object is bright enough that it should have been detected there (best
     single-detection SNR >= 2 * nsigma).
     """
@@ -940,7 +1015,7 @@ def _absent_passes(
         radius = blend_arcsec + 3 * obj.pm_err * abs(dt)
         tree = trees[pi]
         near = tree.query_ball_point([float(px), float(py)], radius) if tree is not None else []
-        if any(_hides(per_pass[pi][k], obj) for k in near):
+        if any(_hides(per_pass[pi][k], track_of.get(id(per_pass[pi][k])), obj) for k in near):
             blended.append(pi)
         else:
             missing.append(pi)
@@ -1123,9 +1198,10 @@ def find_motion(
 
     With `stack=True`, each pass's aligned frames are co-added per detector
     and sources are found on the stacks: deeper (faint brown dwarfs), but
-    saturated-star and wavelength information is coarser (a stack's flux is a
-    band average at its frames' mean wavelength, so brightness is compared
-    only between stacks whose mean wavelengths match).
+    saturated-star and wavelength information is coarser. Stack mode does no
+    variability check: a stack's flux is a band average at its frames' mean
+    wavelength, which differs between passes by a few percent, and a pass
+    has one stack per detector, fewer pairs than `_variability` needs.
     """
     if not frames:
         raise ValueError("no frames")
@@ -1196,13 +1272,18 @@ def find_motion(
     singles = [g[0] for g in groups if len(g) == 1]
     # Calibrate position errors on this field's static stars before anything
     # (linking, fits, significances) relies on them.
-    error_scale, n_calib = _error_scale(multi, plane)
-    if n_calib:
+    band_scales, band_counts = _error_scales(multi, plane)
+    if sum(band_counts):
         for srcs in per_pass:
             for s in srcs:
                 if not any(d.saturated for d in s.detections):
-                    s.sigma_arcsec *= error_scale
-        notes.append(f"position errors scaled by {error_scale:.2f} to match {n_calib} static stars")
+                    s.sigma_arcsec *= band_scales[_snr_band(s.snr)]
+        bands = ", ".join(
+            f"{lab}: {f:.2f} ({n} stars)"
+            for lab, f, n in zip(_band_labels(), band_scales, band_counts)
+        )
+        notes.append(f"position errors scaled to match static stars, by SNR {bands}")
+    error_scale = band_scales[-1] if sum(band_counts) else 1.0
 
     # --- mover linking among sources seen in only one pass ---------------------
     # A single-pass source only counts as "missing" elsewhere if another pass
@@ -1236,6 +1317,7 @@ def find_motion(
     fwhms = [f.psf_fwhm_arcsec for f in frames if np.isfinite(f.psf_fwhm_arcsec)]
     blend_arcsec = float(np.median(fwhms)) if fwhms else 1.5 * pix
     trees = _pass_source_trees(per_pass, plane)
+    track_of = {id(src): g for g in multi + mover_groups for src in g}
     objects: list[TrackedObject] = []
     for g, kind in [(g, "static") for g in multi] + [(g, "mover") for g in mover_groups]:
         try:
@@ -1245,6 +1327,7 @@ def find_motion(
         # Nearby objects wobble with the Earth's orbit (WISE 0855: 0.44"), which
         # a straight line can't follow. Add parallax when it explains a poor
         # fit: one extra parameter must cut chi2 by > 4 (~2 sigma).
+        line_chi2_dof = fit["chi2"] / fit["dof"] if fit["dof"] > 0 else float("nan")
         if fit["dof"] >= 2 and fit["chi2"] > fit["dof"]:
             try:
                 plx_fit = fit_astrometry(g, plane, parallax=True)
@@ -1260,8 +1343,12 @@ def find_motion(
         ra0, dec0, ref = fit["ra"], fit["dec"], fit["ref_mjd"]
         pmx, pmy, pm_err = fit["pm_east"], fit["pm_north"], fit["pm_err"]
         chi2 = fit["chi2"] / fit["dof"] if fit["dof"] > 0 else float("nan")
-        if np.isfinite(chi2):
-            pm_err *= np.sqrt(max(1.0, chi2))  # a poor fit means larger errors
+        # A poor fit means larger errors. A parallax fit with at most one spare
+        # degree of freedom (3 passes: 6 numbers, 5 parameters) fits almost
+        # anything, so it doesn't get to remove the straight line's misfit.
+        inflation = line_chi2_dof if fit["plx"] is not None and fit["dof"] <= 1 else chi2
+        if np.isfinite(inflation):
+            pm_err *= np.sqrt(max(1.0, inflation))
         pm_err = float(np.hypot(pm_err, floor_pm))
         obj = TrackedObject(
             sources=sorted(g, key=lambda s: s.mjd),
@@ -1277,7 +1364,7 @@ def find_motion(
             parallax_err=fit["plx_err"],
         )
         obj.missing_passes, obj.blended_passes = _absent_passes(
-            obj, frames, passes, plane, nsigma, per_pass, trees, blend_arcsec
+            obj, frames, passes, plane, nsigma, per_pass, trees, blend_arcsec, track_of
         )
         obj_span_yr = (obj.sources[-1].mjd - obj.sources[0].mjd) / DAYS_PER_YEAR
         # A mover must beat its errors, shift by > ~1 px over its own baseline,
@@ -1302,6 +1389,7 @@ def find_motion(
             and obj.pm_total * obj_span_yr >= pix
             and not obj.missing_passes
             and enough_passes
+            and not (len(obj.sources) < 3 and any(_weak(s) for s in obj.sources))
         )
         var = _variability(_brightness_epochs(obj.sources, epoch_of_pass), calib_frac)
         obj.variability = var
