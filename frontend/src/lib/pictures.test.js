@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { separation } from './coords.js';
 import { toOffsets } from './evidence.js';
 import {
@@ -328,5 +328,33 @@ describe('zooming', () => {
     expect(r.frames.map((f) => f.key)).toEqual(['close', 'wide']);
     expect(r.frames[0].north).toBeCloseTo(r.views[0].at.north, 6);
     expect(r.frames[0].side).toBe(150);
+  });
+});
+
+describe('requests the server would refuse', () => {
+  it('fails clearly, without asking, for a patch with no usable position or an out-of-range side', async () => {
+    vi.stubEnv('VITE_API_BASE', 'http://api.test/api');
+    vi.resetModules();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const pictures = await import('./pictures.js');
+      const evidence = await import('./evidence.js');
+      await expect(pictures.fetchPatchFrames({ ra: NaN, dec: -56.8, side: 281 })).rejects.toThrow('no usable position');
+      await expect(evidence.fetchPatchSurveys({ ra: 331.07, dec: undefined, side: 281 })).rejects.toThrow('no usable position');
+      await expect(evidence.fetchPatchSurveys({ ra: 331.07, dec: -56.79, side: 1200 })).rejects.toThrow('the server takes 30–900″');
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.resetModules();
+    }
+  });
+
+  it('asks for Epsilon Indi B (a fast mover known to SIMBAD only here) with a patch the server takes', () => {
+    // SIMBAD J2000 position moved to today, as querySimbad returns it; no Gaia star joined.
+    const row = { ra: 331.0984, dec: -56.80126, gaia: null, simbad: { ra: 331.0984, dec: -56.80126, pmra: 3981.977, pmdec: -2466.832 } };
+    const patch = picturePatch(knownMotion(row, 2026.87), 2026.87);
+    expect([patch.ra, patch.dec, patch.side].every(Number.isFinite)).toBe(true);
+    expect(patch.side).toBeGreaterThanOrEqual(30);
+    expect(patch.side).toBeLessThanOrEqual(900);
   });
 });

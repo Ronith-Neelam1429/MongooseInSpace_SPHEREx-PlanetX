@@ -2,7 +2,7 @@
 // (2025 on). Pure logic: which SPHEREx exposures to show, where a catalogued star was on each
 // date, and the views the picture viewer steps through. The fetching is at the bottom.
 import { propagate } from './coords.js';
-import { fromOffsets, passSpan, surveyMarks, toOffsets } from './evidence.js';
+import { checkPatch, fromOffsets, passSpan, surveyMarks, toOffsets } from './evidence.js';
 import { mjdToYear } from './names.js';
 import { API_BASE, apiJson } from './services.js';
 
@@ -346,6 +346,7 @@ export function wantedKeys(views, currentKey, seen) {
 /** The SPHEREx exposures to show for a patch (pickFrames of GET /api/frames), or null without a backend. */
 export async function fetchPatchFrames(patch, { signal } = {}) {
   if (!API_BASE) return null;
+  checkPatch(patch, 1, CUTOUT_MAX_DEG * 3600);
   const body = await apiJson(
     `/frames?ra=${patch.ra.toFixed(6)}&dec=${patch.dec.toFixed(6)}&size_deg=${cutoutSizeDeg(patch.side)}`,
     { signal, timeoutMs: FETCH_TIMEOUT_MS },
