@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { API_BASE } from '../lib/services.js';
 import {
   CAUSES, PRECISION, RESULT_NAMES, SPECTRAL_KINDS, causeRows, confusionText, falsePositiveText, fetchResult,
-  fetchResultsIndex, fetchSurveyStats, gaiaPoints, generatedText, injectionText, lightCurve, precisionGain,
+  fetchResultsIndex, fetchSurveyStats, gaiaPoints, generatedText, injectionGrid, injectionText, lightCurve, precisionGain,
   rateText, spectralPoints, spectralText, stdDev, surveySummary,
 } from '../lib/results.js';
 import {
@@ -301,7 +301,7 @@ function Reach({ file, index }) {
                 <li><i className="rp-key rp-key-l90" aria-hidden="true" />nine in ten found</li>
               </ul>
             </Figure>
-            <Figure title="The same, in numbers" caption="Rows: brightness as a magnitude (bigger numbers are fainter stars). Columns: speed in arcseconds a year.">
+            <Figure title="The same, in numbers" caption="Share flagged as moving. Rows: brightness as a magnitude (bigger numbers are fainter stars). Columns: speed in arcseconds a year. The 0″ column is planted still stars: anything above 0% there is a false alarm.">
               <InjectionTable doc={doc} />
             </Figure>
           </div>
@@ -313,10 +313,8 @@ function Reach({ file, index }) {
 }
 
 function InjectionTable({ doc }) {
-  const grid = doc.grid || [];
-  const speeds = [...new Set(grid.map((g) => g.pm_arcsec_yr))].sort((a, b) => a - b);
-  const mags = [...new Set(grid.map((g) => g.mag_bin))].sort((a, b) => a - b);
-  const at = new Map(grid.map((g) => [`${g.pm_arcsec_yr}|${g.mag_bin}`, g]));
+  const { speeds, mags, cells } = injectionGrid(doc);
+  const at = new Map(cells.map((c) => [`${c.pm}|${c.mag}`, c]));
   return (
     // Focusable so a keyboard can scroll it sideways on a phone.
     <div className="rp-scroll" tabIndex={0} role="region" aria-label="Recovery table">
@@ -328,10 +326,9 @@ function InjectionTable({ doc }) {
         <tbody>
           {mags.map((m) => (
             <tr key={m}>
-              <th scope="row">{m}</th>
+              <th scope="row">{cells.find((c) => c.mag === m)?.label ?? m}</th>
               {speeds.map((v) => {
-                const g = at.get(`${v}|${m}`);
-                const f = g ? (Number.isFinite(g.recovered_fraction) ? g.recovered_fraction : g.n_recovered / g.n_injected) : null;
+                const f = at.get(`${v}|${m}`)?.fraction ?? null;
                 return <td key={v} className="tabular">{f == null || !Number.isFinite(f) ? '–' : `${Math.round(100 * f)}%`}</td>;
               })}
             </tr>

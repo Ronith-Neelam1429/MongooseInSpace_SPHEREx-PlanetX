@@ -261,23 +261,41 @@ export function edges(centres, log = false) {
  * pair (null where none was injected), and the 50% and 90% recovery lines: per magnitude, the
  * slowest speed at which the recovered fraction reaches the level, interpolated in log speed.
  */
-export function injectionHeatmap(doc) {
-  const grid = (doc?.grid || []).filter((g) => finite(g.pm_arcsec_yr, g.mag_bin) && g.pm_arcsec_yr > 0);
+export function injectionHeatmap(doc, mode = 'single') {
+  const { speeds, mags, cells } = injectionGrid(doc, mode, false);
+  const line = (level) => mags.map((mag) => ({ mag, pm: crossing(cells.filter((c) => c.mag === mag), level) }));
+  return { speeds, mags, cells, lines: { 50: line(0.5), 90: line(0.9) } };
+}
+
+/**
+ * Share of planted stars flagged as movers per speed and brightness, for one engine mode. The real
+ * file holds a grid per mode and per field (plus field "all") and labels magnitude bins as text
+ * ("11.5-12.5") with the centre in mag_ab; this takes the pooled grid. `withStill` keeps speed 0
+ * (planted still stars: their share is the false-mover rate).
+ */
+export function injectionGrid(doc, mode = 'single', withStill = true) {
+  let rows = doc?.grid || [];
+  if (rows.some((g) => g.mode != null)) rows = rows.filter((g) => g.mode === mode);
+  if (rows.some((g) => g.field != null)) rows = rows.filter((g) => g.field === 'all');
+  const magOf = (g) => (Number.isFinite(g.mag_ab) ? g.mag_ab : g.mag_bin);
+  const grid = rows.filter((g) => finite(g.pm_arcsec_yr, magOf(g)) && (withStill ? g.pm_arcsec_yr >= 0 : g.pm_arcsec_yr > 0));
   const speeds = [...new Set(grid.map((g) => g.pm_arcsec_yr))].sort((a, b) => a - b);
-  const mags = [...new Set(grid.map((g) => g.mag_bin))].sort((a, b) => a - b);
-  const at = new Map(grid.map((g) => [`${g.pm_arcsec_yr}|${g.mag_bin}`, g]));
+  const mags = [...new Set(grid.map(magOf))].sort((a, b) => a - b);
+  const at = new Map(grid.map((g) => [`${g.pm_arcsec_yr}|${magOf(g)}`, g]));
   const cells = [];
   for (const mag of mags) {
     for (const pm of speeds) {
       const g = at.get(`${pm}|${mag}`);
       if (!g) continue;
-      const f = Number.isFinite(g.recovered_fraction) ? g.recovered_fraction
-        : g.n_injected > 0 ? g.n_recovered / g.n_injected : null;
-      cells.push({ pm, mag, fraction: f, injected: g.n_injected, recovered: g.n_recovered });
+      // "Found" means flagged as a mover; recovered_fraction alone also counts sources found as still.
+      const f = Number.isFinite(g.flagged_fraction) ? g.flagged_fraction
+        : g.n_injected > 0 && Number.isFinite(g.n_flagged_mover) ? g.n_flagged_mover / g.n_injected
+          : Number.isFinite(g.recovered_fraction) ? g.recovered_fraction
+            : g.n_injected > 0 ? g.n_recovered / g.n_injected : null;
+      cells.push({ pm, mag, label: g.mag_bin, fraction: f, injected: g.n_injected, recovered: g.n_recovered });
     }
   }
-  const line = (level) => mags.map((mag) => ({ mag, pm: crossing(cells.filter((c) => c.mag === mag), level) }));
-  return { speeds, mags, cells, lines: { 50: line(0.5), 90: line(0.9) } };
+  return { speeds, mags, cells };
 }
 
 /** Slowest speed at which a row's recovered fraction first reaches `level` (log interpolation), or null. */
@@ -297,10 +315,11 @@ export function crossing(row, level) {
 export function injectionText(doc) {
   const s = doc?.summary || {};
   const parts = [];
-  if (Number.isFinite(s.pm_50)) parts.push(`half of the planted movers are found once they move ${s.pm_50}″ a year`);
-  if (Number.isFinite(s.pm_90)) parts.push(`nine in ten at ${s.pm_90}″ a year`);
+  const r1 = (v) => +v.toFixed(1);
+  if (Number.isFinite(s.pm_50)) parts.push(`half of the planted movers are found once they move ${r1(s.pm_50)}″ a year`);
+  if (Number.isFinite(s.pm_90)) parts.push(`nine in ten at ${r1(s.pm_90)}″ a year`);
   let text = parts.length ? `${parts.join(', and ')}` : null;
-  if (text && Number.isFinite(s.mag_50)) text += `; below magnitude ${s.mag_50} (fainter) most are lost`;
+  if (text && Number.isFinite(s.mag_50)) text += `; below magnitude ${r1(s.mag_50)} (fainter) most are lost`;
   return text ? `${text[0].toUpperCase()}${text.slice(1)}.` : null;
 }
 
