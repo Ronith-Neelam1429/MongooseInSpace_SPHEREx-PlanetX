@@ -70,7 +70,7 @@ function Progress({ job }) {
 }
 
 /** The motion engine: a run button, progress, then what moves or changes brightness, by name. */
-function Results({ motion, results, visits, hover, resume, onPick, onPoint, onRun, onRetryVisits }) {
+function Results({ motion, results, others, visits, hover, resume, onPick, onPoint, onRun, onRetryVisits, onToggleOthers }) {
   const r = motion.result;
   return (
     <section className="results">
@@ -129,6 +129,31 @@ function Results({ motion, results, visits, hover, resume, onPick, onPoint, onRu
                 })}
               </ul>
             )}
+          {r.objects.length > results.length && (
+            <p className="line">
+              <button type="button" className="textbtn" aria-expanded={Boolean(others)} onClick={onToggleOthers}>
+                {others ? 'Hide the other tracked objects' : `Show all ${count(r.objects.length)} tracked objects`}
+              </button>
+            </p>
+          )}
+          {others && (
+            <>
+              <p className="line dim">Not moving or changing beyond the error. Pick one to see its images in every pass.</p>
+              <ul className="rowlist">
+                {others.map(({ o, who }) => {
+                  const f = { kind: 'engine', obj: o };
+                  const name = displayName(who);
+                  return (
+                    <Row key={o.id} className="result" lit={sameObject(hover, f)} resume={sameObject(resume, f)} onPick={() => onPick(f)} onPoint={(p) => onPoint(p ? f : null)}>
+                      <span className="row-name" title={name}>{shortName(name)}</span>
+                      <span className="badge">{verdict(o)}</span>
+                      <span className="row-sub">Seen in {plural(o.track.length, 'pass', 'passes')}</span>
+                    </Row>
+                  );
+                })}
+              </ul>
+            </>
+          )}
           {r.notes.map((note) => <p key={note} className="line dim">{note}</p>)}
         </>
       )}
@@ -260,7 +285,7 @@ function FieldDetails({ sel, visits }) {
  * known objects; picking any object swaps the list for that object's card, with a way back.
  */
 export default function InfoPanel({
-  sel, simbad, gaia, visits, motion, known, results, focus, hover, resume, onPick, onPoint, onBack, onClose, onRetry,
+  sel, simbad, gaia, visits, motion, known, results, others, onToggleOthers, focus, hover, resume, onPick, onPoint, onBack, onClose, onRetry,
   onCopyLink, copied, playing, onTogglePlay, getYear, moversOnly, onToggleMovers,
 }) {
   if (focus) {
@@ -270,6 +295,8 @@ export default function InfoPanel({
           key={focus.kind === 'engine' ? `engine:${focus.obj.id}` : focus.obj.key}
           focus={focus}
           results={results}
+          others={others}
+          objects={motion.status === 'ok' ? motion.result.objects : null}
           field={motion.result?.field}
           onPick={onPick}
           onBack={onBack}
@@ -299,6 +326,8 @@ export default function InfoPanel({
         <Results
           motion={motion}
           results={results}
+          others={others}
+          onToggleOthers={onToggleOthers}
           visits={visits}
           hover={hover}
           resume={resume}

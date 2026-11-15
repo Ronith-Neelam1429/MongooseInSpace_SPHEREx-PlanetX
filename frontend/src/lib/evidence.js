@@ -6,7 +6,7 @@ import { API_BASE, runMotion } from './services.js';
 
 const DAYS_PER_YEAR = 365.25;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const OBSERVATORY = { twomass: '2MASS', allwise: 'AllWISE', catwise: 'CatWISE', neowise: 'NEOWISE' };
+const OBSERVATORY = { '2mass': '2MASS', allwise: 'AllWISE', catwise: 'CatWISE', neowise: 'NEOWISE' };
 const CATALOG = { gaia: 'Gaia DR3', simbad: 'SIMBAD', skybot: 'SkyBoT' };
 const COMPASS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
 
@@ -30,6 +30,28 @@ export function sameObject(objects, object) {
   let best = null, bestSep = SAME_OBJECT_ARCSEC / 3600;
   for (const o of objects) {
     const sep = separation(o.ra, o.dec, object.ra, object.dec);
+    if (sep <= bestSep) { best = o; bestSep = sep; }
+  }
+  return best;
+}
+
+/** A catalogued star and a tracked object are the same when within this distance (1.5 SPHEREx pixels). */
+const TRACKED_MATCH_ARCSEC = 9;
+
+/**
+ * The engine objects of a run that its list of results leaves out (the static ones), in the
+ * engine's order: listed on request so that any object's evidence can be opened.
+ */
+export function otherObjects(objects, shown) {
+  const ids = new Set(shown.map((o) => o.id));
+  return objects.filter((o) => !ids.has(o.id));
+}
+
+/** The tracked object of a run at a catalogued position (`ra`, `dec` today), or null. */
+export function trackedAt(objects, ra, dec) {
+  let best = null, bestSep = TRACKED_MATCH_ARCSEC / 3600;
+  for (const o of objects) {
+    const sep = separation(o.ra, o.dec, ra, dec);
     if (sep <= bestSep) { best = o; bestSep = sep; }
   }
   return best;

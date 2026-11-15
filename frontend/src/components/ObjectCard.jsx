@@ -4,12 +4,13 @@ import { FAST_ARCSEC_YR, displayName } from '../lib/names.js';
 import {
   archiveSentence, claim, compass, confidence, distanceText, measuredMotion, moonCrossing, motionsAgree, speed, verdict,
 } from '../lib/plain.js';
+import { trackedAt } from '../lib/evidence.js';
 import MotionEvidence from './MotionEvidence.jsx';
 
 const n = (v, d = 2) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
 const signed = (v, d) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`;
 const CATALOG = { gaia: 'Gaia', simbad: 'SIMBAD', skybot: 'SkyBoT' };
-const OBSERVATORY = { twomass: '2MASS', allwise: 'AllWISE', catwise: 'CatWISE', neowise: 'NEOWISE' };
+const OBSERVATORY = { '2mass': '2MASS', allwise: 'AllWISE', catwise: 'CatWISE', neowise: 'NEOWISE' };
 
 export const CloseIcon = () => (
   <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.25" /></svg>
@@ -122,12 +123,7 @@ function EngineCard({ o, who, field, onBack, onClose }) {
           </dl>
         </section>
 
-        <section className="evidence" aria-labelledby="evidence-title">
-          <h3 id="evidence-title">Evidence</h3>
-          <div className="evidence-body">
-            <EvidenceBoundary><MotionEvidence object={o} field={field} /></EvidenceBoundary>
-          </div>
-        </section>
+        <Evidence o={o} field={field} />
 
         <details className="more">
           <summary>Details</summary>
@@ -163,7 +159,19 @@ function EngineCard({ o, who, field, onBack, onClose }) {
   );
 }
 
-function KnownCard({ row, measured, onPick, onBack, onClose }) {
+/** The evidence section of a card: the SPHEREx images of one engine object. */
+function Evidence({ o, field }) {
+  return (
+    <section className="evidence" aria-labelledby="evidence-title">
+      <h3 id="evidence-title">Evidence</h3>
+      <div className="evidence-body">
+        <EvidenceBoundary><MotionEvidence object={o} field={field} /></EvidenceBoundary>
+      </div>
+    </section>
+  );
+}
+
+function KnownCard({ row, measured, tracked, field, onPick, onBack, onClose }) {
   const { simbad: o, gaia: s } = row;
   const fast = row.pm >= FAST_ARCSEC_YR;
   const source = [o && 'SIMBAD', s && 'Gaia'].filter(Boolean).join(' and ');
@@ -191,8 +199,11 @@ function KnownCard({ row, measured, onPick, onBack, onClose }) {
                 </dd>
               </>
             )}
+            {!measured && tracked && <><dt>Our result</dt><dd>{claim(tracked)} in the SPHEREx images: see the evidence below.</dd></>}
           </dl>
         </section>
+        {/* Static stars are not listed as results, but their images show what "not moving" looks like. */}
+        {!measured && tracked && field && <Evidence o={tracked} field={field} />}
         <details className="more">
           <summary>Details</summary>
           <dl className="kv">
@@ -209,13 +220,15 @@ function KnownCard({ row, measured, onPick, onBack, onClose }) {
 }
 
 /** The card for one selected object: an engine result (with its evidence) or a catalogued object. */
-export default function ObjectCard({ focus, results, field, onPick, onBack, onClose }) {
+export default function ObjectCard({ focus, results, others, objects, field, onPick, onBack, onClose }) {
   if (focus.kind === 'engine') {
-    const who = results.find((r) => r.o === focus.obj)?.who || { name: null, matches: [], checked: false };
+    const who = [...results, ...(others || [])].find((r) => r.o === focus.obj)?.who || { name: null, matches: [], checked: false };
     return <EngineCard o={focus.obj} who={who} field={field} onBack={onBack} onClose={onClose} />;
   }
   const row = focus.obj;
   const names = new Set([row.name, row.gaia && `Gaia DR3 ${row.gaia.id}`]);
   const measured = results.find(({ who }) => who.matches.some((x) => names.has(x.name)));
-  return <KnownCard row={row} measured={measured} onPick={onPick} onBack={onBack} onClose={onClose} />;
+  // After a run, the tracked object at this star's position, whatever the engine made of it.
+  const tracked = objects ? trackedAt(objects, row.ra, row.dec) : null;
+  return <KnownCard row={row} measured={measured} tracked={tracked} field={field} onPick={onPick} onBack={onBack} onClose={onClose} />;
 }

@@ -129,6 +129,12 @@
 .ev-swatch-catalog { border-top-color: var(--signal); }
 .ev-swatch-band { height: 8px; border: 0; background: rgba(244, 244, 242, 0.22); }
 
+/* Phones: the panel is a bottom sheet about half the screen tall (App.css). An image as wide as
+   the sheet cannot be seen whole there, so it is capped to what the sheet shows under its header. */
+@media (max-width: 760px) {
+  .ev-sky { width: min(100%, max(180px, calc(48dvh - 170px))); margin-inline: auto; }
+}
+
 .ev :focus-visible { outline: 1px solid var(--fg); outline-offset: 2px; }
 
 @media (prefers-reduced-motion: reduce) {

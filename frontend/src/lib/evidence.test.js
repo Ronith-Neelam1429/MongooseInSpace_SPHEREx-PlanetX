@@ -1,7 +1,31 @@
 import { afterEach, describe as suite, expect, it, vi } from 'vitest';
 import {
-  brightnessSeries, compass, dayMonthYear, describe, measure, monthYear, motionChart, sameObject, ticks,
+  brightnessSeries, compass, dayMonthYear, describe, measure, monthYear, motionChart, otherObjects, sameObject, ticks,
+  trackedAt,
 } from './evidence.js';
+
+suite('objects to open the evidence of', () => {
+  const objs = [
+    { id: 0, kind: 'mover', ra: 10, dec: 20 },
+    { id: 1, kind: 'static', ra: 10.001, dec: 20 },
+    { id: 2, kind: 'static', ra: 10.003, dec: 20.001, is_variable: true },
+    { id: 3, kind: 'static', ra: 10.01, dec: 20 },
+  ];
+
+  it('lists the tracked objects the results leave out, in the engine order', () => {
+    expect(otherObjects(objs, [objs[0], objs[2]]).map((o) => o.id)).toEqual([1, 3]);
+    expect(otherObjects(objs, objs)).toEqual([]);
+    expect(otherObjects(objs, [])).toHaveLength(4);
+  });
+
+  it('finds the tracked object at a catalogued position: the nearest within 9″', () => {
+    // 0.001 deg of RA at dec 20 is 3.4″; 10.0005 lies between objects 0 and 1, nearer neither by much.
+    expect(trackedAt(objs, 10.0009, 20)?.id).toBe(1);
+    expect(trackedAt(objs, 10.0001, 20)?.id).toBe(0);
+    expect(trackedAt(objs, 10.006, 20)).toBeNull(); // 10″ from object 2 (and farther from the rest)
+    expect(trackedAt([], 10, 20)).toBeNull();
+  });
+});
 
 // Barnard's Star as the backend reported it (cached field 269.448 +4.739), images left out.
 const pass = (index, start, end, point, scatter) => ({
@@ -96,7 +120,7 @@ suite('describe', () => {
 
   it('adds the archival track when older surveys confirm a visible mover', () => {
     const v = describe(object({
-      archive: { verdict: 'confirmed', pm_ra_cosdec: -0.82, pm_dec: 10.362, pm_err: 0.029, baseline_yr: 26.6, observatories: ['spherex', 'twomass'] },
+      archive: { verdict: 'confirmed', pm_ra_cosdec: -0.82, pm_dec: 10.362, pm_err: 0.029, baseline_yr: 26.6, observatories: ['spherex', '2mass'] },
     }), barnardEvidence());
     expect(v.headline).toBe('It moved.');
     expect(v.lines[3]).toBe('Positions from 2MASS, going back 27 years, lie on the same track: 10.39″ per year.');
@@ -254,7 +278,7 @@ suite('motionChart', () => {
   it('adds the catalogue prediction and the archival refit through the same point', () => {
     const c = motionChart(object({
       matches: [{ catalog: 'gaia', name: 'Barnard’s Star', sep_arcsec: 0.4, pm_ra_cosdec: -0.8, pm_dec: 10.36 }],
-      archive: { verdict: 'confirmed', pm_ra_cosdec: -0.82, pm_dec: 10.362, pm_err: 0.029, baseline_yr: 26.6, observatories: ['spherex', 'twomass', 'allwise'] },
+      archive: { verdict: 'confirmed', pm_ra_cosdec: -0.82, pm_dec: 10.362, pm_err: 0.029, baseline_yr: 26.6, observatories: ['spherex', '2mass', 'allwise'] },
     }), barnardEvidence());
     expect(c.lines.map((l) => [l.kind, l.label])).toEqual([
       ['fit', 'SPHEREx fit'], ['archive', 'with 2MASS and AllWISE'], ['catalog', 'Gaia DR3 catalogue'],
