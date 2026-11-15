@@ -1,0 +1,25 @@
+# Render Blueprint: the API and the survey worker in ONE service. A Render disk attaches
+# to a single service, and the survey queue is a SQLite file (WAL) that cannot be shared
+# over a network, so a separate worker service could not see the DB. See docs/DEPLOY.md.
+services:
+  - type: web
+    name: planetx-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter            # persistent disks need a paid plan
+    healthCheckPath: /api/health
+    disk:
+      name: planetx-data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: PLANETX_CACHE_DIR
+        value: /data/cache
+      - key: PLANETX_DB
+        value: /data/survey.sqlite
+      - key: PLANETX_CACHE_MAX_MB
+        value: "6144"        # below the 10 GB disk: leaves room for the SQLite DB
+      - key: PLANETX_CORS_ORIGINS
+        value: https://ronith-neelam1429.github.io   # the Pages origin: scheme+host, no path
+      - key: PLANETX_RUN_WORKER
+        value: "1"           # set to 0 for an API-only service
