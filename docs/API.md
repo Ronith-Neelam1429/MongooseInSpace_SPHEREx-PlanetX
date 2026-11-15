@@ -158,6 +158,40 @@ curl 'http://127.0.0.1:8000/api/motion/evidence/surveys?ra=269.4492&dec=4.7297&s
 # Barnard's Star: 2MASS 2000-05-28 shows it ~4.5' south of its SPHEREx position
 ```
 
+### `GET /api/spectrum?ra=&dec=&pmra=&pmdec=&epoch=`
+A SPHEREx spectrum of one object, measured on the fly (`SpectrumResponse`). A background
+job like `/api/motion`: **poll** the same URL until `status` is `"done"` or `"failed"`
+(`stage`: `queued | listing | measuring`, `frames_done / frames_total`).
+- `pmra`, `pmdec`: proper motion in mas/yr (RA component includes cos dec), default 0,
+  at most 20,000. `epoch`: Julian year of `ra`/`dec` (2016.0 for Gaia DR3), default now;
+  ignored without a motion. The aperture follows the object to each exposure's date.
+- The position is not snapped (the aperture must sit on the object); repeat requests within
+  0.036" share one run. Results are kept for an hour; a run nobody polls for 30 s is dropped.
+- Exposures: every one already in the cutout cache at this position, topped up to 12 per
+  detector with new downloads spread over time (~72 x 4 MB on first use, about a minute;
+  seconds afterwards; asking again later downloads nothing new). Each exposure sees the
+  object at its own wavelength, so ~12 per detector fill about half of its 17 bands.
+- Photometry (`planetx/spherex/spectrum.py`): 1.5-pixel (9.2") aperture, background from a
+  4-8 pixel annulus, aperture correction from the file's EPSF, wavelength from WCS-WAVE,
+  flux density in **mJy** (MJy/sr x pixel solid angle), errors from VARIANCE plus 2% in
+  quadrature. An exposure with any `PHOTOMETRY_BAD_FLAGS` (or OVERFLOW) pixel in the
+  aperture is left out: `counts.saturated` for OVERFLOW/BLOOM/NONLINEAR, else `counts.masked`.
+  `result.saturated` is true when most exposures were saturated (Barnard's Star: all).
+- `result.points`: one per measured exposure; `result.bands`: the 102-band grid (6 detectors x
+  17 log-spaced bands), robustly combined, only bands with data.
+- `result.features`: depth of water (1.4, 1.9, 2.7 um) and methane (1.6-1.7, 2.2-2.4,
+  3.3 um) absorption against a power-law continuum through two windows on the flux peaks
+  (or a Rayleigh-Jeans slope from one window when the other is missing or not significant).
+  `detected` means depth >= 0.15 at >= 3 sigma; `null` when the bands were not measured.
+  `suggestion`/`summary` say what the features *suggest* (`brown_dwarf` for methane plus
+  water), never what the object is. All passes are combined (a variable mixes its states)
+  and a neighbour within ~10" adds its light.
+
+```sh
+curl 'http://127.0.0.1:8000/api/spectrum?ra=331.04415&dec=-56.78284&pmra=3982&pmdec=-2467&epoch=2000'
+# Eps Indi B: T-dwarf shape (J/H/K peaks, deep 3.3 um methane, 4 um peak): "suggests a cool brown dwarf"
+```
+
 ## Errors
 
 | Status | Meaning |
@@ -166,7 +200,7 @@ curl 'http://127.0.0.1:8000/api/motion/evidence/surveys?ra=269.4492&dec=4.7297&s
 | 404 | IRSA has no cutout for this file at this position (e.g. outside the file) |
 | 422 | Parameter missing or out of range (FastAPI validation body) |
 | 502 | IRSA failed after retries (`detail` gives the reason) |
-| 503 | Too many IRSA downloads in flight, or too many motion runs waiting; retry after `Retry-After` seconds |
+| 503 | Too many IRSA downloads in flight, or too many motion or spectrum runs waiting; retry after `Retry-After` seconds |
 
 ## Pixel masking
 
