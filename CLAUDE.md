@@ -158,6 +158,23 @@ Work lands on `main` via feature branches (data connections, backend API, survey
   and brighter by >= half the mover's flux); a 2-measured-pass track with a pass seen in < half its frames at
   SNR < 10 cannot be a mover; 2-pass movers need 10 sigma.
 
+## Survey-scale results (2026-11-15; `results/*.json`, contract `docs/RESULTS.md`, website "Findings" page)
+- Gaia check (`tools/gaia_validation.py`, 15 fields, 7,581 objects): 0 of 5,701 Gaia-static stars called movers; median
+  |SPHEREx - Gaia| 0.25"/yr; pull std 0.95 (errors honest). 2-pass tracks' errors are ~1.4x too small.
+- False-mover audit (`tools/false_mover_audit.py`, 36 fields x single/stack): 0 Gaia-static movers. 67 Gaia-static
+  near-misses (>= 5 sigma, < 1 px) are stopped only by the 1 px bar: keep it. Causes: other 29, blend 13, low_snr 12.
+- Injection (`tools/injection_recovery.py`, 4 fields): bright movers 50% found at 5"/yr, 90% at 7"/yr; mag_50 17.2;
+  0 of 422 static injections flagged. Stack-mode errors ~20% too small, single-frame ~20% too large.
+- Spectra (`tools/brown_dwarf_search.py`): known T dwarfs methane/water depth 0.7-0.96 vs reference stars <= 0.07; the NEP
+  movers can't be checked yet (detectors 2 and 5 only there, no methane bands). R Dra period 207-287 d (< 2 cycles seen).
+- Verdict per object (`classify/reliability.py`): moving (confirmed/candidate) / not_moving / fake_motion + cause / unsure.
+- Gaia (gea.esac.esa.int) refused connections all night: tools fall back to IRSA Gator `gaia_dr3_source`; the survey
+  analyses patches anyway and requeues them (`requeue-unchecked`) once Gaia answers.
+- Open: slow movers (< ~4.3-5.6"/yr) are never flagged however significant (1 px bar; a single-frame >= 3-pass
+  >= 10 sigma exception looks safe but is unchecked); bright stars in crowded stacks keep 5-10 sigma sub-pixel fake
+  motion (per-detector offsets?); saturated stars are missed in stacks; `pipeline._load_frames` drops IRSA-busy
+  cutouts without retrying, so results vary run to run; the survey fails patches during IRSA SIA outages.
+
 ## Engine in the website (2026-11-14)
 - Every object card opens with telescope pictures oldest first (2MASS ~2000, WISE ~2010, SPHEREx passes), with
   two zooms ("SPHEREx passes" / "25 years"); catalogued stars get pictures before any engine run
