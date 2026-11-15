@@ -8,10 +8,13 @@ import pytest
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from fastapi.testclient import TestClient
+from planetx import pipeline
 from planetx.api import motion
 from planetx.api.app import app
 from planetx.api.schemas import Visit
-from planetx.observatories import refine_objects
+from planetx.classify import CatalogError, CatalogObject, check_objects
+from planetx.config import Settings
+from planetx.observatories import refine_objects, sources
 from planetx.spherex import archive, cutouts
 from synthetic import make_mef
 
@@ -72,7 +75,7 @@ class _Inline:
 
 @pytest.fixture
 def fakes(monkeypatch, tmp_path):
-    """Fake archive + cutout cache; jobs run inline; the archival check stays off the network."""
+    """Fake archive + cutout cache; jobs run inline; SPHEREx only, so no cross-check service is called."""
     rng = np.random.default_rng(7)
     # Fixed stars on a jittered grid, none within 40" of the mover's path (the synthetic
     # PSF is 3.5 px wide, so a closer star would blend with it).
@@ -102,8 +105,8 @@ def fakes(monkeypatch, tmp_path):
     monkeypatch.setattr(archive, "query_visits", query_visits)
     monkeypatch.setattr(cutouts, "cached_cutout", cached_cutout)
     monkeypatch.setattr(motion, "_runner", _Inline())
-    monkeypatch.setattr(motion, "LIST_RETRY_WAITS_S", (0.0, 0.0))
-    monkeypatch.setattr(motion, "refine_objects", lambda objs: refine_objects(objs, observatories="spherex"))
+    monkeypatch.setattr(pipeline, "LIST_RETRY_WAITS_S", (0.0, 0.0))
+    monkeypatch.setattr(sources, "settings", Settings(observatories="spherex"))
     motion._jobs.clear()
     yield state
     motion._jobs.clear()
@@ -128,8 +131,59 @@ def test_run_finds_the_planted_mover_and_no_other(fakes):
     assert [t["date"] for t in mover["track"]] == sorted(t["date"] for t in mover["track"])
     assert len(mover["track"]) == 3
     assert mover["archive"]["verdict"] == "spherex_only"
+    # SPHEREx-only mode consults no catalogue, so nothing is named or classified.
+    assert all((o["name"], o["classification"], o["matches"]) == (None, None, []) for o in result["objects"])
     assert [o["id"] for o in result["objects"]] == list(range(len(result["objects"])))
     assert sum(o["kind"] == "static" for o in result["objects"]) >= 30
+
+
+def _with_catalogues(monkeypatch, gaia, simbad=()):
+    """Turn the catalogue check on with fake Gaia/SIMBAD answers (the archival refit stays SPHEREx-only)."""
+
+    def fetch(rows):
+        def answer(ra, dec, radius_arcsec):
+            if isinstance(rows, Exception):
+                raise rows
+            return list(rows)
+        return answer
+
+    monkeypatch.setattr(sources, "settings", Settings(observatories="multi"))
+    monkeypatch.setattr(pipeline, "refine_objects", lambda objs, observatories: refine_objects(objs, observatories="spherex"))
+    monkeypatch.setattr(pipeline, "check_objects", lambda objs, fused, pixel: check_objects(
+        objs, fused, pixel, fetch_gaia=fetch(gaia), fetch_simbad=fetch(simbad),
+        fetch_skybot=lambda ra, dec, radius, mjd: [],
+    ))
+
+
+def test_catalogue_check_names_and_classifies_the_objects(fakes, monkeypatch):
+    # A Gaia star with the planted mover's motion, at its place in 2016.0 (Gaia's date).
+    years = (PASS_MJDS[0] - 57388.5) / 365.25
+    start = _offset(-60 - MOVER_PM[0] * years, -40 - MOVER_PM[1] * years)
+    fast = CatalogObject("gaia", "Gaia DR3 42", *start, 57388.5, MOVER_PM[0], MOVER_PM[1], 9.0, "High proper-motion star")
+    _with_catalogues(monkeypatch, gaia=[fast])
+    result = client.get("/api/motion", params=PARAMS).json()["result"]
+    mover = result["objects"][0]
+    assert (mover["kind"], mover["classification"], mover["name"]) == ("mover", "known_star", "Gaia DR3 42")
+    (match,) = mover["matches"]
+    assert match["catalog"] == "gaia" and match["kind"] == "High proper-motion star" and match["sep_arcsec"] < 3
+    assert (match["pm_ra_cosdec"], match["pm_dec"], match["magnitude"]) == (MOVER_PM[0], MOVER_PM[1], 9.0)
+    rest = result["objects"][1:]
+    assert all(o["kind"] == "static" and o["classification"] == "static" and o["name"] is None for o in rest)
+
+
+def test_mover_no_catalogue_knows_is_an_unknown_candidate(fakes, monkeypatch):
+    _with_catalogues(monkeypatch, gaia=[])
+    mover = client.get("/api/motion", params=PARAMS).json()["result"]["objects"][0]
+    assert (mover["kind"], mover["classification"], mover["name"]) == ("mover", "unknown_candidate", None)
+
+
+def test_catalogue_outage_does_not_fail_the_run(fakes, monkeypatch):
+    _with_catalogues(monkeypatch, gaia=CatalogError("Gaia returned HTTP 503"))
+    body = client.get("/api/motion", params=PARAMS).json()
+    assert body["status"] == "done"
+    assert body["result"]["objects"][0]["kind"] == "mover"
+    assert all(o["classification"] is None for o in body["result"]["objects"])
+    assert any(n.startswith("Gaia unavailable (Gaia returned HTTP 503)") for n in body["result"]["notes"])
 
 
 def test_engine_data_is_kept_for_the_newest_runs_only(fakes, monkeypatch):
@@ -244,10 +298,10 @@ def test_rejects_bad_input(fakes, params):
 
 def test_pick_visits_samples_each_pass_and_detector_evenly():
     visits = _visits(per_pass_detector=20, detectors=(1, 2, 3, 4, 5, 6))
-    picked = motion.pick_visits(visits)
-    assert len(picked) == 3 * 3 * motion.FRAMES_PER_PASS_DETECTOR
+    picked = pipeline.pick_visits(visits)
+    assert len(picked) == 3 * 3 * pipeline.FRAMES_PER_PASS_DETECTOR
     assert {v.detector for v in picked} == {1, 2, 3}
     first_d1 = [v for v in picked if v.detector == 1 and v.mjd < PASS_MJDS[1]]
     assert first_d1[0].obs_id == "p0k0" and first_d1[-1].obs_id == "p0k19"  # spans the whole pass
-    assert motion.pick_visits(list(reversed(visits))) == picked  # independent of input order
+    assert pipeline.pick_visits(list(reversed(visits))) == picked  # independent of input order
 
