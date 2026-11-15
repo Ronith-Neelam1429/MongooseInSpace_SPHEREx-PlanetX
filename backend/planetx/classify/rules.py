@@ -61,6 +61,10 @@ MAX_BODY_SPAN_DAYS = 0.1
 BODY_MATCH_ARCSEC = 10.0
 # Distance assumed for the parallax allowance when SkyBoT gives none.
 BODY_MIN_AU = 0.05
+# The nearest body the asteroid check allows for. Nearer bodies move several pixels
+# during one SPHEREx exposure, so the engine does not see them as point sources;
+# without this floor a 0.005 au body would be matched anywhere within 33'.
+NEAREST_BODY_AU = 0.02
 
 CLASSIFICATIONS = ("known_star", "known_asteroid", "variable_star", "artifact", "unknown_candidate", "static")
 
@@ -270,13 +274,29 @@ def body_epochs(passes: Sequence) -> list[PositionLike]:
     return out
 
 
+@dataclass(frozen=True)
+class AsteroidMatch:
+    """A known body matched to a SPHEREx position, and how its position was compared."""
+
+    match: Match
+    # True: moved to where SPHEREx saw it. False: compared at its geocentric
+    # position within the largest parallax (no SPHEREx position, or no distance).
+    corrected: bool
+    # SkyBoT gave no distance, so the allowance assumed a body BODY_MIN_AU away.
+    assumed_distance: bool
+
+
+def _largest_parallax(distance_au: float) -> float:
+    return parallax_arcsec(SPHEREX_MAX_GEOCENTRIC_KM, max(distance_au, NEAREST_BODY_AU))
+
+
 def asteroid_match(
     ra: float,
     dec: float,
     bodies: Sequence[SolarSystemBody],
     observer_km: Sequence[float] | None = None,
     observer_spread_km: float = 0.0,
-) -> Match | None:
+) -> AsteroidMatch | None:
     """The known body that a SPHEREx position can be, if any: the nearest one within its tolerance.
 
     `bodies` are geocentric (SkyBoT). With `observer_km`, SPHEREx's geocentric
@@ -284,22 +304,26 @@ def asteroid_match(
     only `observer_spread_km` (how far SPHEREx moved between the frames averaged
     into this position) is left as parallax allowance. Without it the allowance is
     the largest parallax SPHEREx's orbit can give at the body's distance: 24" at
-    0.4 au, 8' at 0.02 au.
+    0.4 au, 8' at NEAREST_BODY_AU and below. The spread allowance never exceeds that.
     """
-    best: Match | None = None
+    best: AsteroidMatch | None = None
     for body in bodies:
         distance = body.geocentric_au if body.geocentric_au and body.geocentric_au > 0 else None
         if observer_km is not None and distance is not None:
             body_ra, body_dec = from_observer(body.ra, body.dec, distance, observer_km)
-            allowance = parallax_arcsec(observer_spread_km, distance)
+            allowance = min(parallax_arcsec(observer_spread_km, distance), _largest_parallax(distance))
         else:
             body_ra, body_dec = body.ra, body.dec
-            allowance = parallax_arcsec(SPHEREX_MAX_GEOCENTRIC_KM, distance or BODY_MIN_AU)
+            allowance = _largest_parallax(distance or BODY_MIN_AU)
         sep = float(_separation_arcsec(body_ra, body_dec, ra, dec))
         if sep > BODY_MATCH_ARCSEC + allowance + (body.position_err_arcsec or 0.0):
             continue
-        if best is None or sep < best.sep_arcsec:
-            best = Match(catalog="skybot", name=body.name, kind=body.kind, sep_arcsec=sep, magnitude=body.v_mag)
+        if best is None or sep < best.match.sep_arcsec:
+            best = AsteroidMatch(
+                match=Match(catalog="skybot", name=body.name, kind=body.kind, sep_arcsec=sep, magnitude=body.v_mag),
+                corrected=observer_km is not None and distance is not None,
+                assumed_distance=distance is None,
+            )
     return best
 
 

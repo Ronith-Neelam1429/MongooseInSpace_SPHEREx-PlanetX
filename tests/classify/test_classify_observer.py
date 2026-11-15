@@ -72,6 +72,15 @@ def test_mean_position_and_its_spread():
         mean_position([])
 
 
+def test_mean_position_uses_the_pass_weights():
+    # The pass position leans 3:1 to the first detection; so does SPHEREx's position for it.
+    mean, spread = mean_position([(7000.0, 0.0, 0.0), (-7000.0, 0.0, 0.0)], weights=[3.0, 1.0])
+    assert mean == pytest.approx((3500.0, 0.0, 0.0)) and spread == pytest.approx(10500.0)
+    for bad in ([1.0], [-1.0, 2.0], [0.0, 0.0], [math.nan, 1.0]):
+        with pytest.raises(ValueError):
+            mean_position([(1.0, 0.0, 0.0), (2.0, 0.0, 0.0)], weights=bad)
+
+
 def horizons_json(jds_and_xyz, error=None):
     rows = "\n".join(
         f"{jd:.9f}, A.D. 2025-Nov-21 00:00:00.0000,  {x:.15E}, {y:.15E}, {z:.15E},"
@@ -131,53 +140,71 @@ def horizons(monkeypatch):
 
 def test_positions_are_fetched_once_and_then_come_from_the_disk_cache(tmp_path, horizons):
     asked, _ = horizons
-    cache = tmp_path / "horizons" / "spherex.json"
-    first = spherex_geocentric_km([MJD, MJD + 0.001, MJD], cache_path=cache)
+    cache = tmp_path / "horizons"
+    first = spherex_geocentric_km([MJD, MJD + 0.001, MJD], cache_dir=cache)
     assert len(asked) == 1 and asked[0] == pytest.approx([2461000.5, 2461000.501])  # each time asked once
     assert first[0] == pytest.approx((7000.0, 0.5, 0.0)) and first[1] == pytest.approx((7000.0, 0.501, 0.0))
     assert np.array_equal(first[0], first[2])
-    again = spherex_geocentric_km([MJD + 0.001, MJD], cache_path=cache)
+    again = spherex_geocentric_km([MJD + 0.001, MJD], cache_dir=cache)
     assert len(asked) == 1 and np.array_equal(again[0], first[1])  # no new request
-    spherex_geocentric_km([MJD, MJD + 0.002], cache_path=cache)
+    spherex_geocentric_km([MJD, MJD + 0.002], cache_dir=cache)
     assert asked[1] == pytest.approx([2461000.502])  # only the new time
-    assert spherex_geocentric_km([], cache_path=cache) == [] and len(asked) == 2
+    assert spherex_geocentric_km([], cache_dir=cache) == [] and len(asked) == 2
+
+
+def test_the_cache_is_one_small_readable_file_per_day(tmp_path, horizons):
+    asked, _ = horizons
+    cache = tmp_path / "horizons"
+    spherex_geocentric_km([MJD + 0.5, MJD + 1.25, MJD + 1.75], cache_dir=cache)
+    assert len(asked) == 1  # one request across days
+    files = sorted(p.name for p in cache.iterdir())
+    assert files == ["61000.json", "61001.json"]  # no stray temp files either
+    assert len(json.loads((cache / "61001.json").read_text())) == 2
+    assert all((cache / f).stat().st_mode & 0o777 == 0o644 for f in files)
+    # A new time on day 61000 rewrites only that day's file.
+    before = (cache / "61001.json").stat().st_mtime_ns
+    spherex_geocentric_km([MJD + 0.75], cache_dir=cache)
+    assert (cache / "61001.json").stat().st_mtime_ns == before
+    assert len(json.loads((cache / "61000.json").read_text())) == 2
 
 
 def test_many_times_are_split_into_several_requests(tmp_path, horizons, monkeypatch):
     asked, _ = horizons
     monkeypatch.setattr(observer, "MAX_EPOCHS_PER_CALL", 2)
-    out = spherex_geocentric_km([MJD + 0.01 * k for k in range(5)], cache_path=tmp_path / "c.json")
+    out = spherex_geocentric_km([MJD + 0.01 * k for k in range(5)], cache_dir=tmp_path / "c")
     assert [len(a) for a in asked] == [2, 2, 1] and len(out) == 5
 
 
 def test_a_horizons_failure_raises_and_caches_nothing(tmp_path, horizons):
     asked, state = horizons
-    cache = tmp_path / "c.json"
+    cache = tmp_path / "c"
     state["fail"] = Response(400, {"result": "No ephemeris", "error": "No ephemeris for target prior to 2025-MAR-12"})
     with pytest.raises(CatalogError, match="prior to 2025-MAR-12"):
-        spherex_geocentric_km([60000.0], cache_path=cache)
+        spherex_geocentric_km([60000.0], cache_dir=cache)
     state["fail"] = Response(503, "<html>Service Unavailable</html>")
     with pytest.raises(CatalogError, match="HTTP 503"):
-        spherex_geocentric_km([MJD], cache_path=cache)
+        spherex_geocentric_km([MJD], cache_dir=cache)
     assert not cache.exists()
     state["fail"] = None
-    spherex_geocentric_km([MJD], cache_path=cache)
-    assert cache.exists() and len(asked) == 3
+    spherex_geocentric_km([MJD], cache_dir=cache)
+    assert (cache / "61000.json").exists() and len(asked) == 3
 
 
 def test_a_corrupt_cache_is_ignored_and_rewritten(tmp_path, horizons, caplog):
     asked, _ = horizons
-    cache = tmp_path / "c.json"
+    root = tmp_path / "c"
+    root.mkdir()
+    cache = root / "61000.json"
     cache.write_text("{not json")
-    assert spherex_geocentric_km([MJD], cache_path=cache)[0] == pytest.approx((7000.0, 0.5, 0.0))
+    assert spherex_geocentric_km([MJD], cache_dir=root)[0] == pytest.approx((7000.0, 0.5, 0.0))
     assert "unreadable Horizons cache" in caplog.text and len(asked) == 1
     cache.write_text(json.dumps({"61000.00000000": ["x", 1, 2], "61000.00100000": [1.0, 2.0, 3.0]}))
-    out = spherex_geocentric_km([MJD, MJD + 0.001], cache_path=cache)
+    out = spherex_geocentric_km([MJD, MJD + 0.001], cache_dir=root)
     assert asked[1] == pytest.approx([2461000.5]) and out[1] == pytest.approx((1.0, 2.0, 3.0))
 
 
 def test_invalid_times_are_refused_before_any_request(tmp_path, horizons):
     asked, _ = horizons
     with pytest.raises(ValueError):
-        spherex_geocentric_km([math.nan], cache_path=tmp_path / "c.json")
+        spherex_geocentric_km([math.nan], cache_dir=tmp_path / "c")
     assert asked == []

@@ -4,13 +4,15 @@ Catalogues are fakes returning hand-built rows. The Barnard field case repeats t
 real engine output and Gaia rows behind the rules (see test_rules.py).
 """
 import math
+from dataclasses import replace
 
+import numpy as np
 import pytest
 
 from planetx.classify import catalogs, check
 from planetx.classify.catalogs import CatalogError, CatalogObject, SolarSystemBody
 from planetx.classify.check import check_objects, field_cone, motion_kind, unchecked
-from planetx.classify.observer import from_observer
+from planetx.classify.observer import AU_KM, from_observer, unit_vector
 from planetx.engine import Detection, PassSource, TrackedObject
 from planetx.observatories import ArchivalSource, FusedMotion, Observatory, Verdict
 
@@ -273,8 +275,114 @@ def test_a_horizons_outage_falls_back_to_geocentric_positions_with_a_note():
     assert len(catalogues.observer_calls) == 1  # not asked again after it failed
     (note,) = result.notes
     assert note.startswith("JPL Horizons unavailable (Horizons request failed: ConnectTimeout): 2 position(s)")
-    assert 'largest parallax (9.8" divided by the distance in au)' in note
+    assert 'largest parallax (9.8" divided by the distance in au, at most 489")' in note
     assert note.endswith("1 known-asteroid match(es) rest on that wider radius")
+
+
+def geocentric_of(seen_ra, seen_dec, seen_au, observer_km):
+    """(ra, dec, distance au) from the Earth's centre of a body `seen_au` from the observer in that direction."""
+    g = np.asarray(observer_km) + unit_vector(seen_ra, seen_dec) * seen_au * AU_KM
+    d = float(np.linalg.norm(g))
+    return math.degrees(math.atan2(g[1], g[0])) % 360.0, math.degrees(math.asin(g[2] / d)), d / AU_KM
+
+
+class Cone(Catalogues):
+    """SkyBoT that, like the real one, lists only the bodies inside the cone asked for."""
+
+    def fetch_skybot(self, ra, dec, radius, mjd):
+        self.skybot_calls.append((ra, dec, radius, mjd))
+        return [b for b in self.bodies if b.mjd == mjd and separation(ra, dec, b.ra, b.dec) <= radius]
+
+
+def separation(ra1, dec1, ra2, dec2):
+    return math.degrees(math.acos(min(1.0, float(unit_vector(ra1, dec1) @ unit_vector(ra2, dec2))))) * 3600.0
+
+
+def test_a_body_0_02_au_away_at_the_edge_of_the_skybot_cone_is_found():
+    mover = lone_mover(frame_gap_days=0.002)
+    first = mover.sources[0]
+    # SPHEREx 7,050 km out, at right angles to the line of sight: the largest shift there is.
+    perpendicular = np.cross(unit_vector(first.ra, first.dec), (0.0, 0.0, 1.0))
+    spherex_km = tuple(7050.0 * perpendicular / np.linalg.norm(perpendicular))
+    geo_ra, geo_dec, geo_au = geocentric_of(first.ra, first.dec, 0.02, spherex_km)
+    offset_arcsec = separation(first.ra, first.dec, geo_ra, geo_dec)
+    assert 480.0 < offset_arcsec < check.SKYBOT_RADIUS_ARCSEC  # 8' out, still inside the cone
+    neo = SolarSystemBody("2026 GH", "Near-Earth asteroid", geo_ra, geo_dec, first.mjd, 17.0, geo_au, 5.0)
+    catalogues = Cone(bodies=[neo], spherex_km=spherex_km)
+    result = catalogues.check([mover], [fused(mover)])
+    (known,) = result.known
+    assert (known.classification, known.name) == ("known_asteroid", "2026 GH")
+    assert known.matches[0].sep_arcsec < 0.5 and result.notes == []
+
+
+def test_a_horizons_outage_is_remembered_across_runs_for_a_while(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(check.time, "monotonic", lambda: clock[0])
+    mover = lone_mover(frame_gap_days=0.002)
+    body = SolarSystemBody("(3) Juno", "Main-belt asteroid", *offset(mover.sources[0].ra, mover.sources[0].dec,
+                                                                     180.0, 0.0), mover.sources[0].mjd, 9.0, 2.0, 0.1)
+    down = Catalogues(bodies=[body], spherex_km=CatalogError("Horizons request failed: ConnectTimeout"))
+    down.check([mover], [fused(mover)])
+    assert len(down.observer_calls) == 1
+
+    clock[0] += 60.0  # a minute later Horizons is not asked, and the note still says why
+    later = Catalogues(bodies=[body], spherex_km=(0.0, 0.0, 7000.0))
+    (note,) = later.check([mover], [fused(mover)]).notes
+    assert later.observer_calls == []
+    assert note.startswith("JPL Horizons unavailable (Horizons request failed: ConnectTimeout; not retried for 10 min)")
+
+    clock[0] += check.HORIZONS_BACKOFF_S  # after the back-off it is tried again
+    again = Catalogues(bodies=[body], spherex_km=(0.0, 0.0, 7000.0))
+    assert again.check([mover], [fused(mover)]).notes == []
+    assert len(again.observer_calls) == 3  # one per pass that SkyBoT listed a body for
+
+
+def test_spherex_position_is_weighted_like_the_pass_position(monkeypatch):
+    mover = lone_mover(frame_gap_days=0.002)
+    first = mover.sources[0]
+    sharp, blurred = first.detections
+    first.detections[:] = [replace(sharp, sigma_arcsec=0.5), replace(blurred, sigma_arcsec=1.0)]  # weights 4:1
+    positions = {sharp.mjd: (7000.0, 0.0, 0.0), blurred.mjd: (-7000.0, 0.0, 0.0)}
+    seen = []
+
+    class Weighted(Catalogues):
+        def fetch_observer(self, mjds):
+            return [positions.get(m, (0.0, 0.0, 7000.0)) for m in mjds]
+
+    def spy(ra, dec, bodies, observer_km=None, observer_spread_km=0.0):
+        seen.append((observer_km, observer_spread_km))
+
+    monkeypatch.setattr(check, "asteroid_match", spy)
+    body = SolarSystemBody("(3) Juno", "Main-belt asteroid", first.ra, first.dec, first.mjd, 9.0, 2.0, 0.1)
+    Weighted(bodies=[body]).check([mover], [fused(mover)])
+    observer_km, spread = seen[0]  # the first pass
+    assert observer_km == pytest.approx((4200.0, 0.0, 0.0)) and spread == pytest.approx(11200.0)
+
+
+def test_stacked_passes_are_not_checked_for_asteroids():
+    mover = lone_mover(frame_gap_days=0.002)
+    catalogues = Catalogues(bodies=CatalogError("must not be called"), spherex_km=CatalogError("must not be called"))
+    result = check_objects([mover], [fused(mover)], PIXEL, fetch_gaia=catalogues.fetch_gaia,
+                           fetch_simbad=catalogues.fetch_simbad, fetch_skybot=catalogues.fetch_skybot,
+                           fetch_observer=catalogues.fetch_observer, stacked=True)
+    assert result.known[0].classification == "unknown_candidate"
+    assert catalogues.skybot_calls == [] and catalogues.observer_calls == []
+    assert result.notes == [(
+        "stacked passes: movers were not checked for known asteroids "
+        "(a co-add's time spans days, no solar-system body fits it)"
+    )]
+
+
+def test_a_match_on_a_body_without_a_distance_is_noted():
+    mover = lone_mover(frame_gap_days=0.002)
+    first = mover.sources[0]
+    comet = SolarSystemBody("C/2026 X1", "Comet", *offset(first.ra, first.dec, 100.0, 0.0), first.mjd, 15.0, None, None)
+    result = Catalogues(bodies=[comet], spherex_km=(0.0, 0.0, 7000.0)).check([mover], [fused(mover)])
+    assert result.known[0].classification == "known_asteroid"
+    assert result.notes == [(
+        "1 known-asteroid match(es) on bodies SkyBoT gives no distance for: compared at the "
+        'geocentric position within the parallax of a body 0.05 au away (196")'
+    )]
 
 
 def test_skybot_is_not_asked_about_passes_averaged_over_days():
