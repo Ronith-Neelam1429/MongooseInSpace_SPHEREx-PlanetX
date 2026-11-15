@@ -146,6 +146,9 @@ date ~2010), from IRSA (SIA2 `twomass_allsky` / `wise_allwise`, IBE cutouts), no
 east left, centred on `ra`, `dec`. Independent of any run: the frontend centres it between
 the object's SPHEREx position and where its motion puts it in 1999, and marks both.
 - `side_arcsec`: 30-900. Native pixels (2MASS 1", WISE 1.375"), coarser beyond 601 px.
+- Grey levels come from each image's own sky and noise: black is 2 sigma below the sky, white
+  80 sigma above it, with the asinh stretch of `/api/cutout.png`. Faint stars stay well above the
+  noise instead of being clipped, and the grey values can be turned back into linear ones.
 - Where one survey image does not cover the patch, images of the same night are pieced
   together (each on a common zero sky level); pixels none covers are transparent.
 - Always 200: a survey that cannot give an image (no coverage, IRSA down) is listed in

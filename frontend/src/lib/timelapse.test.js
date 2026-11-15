@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { apiUrl, framePerPass, marksFor, rowAt, shiftText, timelapsePatch } from './timelapse.js';
+import { apiUrl, decodeFloats, framePerPass, marksFor, rowAt, shiftText, timelapsePatch } from './timelapse.js';
 import { separation } from './coords.js';
 import { targetRow } from './names.js';
 import { plainType } from './plain.js';
@@ -110,5 +110,13 @@ describe('plainType', () => {
     expect(plainType('BY Dra Variable')).toBe('Spotted variable star');
     expect(plainType('Star')).toBe('Star');
     expect(plainType(null)).toBe('');
+  });
+});
+
+describe('decodeFloats', () => {
+  it('reads little-endian float32 base64 and rejects a wrong length', () => {
+    const b64 = btoa(String.fromCharCode(...new Uint8Array(Float32Array.from([1.5, -2]).buffer)));
+    expect(Array.from(decodeFloats(b64, 2))).toEqual([1.5, -2]);
+    expect(() => decodeFloats(b64, 3)).toThrow('bad response');
   });
 });

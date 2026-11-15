@@ -89,7 +89,11 @@ def survey_images(
         images.append(SurveyImage(
             survey=survey.key, label=survey.label, mjd=got.mjd, date=archive.mjd_to_date(got.mjd),
             patch_px=n, pixel_arcsec=got.pixel_arcsec,
-            image_png_b64=base64.b64encode(cutouts.render_png(got.data)).decode("ascii"),
+            # Grey levels from the image's own sky and noise, as the SPHEREx evidence images:
+            # percentile levels let a faint field's noise fill the range and clip its stars.
+            image_png_b64=base64.b64encode(
+                cutouts.render_png(got.data, *proof.grey_limits([got.data]))
+            ).decode("ascii"),
         ))
     images.sort(key=lambda image: image.mjd)
     if not gaps:

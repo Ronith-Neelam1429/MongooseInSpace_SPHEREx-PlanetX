@@ -21,10 +21,21 @@ pictures** (`SkyPictures`): 2MASS (~2000), WISE (~2010) and SPHEREx (2025 on), o
 labelled with telescope and date, with a play control that steps through them and a ring where the
 object is on that date. Click a picture for a large view (`Esc` closes it).
 - A catalogued object, before any run, gets its own viewer (`StarTimelapse`, logic in
-  `lib/timelapse.js`): the archive images from `/motion/evidence/surveys` and one SPHEREx exposure
-  per pass (detector 3) from `/frames`, all of one patch centred between its 1999 and today
-  positions, so they blink in register; the ring is its catalogued (Gaia) motion moved to each
-  date. Searching a name opens that object's card straight away.
+  `lib/timelapse.js` and `lib/imaging.js`): the archive images from `/motion/evidence/surveys` and
+  one SPHEREx exposure per pass (detector 3, as float pixels from `/cutout.json`), all of one patch
+  centred between its 1999 and today positions. Every image is blurred to SPHEREx's sharpness and
+  stretched from its own sky level so the telescopes look alike (2MASS and WISE PNGs are turned
+  back into linear values first). Three views:
+  - **Trace** (default): the images lined up on the fixed stars around the object (cross-correlation
+    with its path left out), averaged in grey (the sky that does not move); the object found near its
+    catalogue spot in each image and only its own light painted there, coloured by date, joined by
+    the path measured from the images. When it does not visibly move nothing is painted; a strip of
+    close-ups shows the same 50″ of sky from every image with a crosshair on one fixed point.
+    Images where it is too faint to find are listed as such.
+  - **Overlay**: two dates in one picture, older in red, newer in cyan; fixed stars add up to white.
+  - **Time-lapse**: one image after another ("Matched" switches the common sharpness off).
+
+  Searching a name opens that object's card straight away.
 - An engine result: the per-pass SPHEREx medians and the archive images from the evidence
   endpoints, with the measured positions; a difference image beside them.
 

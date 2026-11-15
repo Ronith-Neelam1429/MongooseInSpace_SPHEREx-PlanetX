@@ -145,8 +145,10 @@ export function apiUrl(path, base = API_BASE) {
 
 /** 2MASS and AllWISE images of the patch (SurveyImages in the API), oldest first. */
 export async function fetchArchive(patch, { signal } = {}) {
+  // `grey=noise` is ignored by the API; it only keeps browsers from reusing day-cached images
+  // rendered with the older percentile grey levels.
   const res = await fetchRetry(
-    `${API_BASE}/motion/evidence/surveys?ra=${patch.ra.toFixed(6)}&dec=${patch.dec.toFixed(6)}&side_arcsec=${patch.side}`,
+    `${API_BASE}/motion/evidence/surveys?ra=${patch.ra.toFixed(6)}&dec=${patch.dec.toFixed(6)}&side_arcsec=${patch.side}&grey=noise`,
     { signal },
   );
   const body = await res.json();
@@ -165,10 +167,25 @@ export async function fetchSpherexFrames(patch, { signal } = {}) {
   return framePerPass(body.frames);
 }
 
-/** One SPHEREx cutout PNG as an object URL (the caller revokes it). */
-export async function fetchFrameImage(frame, { signal } = {}) {
-  const res = await fetchRetry(apiUrl(frame.image_url), { signal });
-  return URL.createObjectURL(await res.blob());
+/**
+ * One SPHEREx cutout as float pixels (CutoutData in the API): { width, height, pixels }, row 0
+ * north, column 0 east, NaN = no data. Floats rather than the PNG: the PNG's percentile stretch
+ * clips faint stars, and measuring needs the real values.
+ */
+export async function fetchFrameData(frame, { signal } = {}) {
+  const res = await fetchRetry(apiUrl(frame.data_url), { signal });
+  const body = await res.json();
+  if (!(body?.width > 0 && body?.height > 0) || typeof body.data_b64 !== 'string') throw new Error('bad response');
+  return { width: body.width, height: body.height, pixels: decodeFloats(body.data_b64, body.width * body.height) };
+}
+
+/** base64 of little-endian float32 values (every browser is little-endian) as a Float32Array. */
+export function decodeFloats(b64, count) {
+  const bin = atob(b64);
+  if (bin.length !== count * 4) throw new Error('bad response');
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Float32Array(bytes.buffer);
 }
 
 /** Decimal year of a frame or archive image (both carry `mjd`). */

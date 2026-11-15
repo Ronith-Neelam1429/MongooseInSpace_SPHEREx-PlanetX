@@ -15,3 +15,66 @@
 .tl-key-ring { border: 1.5px solid var(--signal); border-radius: 50%; }
 .tl-key-path { height: 0 !important; border-top: 1.5px dashed var(--signal); vertical-align: 3px !important; }
 @media (prefers-reduced-motion: reduce) { .tl-track i { transition: none; } }
+
+/* ---------- overlay: older image in red, newer in cyan ---------- */
+.tl { --tl-red: #ff4d3d; --tl-cyan: #3ee8ff; }
+.tl-canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%; visibility: hidden; user-select: none;
+}
+.tl-canvas.ev-on { visibility: visible; }
+.tl-modes { display: flex; gap: 4px; margin: 0 0 8px -6px; }
+.tl-red { color: var(--tl-red); font-weight: 500; }
+.tl-cyan { color: var(--tl-cyan); font-weight: 500; }
+.tl-red-bg { background: var(--tl-red); }
+.tl-cyan-bg { background: var(--tl-cyan); }
+.tl-ring.tl-then { stroke: var(--tl-red); stroke-dasharray: 4 3; }
+.tl-ring.tl-now { stroke: var(--tl-cyan); }
+.tl-arrow { stroke: #fff; stroke-width: 1.5; filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000); }
+.ev-marks .tl-head { fill: #fff; stroke: none; }
+.tl-pair { gap: 8px 14px; }
+.tl-pick { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
+.tl-pick-label { letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+.tl-swatch { display: inline-block; width: 10px; height: 10px; }
+.tl-pick select {
+  padding: 6px 4px; background: #000; color: var(--fg); border: 1px solid var(--line); font: inherit; font-size: 11px;
+}
+.tl-pick select:focus-visible { outline: 1px solid var(--fg); }
+.tl-then-key { border-color: var(--tl-red) !important; border-style: dashed !important; }
+.tl-now-key { border-color: var(--tl-cyan) !important; }
+
+/* ---------- trace: fixed sky in grey, the star in colour along its path ---------- */
+.tl-cat { stroke: rgba(255, 255, 255, 0.45); stroke-width: 1; stroke-dasharray: 2 4; }
+.tl-found { stroke: #fff; stroke-width: 1.75; filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000); }
+.tl-pt { stroke-width: 1.5; filter: drop-shadow(0 0 1px #000); }
+.tl-pt-unseen { stroke-dasharray: 3 3; opacity: 0.6; }
+.ev-marks text.tl-label {
+  fill: #fff; font-family: var(--mono); letter-spacing: 0.04em; paint-order: stroke; stroke: #000; stroke-width: 3px;
+}
+.tl-legend { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 2px 16px; margin: 10px 0 0; padding: 0; list-style: none; font-size: 11px; }
+.tl-legend li { display: flex; align-items: baseline; gap: 8px; }
+.tl-legend .tl-swatch { flex: none; border-radius: 50%; transform: translateY(1px); }
+.tl-legend-name { white-space: nowrap; }
+.tl-legend-what { color: var(--dim); }
+.tl-unseen .tl-swatch { opacity: 0.45; }
+.tl-unseen .tl-legend-name { color: var(--dim); }
+.tl-key-solid { border-top-style: solid !important; border-top-color: #fff !important; }
+.tl-key-faint { border-top-color: rgba(255, 255, 255, 0.5) !important; }
+.tl-pt.tl-still { stroke: #fff; }
+
+/* ---------- close-ups: the same spot in every image ---------- */
+.tl-close { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.tl-close-title { font-size: 11px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg); }
+.tl-close-line { margin-top: 6px; font-size: 12px; color: var(--dim); }
+.tl-close-list {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 12px 10px;
+  margin: 12px 0 0; padding: 0; list-style: none;
+}
+.tl-close-list li { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 10.5px; }
+.tl-close-img {
+  position: relative; aspect-ratio: 1; overflow: hidden; border: 1px solid var(--line);
+  background: repeating-linear-gradient(45deg, #000 0 5px, #1c1c1a 5px 6px);
+}
+.tl-close-img canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.tl-close-name { display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-close-name .tl-swatch { flex: none; border-radius: 50%; }
+.tl-close-what { color: var(--dim); }

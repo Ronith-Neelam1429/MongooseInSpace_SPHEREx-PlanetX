@@ -348,7 +348,11 @@ class SurveyImage(BaseModel):
     date: str
     patch_px: int
     pixel_arcsec: float
-    image_png_b64: str = Field(description="Grey + alpha PNG; transparent where the survey has no data")
+    image_png_b64: str = Field(description=(
+        "Grey + alpha PNG; transparent where the survey has no data. Black is 2 sigma below the sky, "
+        "white 80 sigma above it, asinh stretch as /api/cutout.png (so grey values can be turned back "
+        "into linear ones)"
+    ))
 
 
 class SurveyGap(BaseModel):

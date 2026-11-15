@@ -28,8 +28,11 @@ WISE_URL = "https://irsa.ipac.caltech.edu/ibe/data/wise/allwise/p3am_cdd/26/2688
 STAR = (40.0, -25.0)
 
 
-def _cutout(survey, header_cards: dict, rotation_deg: float = 0.0, side_px: int = 241) -> bytes:
-    """A survey-like cutout: SIN projection (as IRSA's), optionally rotated, with one star at STAR."""
+def _cutout(
+    survey, header_cards: dict, rotation_deg: float = 0.0, side_px: int = 241, noise: float = 0.0, peak: float = 1000.0
+) -> bytes:
+    """A survey-like cutout: SIN projection (as IRSA's), optionally rotated, with one star at STAR
+    of `peak` above a sky of 10 with Gaussian `noise`."""
     scale = survey.pixel_arcsec / 3600
     wcs = WCS(naxis=2)
     wcs.wcs.ctype = ["RA---SIN", "DEC--SIN"]
@@ -40,7 +43,9 @@ def _cutout(survey, header_cards: dict, rotation_deg: float = 0.0, side_px: int 
     star = SkyCoord(RA * u.deg, DEC * u.deg).spherical_offsets_by(STAR[0] * u.arcsec, STAR[1] * u.arcsec)
     x, y = wcs.world_to_pixel(star)
     rows, cols = np.mgrid[0:side_px, 0:side_px]
-    data = 10.0 + 1000.0 * np.exp(-((cols - x) ** 2 + (rows - y) ** 2) / (2 * 1.5 ** 2))
+    data = 10.0 + peak * np.exp(-((cols - x) ** 2 + (rows - y) ** 2) / (2 * 1.5 ** 2))
+    if noise:
+        data = data + np.random.default_rng(1).normal(0.0, noise, data.shape)
     header = wcs.to_header()
     for k, v in header_cards.items():
         header[k] = v
@@ -108,6 +113,22 @@ def test_images_are_north_up_east_left_with_the_star_where_the_offsets_say(irsa)
         white = np.argwhere(grey == grey.max())
         peak = white.mean(axis=0)
         assert abs(peak[0] - row) <= 1.0 and abs(peak[1] - col) <= 1.0, (im["survey"], peak, row, col)
+
+
+def test_a_faint_star_in_a_noisy_field_stands_out_unclipped(irsa):
+    # A 30-sigma star: percentile levels would let the noise fill the grey range and clip it.
+    irsa["bodies"][TWOMASS_URL] = _cutout(TWOMASS, TWOMASS_CARDS, noise=1.0, peak=30.0)
+    body = client.get("/api/motion/evidence/surveys", params={"ra": RA, "dec": DEC, "side_arcsec": 200}).json()
+    im = next(im for im in body["images"] if im["survey"] == "2mass")
+    grey = _png(im["image_png_b64"])
+    n, pix = im["patch_px"], im["pixel_arcsec"]
+    row, col = round((n - 1) / 2 - STAR[1] / pix), round((n - 1) / 2 - STAR[0] / pix)
+    star = grey[row - 1:row + 2, col - 1:col + 2].max()
+    sky = np.median(grey)
+    assert star < 255  # not clipped
+    # Noise is a narrow band near black; the star is far above it.
+    noise = np.percentile(grey, 84) - sky
+    assert sky < 100 and (star - sky) > 8 * noise, (sky, noise, star)
 
 
 def test_dates_come_from_the_headers(irsa):
