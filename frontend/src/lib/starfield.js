@@ -3,14 +3,15 @@
 // the hover / selection markers. Stars rest where they are today; on request their catalogued
 // proper motion is played forward from epoch 2016.0. Everything is projected with Aladin's own
 // world2pix, so it stays registered to the sky while panning and zooming.
+//
+// Each marker is coloured by its class (lib/classes.js); a filter switches classes off, which
+// fades their stars to faint context dots and takes them, and their labels, out of picking.
 import { decimalYear, offsetPoint, propagate } from './coords.js';
+import { CLASS, MEASURED, OTHER, SHOW_ALL, SIGNAL, VARIABLE, engineClass, gaiaClass, simbadClass } from './classes.js';
 
 export { measuredMotion } from './plain.js';
-
-export const FAST_PM = 100; // mas/yr; above this a star is drawn in the motion colour
-const SIGNAL = [255, 77, 46];
 // What the motion engine measured in SPHEREx frames; red stays Gaia's catalogued motion.
-export const MEASURED = [92, 225, 255];
+export { MEASURED };
 const GAIA_EPOCH = 2016.0;
 const PERIOD_MS = 7000;
 const HOLD = 0.12; // fraction of the cycle spent resting at the end
@@ -105,7 +106,8 @@ export class StarField {
     this.hover = null;
     this.pointer = null;
     this.show = { gaia: true, simbad: true, engine: true };
-    this.moversOnly = false;
+    this.filter = SHOW_ALL;
+    this.classOf = null; // (kind 'gaia' | 'simbad', obj) => class id; see setClassifier
     this.playing = false;
     this.t0 = performance.now();
     this.viewKey = '';
@@ -149,13 +151,35 @@ export class StarField {
     this.gaia = stars.map((s) => {
       const pm = s.pmra != null && s.pmdec != null ? Math.hypot(s.pmra, s.pmdec) : 0;
       const end = pm && this.years ? propagate(s.ra, s.dec, s.pmra, s.pmdec, this.years) : null;
-      return { s, pm, end, ...starStyle(s.gmag) };
+      return { s, pm, end, cls: this.classify('gaia', s), ...starStyle(s.gmag) };
     }).sort((a, b) => (b.s.gmag ?? 99) - (a.s.gmag ?? 99));
     this.t0 = performance.now();
     this.viewKey = '';
   }
 
   setSimbad(objects) { this.simbad = objects; this.viewKey = ''; }
+
+  /**
+   * How to classify catalogue markers: `classOf('gaia' | 'simbad', obj)` returns a class id. The
+   * app passes one that knows which Gaia star is which SIMBAD object, so a Gaia dot on a galaxy
+   * is drawn as a galaxy. Without one, Gaia stars are fast or plain and SIMBAD goes by its type.
+   */
+  setClassifier(classOf) {
+    this.classOf = classOf;
+    for (const g of this.gaia) g.cls = this.classify('gaia', g.s);
+    this.viewKey = '';
+  }
+
+  classify(kind, obj) {
+    if (kind === 'engine') return engineClass(obj);
+    const c = this.classOf?.(kind, obj);
+    if (c && CLASS[c]) return c;
+    return kind === 'gaia' ? gaiaClass(obj) : simbadClass(obj);
+  }
+
+  /** Which classes to show: { [class id]: boolean }; missing ids count as shown. */
+  setFilter(filter) { this.filter = { ...SHOW_ALL, ...filter }; }
+  shown(cls) { return this.filter[cls] !== false; }
   /** Engine objects to mark: movers, candidates and variables (see MotionObject in the API). */
   setMotion(objects) { this.motion = objects; this.viewKey = ''; }
   /**
@@ -171,8 +195,6 @@ export class StarField {
   /** An object pointed at from outside the map (a list row), marked like a hovered one. */
   setHighlight(target) { this.highlight = target; }
   setVisible(show) { this.show = { ...this.show, ...show }; }
-  /** Fade everything slower than FAST_PM and show each fast star's full predicted path. */
-  setMoversOnly(on) { this.moversOnly = !!on; }
 
   /** Play the catalogued motion from 2016.0 over the span, looping; when off the stars rest at today. */
   setPlaying(on) {
@@ -234,10 +256,10 @@ export class StarField {
       const b = g.end ? this.project(g.end.ra, g.end.dec) : null;
       return { g, a, b };
     }).filter(Boolean);
-    this.simbadPx = this.simbad.map((o) => ({ o, p: this.project(o.ra, o.dec) })).filter((x) => inView(x.p));
+    this.simbadPx = this.simbad.map((o) => ({ o, p: this.project(o.ra, o.dec), cls: this.classify('simbad', o) })).filter((x) => inView(x.p));
     this.motionPx = this.motion.map((o) => {
       const pts = o.track.map((t) => this.project(t.ra, t.dec));
-      return { o, pts, last: pts[pts.length - 1] };
+      return { o, pts, last: pts[pts.length - 1], cls: engineClass(o) };
     }).filter((m) => m.pts.every(Boolean) && inView(m.last));
     this.regionPx = null;
     if (this.region) {
@@ -270,6 +292,9 @@ export class StarField {
 
     ctx.globalAlpha = rest;
     if (this.show.gaia && this.cache) {
+      // With ordinary stars filtered out, each fast star shows its full predicted path instead.
+      const paths = !this.shown('star');
+      const showFast = this.shown('fast');
       // Trails first (under stars), batched: slow stars in one faint path.
       ctx.lineCap = 'round';
       ctx.beginPath();
@@ -281,26 +306,27 @@ export class StarField {
         const x = c.a[0] + (c.b[0] - c.a[0]) * k, y = c.a[1] + (c.b[1] - c.a[1]) * k;
         c.x = x; c.y = y;
         if (Math.hypot(x - c.a[0], y - c.a[1]) < 1.5) continue;
-        if (c.g.pm >= FAST_PM) { fast.push(c); continue; }
-        if (this.moversOnly) continue;
+        if (c.g.cls === 'fast') { if (showFast) fast.push(c); continue; }
+        if (!this.shown(c.g.cls)) continue;
         ctx.moveTo(c.a[0], c.a[1]);
         ctx.lineTo(x, y);
       }
       ctx.stroke();
-      if (this.moversOnly) for (const c of fast) this.drawPath(c);
+      if (paths) for (const c of fast) this.drawPath(c);
       for (const c of fast) this.drawFastTrail(c, k);
 
-      // Stars, binned by opacity to keep state changes low.
+      // Stars, binned by colour and opacity to keep state changes low. Plain stars are white,
+      // shaded by brightness; every other class is drawn in its own colour.
       const bins = new Map();
       const faded = [];
       for (const c of this.cache) {
         const x = c.b ? c.x : c.a[0], y = c.b ? c.y : c.a[1];
-        const isFast = c.g.pm >= FAST_PM;
-        if (this.moversOnly && !isFast) { faded.push([x, y, c.g.r]); continue; }
-        const key = isFast ? 'fast' : Math.round(c.g.a * 10);
+        const { cls } = c.g;
+        if (!this.shown(cls)) { faded.push([x, y, c.g.r]); continue; }
+        const key = cls === 'star' ? Math.round(c.g.a * 10) : cls;
         if (!bins.has(key)) bins.set(key, []);
-        bins.get(key).push([x, y, c.g.r]);
-        markers.push({ kind: 'gaia', obj: c.g.s, x, y, rank: rank('gaia', c.g.s, isFast) });
+        bins.get(key).push([x, y, cls === 'star' ? c.g.r : Math.max(c.g.r, 1.6)]);
+        markers.push({ kind: 'gaia', obj: c.g.s, x, y, rank: rank('gaia', c.g.s, cls === 'fast') });
       }
       if (faded.length) {
         ctx.beginPath();
@@ -311,25 +337,35 @@ export class StarField {
       for (const [key, list] of bins) {
         ctx.beginPath();
         for (const [x, y, r] of list) { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, Math.PI * 2); }
-        ctx.fillStyle = key === 'fast' ? `rgb(${SIGNAL})` : `rgba(255,255,255,${key / 10})`;
+        ctx.fillStyle = typeof key === 'number' ? `rgba(255,255,255,${key / 10})` : `rgb(${CLASS[key].rgb})`;
         ctx.fill();
       }
     }
 
     if (this.show.simbad && this.simbadPx) {
-      ctx.beginPath();
-      ctx.strokeStyle = 'rgba(255,255,255,0.8)';
-      ctx.lineWidth = 1;
-      for (const { o, p } of this.simbadPx) {
-        const x = Math.round(p[0]) + 0.5, y = Math.round(p[1]) + 0.5;
-        ctx.rect(x - 4, y - 4, 8, 8);
-        markers.push({ kind: 'simbad', obj: o, x: p[0], y: p[1], rank: rank('simbad', o) });
+      // Squares, one path per class colour; a filtered-out class is not drawn at all.
+      const byClass = new Map();
+      for (const e of this.simbadPx) {
+        if (!this.shown(e.cls)) continue;
+        if (!byClass.has(e.cls)) byClass.set(e.cls, []);
+        byClass.get(e.cls).push(e);
       }
-      ctx.stroke();
+      ctx.lineWidth = 1;
+      for (const [cls, list] of byClass) {
+        ctx.beginPath();
+        ctx.strokeStyle = cls === 'star' ? 'rgba(255,255,255,0.8)' : `rgb(${CLASS[cls].rgb})`;
+        for (const { o, p } of list) {
+          const x = Math.round(p[0]) + 0.5, y = Math.round(p[1]) + 0.5;
+          ctx.rect(x - 4, y - 4, 8, 8);
+          markers.push({ kind: 'simbad', obj: o, x: p[0], y: p[1], rank: rank('simbad', o, cls === 'fast') });
+        }
+        ctx.stroke();
+      }
     }
 
     if (this.show.engine && this.motionPx) {
       for (const m of this.motionPx) {
+        if (!this.shown(m.cls)) continue;
         ctx.globalAlpha = m.o === this.focus?.obj ? 1 : rest;
         this.drawMeasured(m);
         markers.push({ kind: 'engine', obj: m.o, x: m.last[0], y: m.last[1], rank: RANK.engine });
@@ -400,12 +436,13 @@ export class StarField {
    * One engine object: its measured per-pass positions joined in time order, ending in a ring at
    * the latest pass. Candidates are dashed; variables get a diamond.
    */
-  drawMeasured({ o, pts, last }) {
+  drawMeasured({ o, pts, last, cls }) {
     const { ctx } = this;
     const [x, y] = last;
+    const colour = `rgb(${cls === 'other' ? OTHER : MEASURED})`;
     ctx.save();
-    ctx.strokeStyle = `rgb(${MEASURED})`;
-    ctx.fillStyle = `rgb(${MEASURED})`;
+    ctx.strokeStyle = colour;
+    ctx.fillStyle = colour;
     ctx.lineWidth = 1.25;
     if (o.kind !== 'static') {
       if (o.kind === 'candidate') ctx.setLineDash([3, 3]);
@@ -422,6 +459,7 @@ export class StarField {
     }
     if (o.is_variable) {
       const r = o.kind === 'static' ? 8 : 14;
+      if (cls !== 'other') ctx.strokeStyle = `rgb(${VARIABLE})`;
       ctx.beginPath();
       ctx.moveTo(x, y - r); ctx.lineTo(x + r, y); ctx.lineTo(x, y + r); ctx.lineTo(x - r, y);
       ctx.closePath();
@@ -474,7 +512,7 @@ export class StarField {
     const bounds = { w: this.w, h: this.h };
     let lit = false;
     for (const n of this.notable) {
-      if (!this.show[n.kind] || n.obj === this.focus?.obj) continue;
+      if (!this.show[n.kind] || n.obj === this.focus?.obj || !this.shown(this.classify(n.kind, n.obj))) continue;
       const p = this.pixelOf(n);
       if (!p || p[0] < 0 || p[1] < 0 || p[0] > this.w || p[1] > this.h) continue;
       const box = placeLabel({ x: p[0], y: p[1] }, this.textWidth(n.text), boxes, bounds);

@@ -17,6 +17,7 @@ let a reader check the engine's verdict by eye, so they are rendered plainly:
 from __future__ import annotations
 
 import base64
+import dataclasses
 import io
 import threading
 import warnings
@@ -27,12 +28,15 @@ import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.stats import sigma_clipped_stats
+from astropy.time import Time
 from astropy.wcs import WCS, FITSFixedWarning
 from PIL import Image
 from reproject import reproject_interp
 
+from planetx.api.evidence_checks import run_checks, saturated_core_px
 from planetx.api.motion import EngineRun
 from planetx.api.schemas import (
+    EvidenceExposure,
     EvidenceFit,
     EvidenceFlux,
     EvidencePass,
@@ -60,6 +64,12 @@ WHITE_SIGMA = 80.0
 # leave behind (each pass samples other wavelengths) stay faint.
 DIFFERENCE_FULL_SCALE = 0.5
 MIN_FIELD_STARS = 5  # fewer shared objects give no usable scatter
+# Single exposures shown per pass, spread over its time: enough to see the object in each
+# one, few enough to keep the answer small (each image is about 2 kB).
+EXPOSURES_PER_PASS = 6
+# Side of the single-exposure images: the track plus a margin, at least this.
+MIN_EXPOSURE_ARCSEC = 60.0
+EXPOSURE_MARGIN_ARCSEC = 20.0
 # Rendered evidence kept for repeat requests (about 20 kB each).
 MAX_CACHED = 64
 
@@ -173,6 +183,99 @@ def pass_images(result: EngineResult, grid: WCS, n: int) -> tuple[list[np.ndarra
     return images, counts
 
 
+def _fit_position(obj: TrackedObject, mjd: float) -> tuple[float, float]:
+    """Where the engine's straight-line fit puts the object at `mjd`."""
+    years = (mjd - obj.ref_mjd) / 365.25
+    at = SkyCoord(obj.ra * u.deg, obj.dec * u.deg).spherical_offsets_by(
+        obj.pm_ra_cosdec * years * u.arcsec, obj.pm_dec * years * u.arcsec
+    )
+    return float(at.ra.deg), float(at.dec.deg)
+
+
+def _covers(frame: Frame, wcs: WCS, ra: float, dec: float, margin_px: float = 2.0) -> bool:
+    """Whether the frame has data (or a saturated star) at a sky position."""
+    x, y = wcs.all_world2pix(ra, dec, 0)
+    ny, nx = frame.data.shape
+    if not (margin_px <= x <= nx - 1 - margin_px and margin_px <= y <= ny - 1 - margin_px):
+        return False
+    iy, ix = round(float(y)), round(float(x))
+    return bool(np.isfinite(frame.data[iy, ix]) or (frame.saturated is not None and frame.saturated[iy, ix]))
+
+
+def _spread(ids: list[int], detectors: list[int], k: int = EXPOSURES_PER_PASS) -> list[int]:
+    """Up to k of the time-ordered `ids`: the slots shared out over detectors in turn, each
+    detector's picks spread evenly over its own exposures. Time-ordered."""
+    by_det: dict[int, list[int]] = {}
+    for i, det in zip(ids, detectors, strict=True):
+        by_det.setdefault(det, []).append(i)
+    order = sorted(by_det)
+    quota = dict.fromkeys(order, 0)
+    turn = 0
+    while sum(quota.values()) < min(k, len(ids)):
+        det = order[turn % len(order)]
+        turn += 1
+        if quota[det] < len(by_det[det]):
+            quota[det] += 1
+    picked = set()
+    for det, own in by_det.items():
+        if quota[det]:
+            picked.update(own[j] for j in np.linspace(0, len(own) - 1, quota[det]).round().astype(int))
+    return [i for i in ids if i in picked]
+
+
+def pass_exposures(
+    result: EngineResult, obj: TrackedObject, grid: WCS, m: int, lo: float, hi: float
+) -> tuple[list[list[EvidenceExposure]], list[int]]:
+    """Per pass: a few single exposures of the object's spot, and how many exposures cover it.
+
+    The exposures are spread evenly in time over those that cover the object's position in
+    that pass (measured, or where the fit puts it), whether or not they detected it, so the
+    selection shows what the data holds rather than its best frames.
+    """
+    by_pass = {s.pass_index: s for s in obj.sources}
+    exposures, covers = [], []
+    for k, ids in enumerate(result.passes):
+        source = by_pass.get(k)
+        if source is not None:
+            ra, dec = source.ra, source.dec
+        else:
+            ra, dec = _fit_position(obj, float(np.mean([result.frames[i].mjd for i in ids])))
+        aligned = {i: _shifted(result.frames[i].wcs, *result.frame_offsets_arcsec[i]) for i in ids}
+        covering = sorted((i for i in ids if _covers(result.frames[i], aligned[i], ra, dec)), key=lambda i: result.frames[i].mjd)
+        covers.append(len(covering))
+        if result.stacked or not covering:
+            exposures.append([])
+            continue
+        detected = {d.frame_index: d for d in source.detections} if source is not None else {}
+        row = []
+        for i in _spread(covering, [result.frames[i].detector for i in covering]):
+            frame = result.frames[i]
+            data = _noise_units(frame)
+            if data is None:
+                continue
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", FITSFixedWarning)
+                image = reproject_interp(
+                    (data, aligned[i]), grid, shape_out=(m, m), order="nearest-neighbor", return_footprint=False
+                )
+            point = None
+            d = detected.get(i)
+            if d is not None:
+                east, north = patch_offsets(grid, m, d.ra, d.dec)
+                point = EvidencePoint(
+                    east_arcsec=east, north_arcsec=north, sigma_arcsec=d.sigma_arcsec,
+                    mjd=d.mjd, date=archive.mjd_to_date(d.mjd), n_frames=1, fluxes=[],
+                )
+            row.append(EvidenceExposure(
+                mjd=frame.mjd, time=Time(frame.mjd, format="mjd", scale="utc").iso[:16],
+                detector=frame.detector,
+                wavelength_um=float(frame.wavelength_um) if np.isfinite(frame.wavelength_um) else None,
+                image_png_b64=_b64(cutouts.render_png(image, vmin=lo, vmax=hi)), point=point,
+            ))
+        exposures.append(row)
+    return exposures, covers
+
+
 def grey_limits(images: list[np.ndarray]) -> tuple[float, float]:
     """(black, white) levels shared by all passes, from the patch's background and noise."""
     pixels = np.concatenate([image[np.isfinite(image)] for image in images])
@@ -280,12 +383,34 @@ def build_evidence(run: EngineRun, object_id: int) -> MotionEvidence:
             coverage=float(np.isfinite(image).mean()), point=point, field_scatter=scatter.get(k),
         ))
 
+    # The single exposures: same centre and grey scale, cut down to the track and its surroundings.
+    # A saturated star is white well beyond its position, and its move shows only on the edge of
+    # that core, so the window then holds the whole core with sky around it.
+    centre = (n - 1) / 2
+    core_arcsec = PATCH_PIXEL_ARCSEC * saturated_core_px(images[first.pass_index], centre, centre, hi)
+    side = max(MIN_EXPOSURE_ARCSEC, 2 * (core_arcsec + reach + EXPOSURE_MARGIN_ARCSEC))
+    m = min(n, int(np.ceil(side / PATCH_PIXEL_ARCSEC)) | 1)
+    small = patch_wcs(first.ra, first.dec, m)
+    exposures, covers = pass_exposures(result, obj, small, m, lo, hi)
+    for p, row, cover in zip(passes, exposures, covers, strict=True):
+        p.exposures, p.n_cover = row, cover
+
+    spherex_px = float(np.median([f.pixel_scale_arcsec for f in result.frames]))
+    fwhms = [f.psf_fwhm_arcsec for f in result.frames if np.isfinite(f.psf_fwhm_arcsec)]
+    fwhm = float(np.median(fwhms)) if fwhms else 1.5 * spherex_px  # SPHEREx PSFs are ~1.5 px wide
+    checks = run_checks(
+        result, obj, grid, n, images, lo, hi, scatter, PATCH_PIXEL_ARCSEC, fwhm, spherex_px,
+        render=lambda size, keep: pass_images(
+            dataclasses.replace(result, passes=[result.passes[k] for k in keep]), patch_wcs(first.ra, first.dec, size), size
+        )[0],
+    )
+
     fit_east, fit_north = patch_offsets(grid, n, obj.ra, obj.dec)
     return MotionEvidence(
         object=object_id, ra=obj.ra, dec=obj.dec,
         patch_ra=first.ra, patch_dec=first.dec,
         patch_arcsec=n * PATCH_PIXEL_ARCSEC, patch_px=n, patch_pixel_arcsec=PATCH_PIXEL_ARCSEC,
-        spherex_pixel_arcsec=float(np.median([f.pixel_scale_arcsec for f in result.frames])),
+        spherex_pixel_arcsec=spherex_px,
         passes=passes,
         difference_png_b64=_b64(difference_png(images[first.pass_index], images[last.pass_index], lo, hi)),
         difference_passes=(first.pass_index, last.pass_index),
@@ -294,4 +419,6 @@ def build_evidence(run: EngineRun, object_id: int) -> MotionEvidence:
             pm_east=obj.pm_ra_cosdec, pm_north=obj.pm_dec,
         ),
         pm_floor_arcsec_yr=result.pm_floor_arcsec_yr,
+        exposure_arcsec=m * PATCH_PIXEL_ARCSEC, exposure_px=m, checks=checks,
+        missing_passes=sorted(obj.missing_passes),
     )

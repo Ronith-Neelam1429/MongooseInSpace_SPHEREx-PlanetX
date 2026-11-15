@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { equatorialToEcliptic, equatorialToGalactic, formatDec, formatFov, formatRa } from '../lib/coords.js';
 import { FAST_ARCSEC_YR, displayName, sameObject } from '../lib/names.js';
 import { dateSpan, monthYear, shortClaim, shortName, speed, verdict } from '../lib/plain.js';
+import { CLASS, engineClass, knownClass } from '../lib/classes.js';
 import ObjectCard, { CloseIcon } from './ObjectCard.jsx';
+import { ClassMark } from './ClassFilter.jsx';
 
 const signed = (v, d) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`;
 const count = (n) => n.toLocaleString('en-US');
@@ -70,13 +72,15 @@ function Progress({ job }) {
 }
 
 /** The motion engine: a run button, progress, then what moves or changes brightness, by name. */
-function Results({ motion, results, visits, hover, resume, onPick, onPoint, onRun, onRetryVisits }) {
+function Results({ motion, results: all, filter, others, visits, hover, resume, onPick, onPoint, onRun, onRetryVisits, onToggleOthers }) {
   const r = motion.result;
+  const results = all.filter(({ o }) => filter[engineClass(o)]);
+  const hidden = all.length - results.length;
   return (
     <section className="results">
       <h3>
         <span><i className="dot measured-bg" />What moves here</span>
-        {motion.status === 'ok' && <span className="count">{results.length} found</span>}
+        {motion.status === 'ok' && <span className="count">{all.length} found</span>}
       </h3>
       {motion.status === 'none' && <p className="line dim">Measuring motion needs the PlanetX server, which is not connected.</p>}
       {motion.status === 'idle' && (
@@ -112,8 +116,9 @@ function Results({ motion, results, visits, hover, resume, onPick, onPoint, onRu
             {r.passes.length > 0 && ` (${dateSpan(r.passes[0].start, r.passes[r.passes.length - 1].end)})`}
             {' '}and followed {plural(r.objects.length, 'object')}.
           </p>
+          {all.length === 0 && <p className="line dim">Nothing here moved or changed brightness by more than the measurement error.</p>}
           {results.length === 0
-            ? <p className="line dim">Nothing here moved or changed brightness by more than the measurement error.</p>
+            ? null
             : (
               <ul className="rowlist">
                 {results.map(({ o, who }) => {
@@ -121,7 +126,7 @@ function Results({ motion, results, visits, hover, resume, onPick, onPoint, onRu
                   const name = displayName(who);
                   return (
                     <Row key={o.id} className="result" lit={sameObject(hover, f)} resume={sameObject(resume, f)} onPick={() => onPick(f)} onPoint={(p) => onPoint(p ? f : null)}>
-                      <span className="row-name" title={name}>{shortName(name)}</span>
+                      <span className="row-name" title={name}><ClassMark cls={CLASS[engineClass(o)]} size={10} />{shortName(name)}</span>
                       <span className="badge">{verdict(o)}</span>
                       <span className="row-sub">{shortClaim(o)}</span>
                     </Row>
@@ -129,6 +134,32 @@ function Results({ motion, results, visits, hover, resume, onPick, onPoint, onRu
                 })}
               </ul>
             )}
+          {hidden > 0 && <p className="line dim">{plural(hidden, 'more result')} hidden by the map filter.</p>}
+          {r.objects.length > results.length && (
+            <p className="line">
+              <button type="button" className="textbtn" aria-expanded={Boolean(others)} onClick={onToggleOthers}>
+                {others ? 'Hide the other tracked objects' : `Show all ${count(r.objects.length)} tracked objects`}
+              </button>
+            </p>
+          )}
+          {others && (
+            <>
+              <p className="line dim">Not moving or changing beyond the error. Pick one to see its images in every pass.</p>
+              <ul className="rowlist">
+                {others.map(({ o, who }) => {
+                  const f = { kind: 'engine', obj: o };
+                  const name = displayName(who);
+                  return (
+                    <Row key={o.id} className="result" lit={sameObject(hover, f)} resume={sameObject(resume, f)} onPick={() => onPick(f)} onPoint={(p) => onPoint(p ? f : null)}>
+                      <span className="row-name" title={name}>{shortName(name)}</span>
+                      <span className="badge">{verdict(o)}</span>
+                      <span className="row-sub">Seen in {plural(o.track.length, 'pass', 'passes')}</span>
+                    </Row>
+                  );
+                })}
+              </ul>
+            </>
+          )}
           {r.notes.map((note) => <p key={note} className="line dim">{note}</p>)}
         </>
       )}
@@ -151,10 +182,15 @@ function Clock({ getYear }) {
 }
 
 /** SIMBAD and Gaia as one list of already-known objects, with the control that plays catalogued motion. */
-function Known({ known, simbad, gaia, hover, resume, onPick, onPoint, onRetry, playing, onTogglePlay, getYear, moversOnly, onToggleMovers }) {
+function Known({ known, filter, simbad, gaia, hover, resume, onPick, onPoint, onRetry, playing, onTogglePlay, getYear, moversOnly, onToggleMovers }) {
   const [all, setAll] = useState(false);
-  const few = known.rows.length <= KNOWN_SHOWN + 2; // not worth folding
-  const rows = all || few ? known.rows : known.rows.slice(0, KNOWN_SHOWN);
+  const shown = useMemo(
+    () => known.rows.map((row) => ({ row, cls: knownClass(row) })).filter((x) => filter[x.cls]),
+    [known, filter],
+  );
+  const hidden = known.rows.length - shown.length;
+  const few = shown.length <= KNOWN_SHOWN + 2; // not worth folding
+  const rows = all || few ? shown : shown.slice(0, KNOWN_SHOWN);
   const fast = known.rows.filter((r) => r.pm >= FAST_ARCSEC_YR).length;
   const loaded = simbad.status === 'ok' && gaia.status === 'ok';
   return (
@@ -180,22 +216,22 @@ function Known({ known, simbad, gaia, hover, resume, onPick, onPoint, onRetry, p
               type="button"
               className={`opt legend ${moversOnly ? 'on' : ''}`}
               aria-pressed={moversOnly}
-              title={`Fade every star slower than ${FAST_ARCSEC_YR}″ per year`}
+              title={`Show only what moves: fade every star slower than ${FAST_ARCSEC_YR}″ per year`}
               onClick={onToggleMovers}
             >
-              <i className="dot signal-bg" />Fast only
+              <i className="dot signal-bg" />Moving only
             </button>
           )}
         </div>
       )}
       {rows.length > 0 && (
         <ul className="rowlist">
-          {rows.map((row) => {
+          {rows.map(({ row, cls }) => {
             const f = { kind: 'known', obj: row };
-            const isFast = row.pm >= FAST_ARCSEC_YR;
+            const isFast = cls === 'fast';
             return (
               <Row key={row.key} className="known" lit={sameObject(hover, f)} resume={sameObject(resume, f)} onPick={() => onPick(f)} onPoint={(p) => onPoint(p ? f : null)}>
-                <span className="row-name" title={row.name}>{isFast && <i className="dot signal-bg" />}{shortName(row.name)}</span>
+                <span className="row-name" title={`${row.name} · ${CLASS[cls].label}`}><ClassMark cls={CLASS[cls]} size={10} />{shortName(row.name)}</span>
                 <span className="row-type" title={row.type}>{row.type}</span>
                 <span className={`row-pm ${isFast ? 'signal' : 'dim'}`}>{isFast ? `${speed(row.pm)}″/yr` : ''}</span>
               </Row>
@@ -206,10 +242,11 @@ function Known({ known, simbad, gaia, hover, resume, onPick, onPoint, onRetry, p
       {!few && (
         <p className="line">
           <button type="button" className="textbtn" aria-expanded={all} onClick={() => setAll(!all)}>
-            {all ? 'Show fewer' : `Show all ${count(known.rows.length)}`}
+            {all ? 'Show fewer' : `Show all ${count(shown.length)}`}
           </button>
         </p>
       )}
+      {hidden > 0 && <p className="line dim">{plural(hidden, 'more object')} hidden by the map filter.</p>}
       {loaded && known.rows.length === 0 && <p className="line dim">Nothing here has a catalogue name.</p>}
       {loaded && fast === 0 && known.rows.length > 0 && (
         <p className="line dim">No catalogued star here moves faster than {FAST_ARCSEC_YR}″ per year.</p>
@@ -260,8 +297,8 @@ function FieldDetails({ sel, visits }) {
  * known objects; picking any object swaps the list for that object's card, with a way back.
  */
 export default function InfoPanel({
-  sel, simbad, gaia, visits, motion, known, results, focus, hover, resume, onPick, onPoint, onBack, onClose, onRetry,
-  onCopyLink, copied, playing, onTogglePlay, getYear, moversOnly, onToggleMovers,
+  sel, simbad, gaia, visits, motion, known, results, others, onToggleOthers, focus, hover, resume, onPick, onPoint, onBack, onClose, onRetry,
+  onCopyLink, copied, playing, onTogglePlay, getYear, filter, moversOnly, onToggleMovers,
 }) {
   if (focus) {
     return (
@@ -270,6 +307,8 @@ export default function InfoPanel({
           key={focus.kind === 'engine' ? `engine:${focus.obj.id}` : focus.obj.key}
           focus={focus}
           results={results}
+          others={others}
+          objects={motion.status === 'ok' ? motion.result.objects : null}
           field={motion.result?.field}
           onPick={onPick}
           onBack={onBack}
@@ -299,6 +338,9 @@ export default function InfoPanel({
         <Results
           motion={motion}
           results={results}
+          filter={filter}
+          others={others}
+          onToggleOthers={onToggleOthers}
           visits={visits}
           hover={hover}
           resume={resume}
@@ -309,6 +351,7 @@ export default function InfoPanel({
         />
         <Known
           known={known}
+          filter={filter}
           simbad={simbad}
           gaia={gaia}
           hover={hover}

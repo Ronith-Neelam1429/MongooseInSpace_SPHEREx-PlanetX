@@ -5,11 +5,12 @@ SPHEREx spectral-image MEFs (full files or IRSA cutouts).
 """
 from __future__ import annotations
 
+import re
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
 from astropy.io import fits
-import warnings
 
 from astropy.wcs import WCS, FITSFixedWarning
 from astropy.wcs.utils import proj_plane_pixel_scales
@@ -90,6 +91,23 @@ def _celestial_header(header: fits.Header) -> fits.Header:
     return h
 
 
+_SIP_CARD = re.compile(r"(A|B|AP|BP)_(ORDER|\d+_\d+)")
+
+
+def _wavelength_wcs(header: fits.Header, hdul: fits.HDUList) -> WCS:
+    """The per-pixel (wavelength, bandwidth) lookup WCS (alternate key W).
+
+    Its WCS-WAVE table is indexed by raw pixel coordinates, but SIP cards
+    carry no alternate key, so astropy would apply the celestial distortion
+    to it too (shifting the looked-up wavelength by up to ~0.8%). They are
+    dropped first, as in `planetx.spherex.cutouts`.
+    """
+    header = header.copy()
+    for key in [k for k in header if _SIP_CARD.fullmatch(k)]:
+        del header[key]
+    return WCS(header, fobj=hdul, key="W")
+
+
 def frame_from_hdul(hdul: fits.HDUList, obs_id: str = "") -> Frame:
     """Build a Frame from an opened SPHEREx spectral-image MEF (or cutout)."""
     image_hdu = hdul["IMAGE"]
@@ -110,7 +128,7 @@ def frame_from_hdul(hdul: fits.HDUList, obs_id: str = "") -> Frame:
         wavelength = float("nan")
         if "WCS-WAVE" in hdul:
             try:
-                wave_wcs = WCS(header, fobj=hdul, key="W")
+                wave_wcs = _wavelength_wcs(header, hdul)
                 ny, nx = data.shape
                 wavelength = float(wave_wcs.all_pix2world((nx - 1) / 2, (ny - 1) / 2, 0)[0])
             except Exception as exc:  # wavelength is metadata; don't lose the frame

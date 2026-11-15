@@ -212,7 +212,27 @@ def test_engine_data_is_kept_for_the_newest_runs_only(fakes, monkeypatch):
     client.get("/api/motion", params={"ra": RA, "dec": DEC, "size_deg": 0.12})
     assert motion.finished_run(RA, DEC, 0.1) is None  # dropped: a newer run finished
     assert motion.finished_run(RA, DEC, 0.12) is not None
-    assert client.get("/api/motion", params=PARAMS).json()["result"] == first  # the summary stays
+    # Plain polling keeps getting the summary, without a new run.
+    calls = fakes["sia_calls"]
+    assert client.get("/api/motion", params=PARAMS).json()["result"] == first
+    assert fakes["sia_calls"] == calls
+
+
+def test_evidence_after_the_engine_data_was_dropped_reruns_the_field(fakes, monkeypatch):
+    monkeypatch.setattr(motion, "MAX_ENGINE_KEPT", 1)
+    first = client.get("/api/motion", params=PARAMS).json()["result"]
+    client.get("/api/motion", params={**PARAMS, "size_deg": 0.12})  # a newer run: the first one's data goes
+    assert motion.finished_run(RA, DEC, 0.1) is None
+    calls = fakes["sia_calls"]
+    # The evidence request cannot be answered, but it starts the field again (inline here)...
+    resp = client.get("/api/motion/evidence", params={**PARAMS, "size_deg": 0.1, "object": 0})
+    assert resp.status_code == 404
+    assert fakes["sia_calls"] == calls + 1
+    # ...so the client's next poll and evidence request find the engine data.
+    assert client.get("/api/motion", params=PARAMS).json()["result"]["objects"] == first["objects"]
+    resp = client.get("/api/motion/evidence", params={**PARAMS, "size_deg": 0.1, "object": 0})
+    assert resp.status_code == 200, resp.text
+    assert fakes["sia_calls"] == calls + 1
 
 
 def test_polling_reuses_the_run(fakes):

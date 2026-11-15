@@ -66,6 +66,34 @@ def patch_containing(ra: float, dec: float, nside: int = DEFAULT_NSIDE) -> int:
     return int(_healpix(nside).skycoord_to_healpix(coord))
 
 
+def patches_containing(ra: ArrayLike, dec: ArrayLike, nside: int = DEFAULT_NSIDE) -> np.ndarray:
+    """NESTED index of the patch containing each ICRS position (degree arrays)."""
+    ra, dec = np.asarray(ra, dtype=float), np.asarray(dec, dtype=float)
+    if not (np.all(np.isfinite(ra)) and np.all(np.isfinite(dec)) and np.all(np.abs(dec) <= 90)):
+        raise ValueError("invalid positions (non-finite, or |dec| > 90)")
+    return np.asarray(_healpix(nside).lonlat_to_healpix(ra * u.deg, dec * u.deg), dtype=np.int64)
+
+
+def children(ipix: int, nside: int, child_nside: int) -> np.ndarray:
+    """NESTED indices at `child_nside` of the pixels that tile patch `ipix` (ascending).
+
+    In NESTED ordering the children of pixel p at k times the nside are the
+    k**2 consecutive indices from p * k**2.
+    """
+    ipix = _validate_ipix(ipix, nside)
+    validate_nside(child_nside)
+    if child_nside < nside:
+        raise ValueError(f"child_nside {child_nside} is coarser than nside {nside}")
+    n = (child_nside // nside) ** 2
+    return np.arange(ipix * n, (ipix + 1) * n, dtype=np.int64)
+
+
+def centers(ipix: ArrayLike, nside: int = DEFAULT_NSIDE) -> tuple[np.ndarray, np.ndarray]:
+    """ICRS (ra, dec) arrays in degrees of the centres of patches `ipix`."""
+    lon, lat = _healpix(nside).healpix_to_lonlat(np.asarray(ipix))
+    return lon.to_value(u.deg), lat.to_value(u.deg)
+
+
 def patch_center(ipix: int, nside: int = DEFAULT_NSIDE) -> tuple[float, float]:
     """ICRS (ra, dec) in degrees of the centre of patch `ipix`."""
     coord = _healpix(nside).healpix_to_skycoord(_validate_ipix(ipix, nside))

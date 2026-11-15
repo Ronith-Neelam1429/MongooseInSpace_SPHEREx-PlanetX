@@ -94,12 +94,15 @@ _jobs_lock = threading.Lock()
 _runner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="motion")
 
 
-def request_job(ra: float, dec: float, size_deg: float) -> MotionResponse:
+def request_job(ra: float, dec: float, size_deg: float, need_engine: bool = False) -> MotionResponse:
     """State of the run for this position, starting one if there is none.
 
     The position is snapped like the cutout cache (0.001 deg), so nearby
     requests share a run and its downloads. A failed run is reported for
     FAILED_TTL_S and then forgotten, so asking again retries it.
+    `need_engine` is for follow-up requests that need the engine's data (evidence
+    images): a finished run whose data was dropped (MAX_ENGINE_KEPT) is run again,
+    where plain polling keeps getting its summary.
     """
     ra, dec, _ = cutouts.cutout_request(ra, dec, size_deg)
     key = (ra, dec, round(size_deg, 5))
@@ -111,6 +114,9 @@ def request_job(ra: float, dec: float, size_deg: float) -> MotionResponse:
             if j.finished is not None and now - j.finished > ttl:
                 del _jobs[k]
         job = _jobs.get(key)
+        if need_engine and job is not None and job.status == "done" and job.engine is None:
+            del _jobs[key]
+            job = None
         if job is None:
             if sum(j.status == "running" for j in _jobs.values()) > MAX_WAITING_JOBS:
                 raise MotionBusy("too many motion runs are waiting; try again shortly")

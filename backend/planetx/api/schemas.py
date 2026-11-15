@@ -228,6 +228,22 @@ class FieldScatter(BaseModel):
     n_stars: int
 
 
+class EvidenceExposure(BaseModel):
+    """One single SPHEREx exposure of the object's spot, as it came off the detector
+    (background removed, aligned, no combining). Same centre, orientation and grey scale
+    as the pass images; `MotionEvidence.exposure_px` pixels on a side."""
+
+    mjd: float
+    time: str = Field(description="UTC, YYYY-MM-DD HH:MM")
+    detector: int
+    wavelength_um: float | None = Field(None, description="Central wavelength of the exposure at the object")
+    image_png_b64: str = Field(description="Base64 PNG, grey + alpha")
+    point: EvidencePoint | None = Field(
+        None, description="The engine's detection of the object in this exposure (fluxes empty, n_frames 1); "
+        "null when this exposure did not detect it"
+    )
+
+
 class EvidencePass(BaseModel):
     """One survey pass: the image of the patch and the object's measurement in it."""
 
@@ -241,6 +257,24 @@ class EvidencePass(BaseModel):
     field_scatter: FieldScatter | None = Field(
         None, description="Null for the object's first pass, and when too few other objects were seen in both passes"
     )
+    n_cover: int = Field(0, description="Exposures of this pass that cover the object's position")
+    exposures: list[EvidenceExposure] = Field(
+        default_factory=list,
+        description="A few single exposures spread over the pass, time-ordered; empty when the engine "
+        "analysed per-pass stacks",
+    )
+
+
+class EvidenceCheck(BaseModel):
+    """One independent test of whether the motion is real and belongs to one object."""
+
+    key: str = Field(description="track_line | beyond_noise | images_show_motion | same_look | "
+                     "detectors_agree | many_exposures | no_stand_in")
+    title: str = Field(description="What the test asks, in plain words")
+    status: str = Field(description="pass | weak | fail | unknown (the data cannot tell)")
+    summary: str = Field(description="The result in one or two plain sentences, with its numbers")
+    details: list[str] = Field(default_factory=list, description="Supporting numbers, one line each")
+    value: float | None = Field(default=None, description="The test's main number (e.g. a significance), when it has one")
 
 
 class EvidenceFit(BaseModel):
@@ -280,6 +314,47 @@ class MotionEvidence(BaseModel):
     difference_passes: tuple[int, int] = Field(description="Pass indices (first, last) of the difference image")
     fit: EvidenceFit
     pm_floor_arcsec_yr: float = Field(description="As MotionResult.pm_floor_arcsec_yr")
+    exposure_arcsec: float = Field(0.0, description="Side of the single-exposure images (same centre as the patch)")
+    exposure_px: int = Field(0, description="Side of every single-exposure image, pixels")
+    checks: list[EvidenceCheck] = Field(
+        default_factory=list, description="Independent tests that the motion is real and is one object"
+    )
+    missing_passes: list[int] = Field(
+        default_factory=list,
+        description="Passes whose frames covered the fitted track but found nothing there: the engine then "
+        "takes the positions for different objects, so the object is not a mover whatever its fitted motion",
+    )
+
+
+class SurveyImage(BaseModel):
+    """An older survey's image of a square patch: same orientation and centre as MotionEvidence's.
+
+    North up, east left; the image's centre pixel is the patch centre, and an offset
+    (east, north) in arcsec lies at column `(patch_px - 1) / 2 - east / pixel_arcsec`,
+    row `(patch_px - 1) / 2 - north / pixel_arcsec`.
+    """
+
+    survey: str = Field(description='"2mass" | "wise"')
+    label: str = Field(description='e.g. "2MASS Ks"')
+    mjd: float = Field(description="When the image was taken (AllWISE: the mean of its exposures)")
+    date: str
+    patch_px: int
+    pixel_arcsec: float
+    image_png_b64: str = Field(description="Grey + alpha PNG; transparent where the survey has no data")
+
+
+class SurveyGap(BaseModel):
+    survey: str
+    label: str
+    reason: str = Field(description="Why there is no image, for people")
+
+
+class SurveyImages(BaseModel):
+    ra: float = Field(description="Patch centre")
+    dec: float
+    patch_arcsec: float
+    images: list[SurveyImage] = Field(description="Oldest first")
+    unavailable: list[SurveyGap]
 
 
 class SurveyCounts(BaseModel):
@@ -314,3 +389,31 @@ class SurveyStatus(BaseModel):
 # order = log2(nside). Pass straight to `A.MOCFromJSON(coverage)`. The list is
 # empty until the first patch is done (skip drawing then).
 SurveyCoverage = dict[str, list[int]]
+
+
+class SurveyCandidate(BaseModel):
+    """A notable object the offline survey stored: a mover, motion candidate or variable."""
+
+    id: int = Field(description="Row id; changes when the survey re-processes the patch")
+    ra: float = Field(description="Fitted position (deg, ICRS) at the mean date of the SPHEREx passes")
+    dec: float
+    name: str | None = Field(description="Catalogue name (Gaia/SIMBAD/SkyBoT), null when uncatalogued")
+    classification: str | None = Field(
+        description="known_star | known_asteroid | variable_star | artifact | unknown_candidate | static;"
+        " null when the catalogue check could not run"
+    )
+    is_variable: bool
+    pm_total: float = Field(description="SPHEREx proper motion, arcsec/yr")
+    pm_ra_cosdec: float = Field(description="arcsec/yr, east positive")
+    pm_dec: float = Field(description="arcsec/yr, north positive")
+    significance: float = Field(description="pm_total / its error (sigma)")
+    position_angle_deg: float = Field(description="Direction of motion, degrees east of north")
+    score: float = Field(ge=0, le=1, description="How interesting, 0-1 (see docs/API.md)")
+    nside: int = Field(description="HEALPix nside of the survey patch it was found in")
+    ipix: int = Field(description="NESTED index of that patch")
+    found: str = Field(description="UTC date (YYYY-MM-DD) of the run that stored it")
+
+
+class SurveyCandidates(BaseModel):
+    total: int = Field(description="Candidates matching the filter (all pages)")
+    candidates: list[SurveyCandidate] = Field(description="This page, best score first")

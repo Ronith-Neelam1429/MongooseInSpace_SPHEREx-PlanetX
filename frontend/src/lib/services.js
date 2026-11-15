@@ -87,7 +87,7 @@ const PM_MARGIN_DEG = 0.09;
 export async function querySimbad(ra, dec, radiusDeg, { limit = 200, signal } = {}) {
   const searchR = radiusDeg + PM_MARGIN_DEG;
   const years = decimalYear() - 2000;
-  const q = `SELECT TOP ${limit * 3} b.main_id, b.otype, d.description, b.ra, b.dec, b.pmra, b.pmdec, f.V, f.G, f.K,
+  const q = `SELECT TOP ${limit * 3} b.main_id, b.otype, d.description, d.path, b.ra, b.dec, b.pmra, b.pmdec, f.V, f.G, f.K,
     DISTANCE(POINT('ICRS', b.ra, b.dec), POINT('ICRS', ${ra}, ${dec})) AS dist
     FROM basic AS b LEFT JOIN otypedef AS d ON b.otype = d.otype LEFT JOIN allfluxes AS f ON b.oid = f.oidref
     WHERE CONTAINS(POINT('ICRS', b.ra, b.dec), CIRCLE('ICRS', ${ra}, ${dec}, ${searchR})) = 1
@@ -97,6 +97,7 @@ export async function querySimbad(ra, dec, radiusDeg, { limit = 200, signal } = 
     name: String(r.main_id).replace(/^NAME /, '').replace(/\s+/g, ' '),
     otype: r.otype,
     type: r.description || r.otype,
+    path: r.path || null, // place in SIMBAD's type tree, e.g. "* > Ev* > AB* > Mi*"
     ra: num(r.ra), dec: num(r.dec),
     pmra: num(r.pmra), pmdec: num(r.pmdec),
     mag: num(r.V) ?? num(r.G) ?? num(r.K),

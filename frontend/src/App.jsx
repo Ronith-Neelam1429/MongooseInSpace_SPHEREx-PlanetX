@@ -3,6 +3,8 @@ import SkyMap from './components/SkyMap.jsx';
 import InfoPanel from './components/InfoPanel.jsx';
 import CandidatesPanel from './components/CandidatesPanel.jsx';
 import Search from './components/Search.jsx';
+import ClassFilter from './components/ClassFilter.jsx';
+import { SHOW_ALL, SHOW_MOVING, countClasses, engineClass, isMovingOnly, knownClass } from './lib/classes.js';
 import { decimalYear, formatDec, formatFov, formatRa, parseCoords, propagate, separation } from './lib/coords.js';
 import { API_BASE, fetchSurvey, fetchVisits, queryGaia, querySimbad, resolveName, runMotion } from './lib/services.js';
 import { StarField, arrowYears } from './lib/starfield.js';
@@ -12,6 +14,7 @@ import { shortClaim, shortName, speed, verdict } from './lib/plain.js';
 import { DEFAULT_FRAME, SPHEREX_FRAMES, SURVEYS, surveyById } from './lib/surveys.js';
 import { TARGET_FOV, findTarget } from './lib/targets.js';
 import { readViewFromUrl, writeViewToUrl } from './lib/url.js';
+import { otherObjects } from './lib/evidence.js';
 import './App.css';
 
 const GAIA_LIMIT = 3000;
@@ -117,7 +120,7 @@ export default function App() {
   const [resume, setResume] = useState(null); // the object just left: its list row takes the keyboard focus back
   const [listOpen, setListOpen] = useState(false); // the survey's candidates list
   const [playing, setPlaying] = useState(false);
-  const [moversOnly, setMoversOnly] = useState(false);
+  const [filter, setFilter] = useState(SHOW_ALL); // which kinds of object are shown (lib/classes.js)
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState({ status: 'idle' });
   const [copied, setCopied] = useState(false);
@@ -132,9 +135,18 @@ export default function App() {
     const lists = { simbad: simbad.status === 'ok' ? simbad.all : null, gaia: gaia.status === 'ok' ? gaia.all : null };
     return notable(motion.result).map((o) => ({ o, who: identify(o, lists) }));
   }, [motion, simbad, gaia]);
+  // The run whose other (static) objects are listed and pickable on the map; a new run closes the list.
+  const [othersFor, setOthersFor] = useState(null);
+  const othersOpen = motion.status === 'ok' && othersFor === motion.result;
+  const others = useMemo(() => {
+    if (!othersOpen) return null;
+    const lists = { simbad: simbad.status === 'ok' ? simbad.all : null, gaia: gaia.status === 'ok' ? gaia.all : null };
+    return otherObjects(motion.result.objects, results.map((r) => r.o)).map((o) => ({ o, who: identify(o, lists) }));
+  }, [othersOpen, motion, results, simbad, gaia]);
   // Objects that keep a name on the map: the engine's results, then the notable known ones.
   const labels = useMemo(() => {
-    const named = new Set(results.flatMap(({ who }) => who.matches.map((m) => m.name)));
+    // Only results the filter shows carry a name; a hidden one leaves the label to its known row.
+    const named = new Set(results.filter((r) => filter[engineClass(r.o)]).flatMap(({ who }) => who.matches.map((m) => m.name)));
     const out = results.map((r) => ({ ...mapTarget({ kind: 'engine', obj: r.o }), text: resultLabel(r), tone: 'measured' }));
     for (const row of notableKnown(known.rows)) {
       // An engine result already carries this object's name.
@@ -142,7 +154,12 @@ export default function App() {
       out.push({ ...mapTarget({ kind: 'known', obj: row }), text: shortName(row.name), tone: 'known' });
     }
     return out;
-  }, [results, known]);
+  }, [results, known, filter]);
+  // How many of each kind the open field holds, for the filter.
+  const counts = useMemo(() => {
+    if (gaia.status !== 'ok' && simbad.status !== 'ok' && motion.status !== 'ok') return null;
+    return countClasses(known.rows, gaia.status === 'ok' ? gaia.stars : [], results.map((r) => r.o));
+  }, [known, gaia, simbad, motion, results]);
   const hovered = useMemo(() => {
     if (!hover) return null;
     return hover.kind === 'engine' ? hover : { kind: 'known', obj: known.of(hover.kind, hover.obj) };
@@ -154,8 +171,9 @@ export default function App() {
       known,
       describe(kind, obj) {
         if (kind === 'engine') {
-          const r = results.find((x) => x.o === obj);
-          return r ? `${resultLabel(r)} · ${shortClaim(obj)}` : shortClaim(obj);
+          const r = results.find((x) => x.o === obj) || others?.find((x) => x.o === obj);
+          const what = shortClaim(obj) || verdict(obj);
+          return r ? `${resultLabel(r)} · ${what}` : what;
         }
         const row = known.of(kind, obj);
         const pm = row.pm >= FAST_ARCSEC_YR ? ` · ${speed(row.pm)}″/yr` : '';
@@ -210,7 +228,7 @@ export default function App() {
     setPointed(null);
     setResume(null);
     setListOpen(false);
-    setMoversOnly(false);
+    // The class filter carries over: someone hunting movers keeps "Moving" from patch to patch.
     // The engine is costly (it downloads tens of frames), so it runs only on request.
     aborts.current.motion?.abort();
     setMotion({ status: API_BASE ? 'idle' : 'none' });
@@ -302,7 +320,8 @@ export default function App() {
     if (gaia.status === 'ok') field.current?.setGaia(gaia.stars, gaia.years);
     else field.current?.setGaia([], null);
   }, [gaia, ready]);
-  useEffect(() => { field.current?.setMotion(results.map((r) => r.o)); }, [results, ready]);
+  // The ~hundreds of static objects are drawn (and pickable) only while their list is open.
+  useEffect(() => { field.current?.setMotion([...results, ...(others || [])].map((r) => r.o)); }, [results, others, ready]);
   useEffect(() => { field.current?.setNotable(labels); }, [labels, ready]);
   useEffect(() => {
     const name = focus && (focus.kind === 'engine' ? labels.find((l) => l.obj === focus.obj)?.text : shortName(focus.obj.name));
@@ -312,7 +331,10 @@ export default function App() {
     const t = pointed && mapTarget(pointed);
     field.current?.setHighlight(t ? { ...t, text: latest.current.describe(t.kind, t.obj) } : null);
   }, [pointed, ready]);
-  useEffect(() => { field.current?.setMoversOnly(moversOnly); }, [moversOnly, ready]);
+  // A catalogue marker's class comes from its known-object row, so a Gaia dot joined to a SIMBAD
+  // galaxy or variable is drawn as one.
+  useEffect(() => { field.current?.setClassifier((kind, obj) => knownClass(known.of(kind, obj))); }, [known, ready]);
+  useEffect(() => { field.current?.setFilter(filter); }, [filter, ready]);
   useEffect(() => { field.current?.setVisible({ gaia: show.gaia, simbad: show.simbad, engine: show.engine }); }, [show, ready]);
   useEffect(() => { field.current?.setPlaying(playing); }, [playing, ready]);
 
@@ -403,8 +425,9 @@ export default function App() {
   const fr = SPHEREX_FRAMES[frameIdx];
   const isCube = surveyById(survey).cube;
   const panel = listOpen ? 'list' : sel ? 'patch' : null;
-  // An engine result's card carries its evidence images, so it gets half the window.
-  const wide = panel === 'patch' && focus?.kind === 'engine';
+  // An engine object's card carries its evidence images, so it gets half the window; so does a
+  // catalogued object's card once a run is done (it shows the images of the tracked object there).
+  const wide = panel === 'patch' && (focus?.kind === 'engine' || (focus?.kind === 'known' && motion.status === 'ok'));
 
   return (
     <div className={`app ${panel ? 'with-panel' : ''} ${wide ? 'wide' : ''}`}>
@@ -458,6 +481,8 @@ export default function App() {
           </div>
         </nav>
 
+        {sel && <ClassFilter filter={filter} counts={counts} onChange={setFilter} />}
+
         <footer className="hud">
           <Readout ref={readout} />
           {isCube && (
@@ -500,6 +525,8 @@ export default function App() {
           motion={motion}
           known={known}
           results={results}
+          others={others}
+          onToggleOthers={() => setOthersFor(othersOpen ? null : motion.result)}
           focus={focus}
           hover={hovered}
           resume={resume}
@@ -512,8 +539,9 @@ export default function App() {
           copied={copied}
           playing={playing}
           onTogglePlay={() => setPlaying(!playing)}
-          moversOnly={moversOnly}
-          onToggleMovers={() => setMoversOnly(!moversOnly)}
+          filter={filter}
+          moversOnly={isMovingOnly(filter)}
+          onToggleMovers={() => setFilter(isMovingOnly(filter) ? SHOW_ALL : SHOW_MOVING)}
           getYear={getYear}
         />
       )}

@@ -30,7 +30,7 @@ def get_db_path() -> Path:
 DbPath = Annotated[Path, Depends(get_db_path)]
 
 
-def _cannot_open(exc: sqlite3.OperationalError) -> bool:
+def cannot_open(exc: sqlite3.OperationalError) -> bool:
     """True for SQLite errors meaning the file can't be opened read-only, as opposed to bugs."""
     name = getattr(exc, "sqlite_errorname", "")
     return name.startswith(("SQLITE_CANTOPEN", "SQLITE_READONLY"))
@@ -44,7 +44,7 @@ def _read[T](db_path: Path, read: Callable[[PatchQueue], T]) -> T | None:
         with PatchQueue(db_path, readonly=True) as queue:
             return read(queue)
     except sqlite3.OperationalError as exc:
-        if not _cannot_open(exc):
+        if not cannot_open(exc):
             raise
         log.warning("survey database %s cannot be opened read-only: %s", db_path, exc)
         return None

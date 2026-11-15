@@ -118,10 +118,45 @@ patch of sky around it in every survey pass (real SPHEREx frames of that pass, a
 median-combined, one shared grey scale, north up, east left, PNGs as base64), a
 last-minus-first difference image, its measured position per pass with errors, the
 straight-line fit, and how far the field's fixed stars appear to shift (the noise).
+Also:
+- `passes[].exposures`: up to 6 single exposures per pass (`EvidenceExposure`), shared out over
+  detectors and spread over the pass, whether or not they detected the object, each with the
+  engine's detection in it. Same centre and grey scale, `exposure_px` pixels on a side. Empty
+  when the engine ran on per-pass stacks. `passes[].n_cover`: exposures covering the object.
+- `checks`: independent tests that the motion is real and is one object (`EvidenceCheck`,
+  built in `planetx/api/evidence_checks.py`), each `pass | weak | fail | unknown` with a plain
+  summary and its numbers: `beyond_noise` (move vs. fixed stars' scatter), `track_line` (one
+  straight track), `images_show_motion` (dark-to-bright pair in the difference image, read as a
+  shift from the pixels alone and checked against random places and a cross-track control),
+  `many_exposures`, `detectors_agree` (each detector's own shift), `same_look` (brightness and
+  colour per band), `no_stand_in` (no other source at its old or new spots). The frontend adds
+  `other_surveys` from the run's archive and catalogue checks.
 - `ra`, `dec`, `size_deg`: the same values as the finished `/api/motion` run.
 - `object`: `MotionObject.id` from that run.
-- 404 when the run's engine data is no longer kept (only the newest 4 runs keep it):
-  request `/api/motion` again until done, then retry. The frontend does this itself.
+- 404 when the run's engine data is no longer kept (only the newest 4 runs keep it). The
+  404 also starts the field again, so request `/api/motion` until done, then retry. The
+  frontend does this itself.
+- `missing_passes`: passes whose frames covered the fitted track but found nothing there.
+  The engine then takes the positions for different objects, so such an object is never a
+  mover, however large and significant its fitted slope.
+
+### `GET /api/motion/evidence/surveys?ra=&dec=&side_arcsec=`
+The same sky in older surveys (`SurveyImages`): 2MASS Ks (1997-2001) and AllWISE W1 (mean
+date ~2010), from IRSA (SIA2 `twomass_allsky` / `wise_allwise`, IBE cutouts), north up,
+east left, centred on `ra`, `dec`. Independent of any run: the frontend centres it between
+the object's SPHEREx position and where its motion puts it in 1999, and marks both.
+- `side_arcsec`: 30-900. Native pixels (2MASS 1", WISE 1.375"), coarser beyond 601 px.
+- Where one survey image does not cover the patch, images of the same night are pieced
+  together (each on a common zero sky level); pixels none covers are transparent.
+- Always 200: a survey that cannot give an image (no coverage, IRSA down) is listed in
+  `unavailable` with a reason, and asked again only after 2 minutes. Cached on disk under
+  `PLANETX_CACHE_DIR/surveys` (200 MB, least recently used out); `Cache-Control` one day
+  when both images are there.
+
+```sh
+curl 'http://127.0.0.1:8000/api/motion/evidence/surveys?ra=269.4492&dec=4.7297&side_arcsec=432'
+# Barnard's Star: 2MASS 2000-05-28 shows it ~4.5' south of its SPHEREx position
+```
 
 ## Errors
 
@@ -140,3 +175,52 @@ or COLD, plus non-finite pixels. IRSA's photometry tool rejects more flags
 (`PHOTOMETRY_BAD_FLAGS` in `planetx/cutouts.py`, which include BLOOM and SUR_ERROR).
 Those flags also cover the cores of bright stars such as Barnard's Star, so they are
 not applied to the images. The detection pipeline should apply them.
+
+## Survey candidates
+
+The offline crawler (`uv run python -m planetx.survey run --processor motion`) runs the
+same pipeline as `/api/motion` over every survey patch (HEALPix nside 64, ~0.92 deg).
+A patch is tiled into 64 fields of 0.2 deg centred on its nside-512 sub-pixels; an
+object seen by several overlapping fields is kept once, from the field whose centre
+is nearest. It stores the notable objects (movers, motion candidates and brightness
+variables) in the `candidates` table of the survey database (`PLANETX_DB`).
+Re-processing a patch replaces its rows, so ids are not stable across runs.
+
+### `GET /api/candidates?limit=100&offset=0&classification=`
+`SurveyCandidates` in `schemas.py`, best score first (ties by id):
+
+```json
+{ "total": 1,
+  "candidates": [{ "id": 1, "ra": 269.45, "dec": 4.74, "name": "Barnard's Star",
+    "classification": "known_star", "is_variable": false,
+    "pm_total": 10.4, "pm_ra_cosdec": -0.5, "pm_dec": 10.4, "significance": 6.1,
+    "position_angle_deg": 357.0, "score": 0.13, "nside": 64, "ipix": 23456,
+    "found": "2026-11-14" }] }
+```
+
+- `limit` 1-500 (default 100), `offset` >= 0. `classification` is one of
+  `known_star | known_asteroid | variable_star | artifact | unknown_candidate | static`
+  or empty for all (anything else is 422). Stored objects whose catalogue check could
+  not run have `classification: null` and appear only in the unfiltered list.
+- Motions are the SPHEREx fit in arcsec/yr, as `MotionObject` reports them; `found`
+  is the UTC date of the run that stored the row.
+- An empty list (`total: 0`), not an error, while the survey database or its
+  candidates table does not exist. The API only reads the database.
+- `score` (0-1) = tier + up to 0.09 for significance (linear from 3 to 10 sigma: the
+  motion's for movers and candidates, the brightness change's for variables):
+
+  | Tier | Object |
+  |-----:|--------|
+  | 0.9 | uncatalogued mover (`unknown_candidate`, significant motion) |
+  | 0.7 | mover, catalogue check did not run |
+  | 0.6 | uncatalogued 3-5 sigma motion candidate |
+  | 0.5 | uncatalogued brightness variable |
+  | 0.4 | motion candidate, catalogue check did not run |
+  | 0.3 | known asteroid; variable whose catalogue check did not run |
+  | 0.2 | catalogued variable star |
+  | 0.1 | catalogued star whose proper motion explains the motion |
+  | 0.0 | artifact |
+
+```sh
+curl 'http://127.0.0.1:8000/api/candidates?limit=20&classification=unknown_candidate'
+```

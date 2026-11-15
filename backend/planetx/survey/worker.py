@@ -54,6 +54,7 @@ class PatchContext:
     """What a processor gets: the patch, plus flags to check between slow steps."""
 
     patch: Patch
+    db_path: Path  # the survey database, for processors that store results next to the queue
     _abort: threading.Event = field(repr=False)
     _lease_lost: threading.Event = field(repr=False)
 
@@ -254,7 +255,7 @@ def _process_one(
     log.info("patch rank %d (ipix %d, attempt %d): processing", patch.rank, patch.ipix, patch.attempts + 1)
     try:
         with _heartbeat(queue, patch) as lease_lost:
-            ctx = PatchContext(patch, flags.abort, lease_lost)
+            ctx = PatchContext(patch, queue.path, flags.abort, lease_lost)
             flags.in_processor = True
             try:
                 summary = process_patch(ctx)
@@ -319,5 +320,16 @@ def dry_run(ctx: PatchContext) -> dict[str, Any]:
     return {"dry_run": True, "ra": round(ra, 6), "dec": round(dec, 6)}
 
 
-# Processors selectable from the CLI. The real motion-detection processor goes here.
-PROCESSORS: dict[str, ProcessPatch] = {"dry-run": dry_run}
+def motion(ctx: PatchContext) -> dict[str, Any]:
+    """The real processor: motion pipeline over the patch, notable objects into the candidates table.
+
+    Imported on first use: it pulls in the whole pipeline (astropy, the engine,
+    the archive clients), which `status`, `init` and the API do not need.
+    """
+    from planetx.survey.motion import process_patch
+
+    return process_patch(ctx)
+
+
+# Processors selectable from the CLI.
+PROCESSORS: dict[str, ProcessPatch] = {"dry-run": dry_run, "motion": motion}

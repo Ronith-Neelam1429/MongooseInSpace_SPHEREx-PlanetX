@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { prefersReducedMotion } from '../lib/camera.js';
 import {
-  brightnessSeries, dayMonthYear, describe, fetchEvidence, monthYear, motionChart, ticks,
+  brightnessSeries, dayMonthTime, dayMonthYear, describe, fetchEvidence, fetchSurveyImages, monthYear, motionChart, passSpan,
+  predictionMotion, proofChecks, proofTally, scaleBar, surveyMarks, ticks,
 } from '../lib/evidence.js';
 import './MotionEvidence.css';
 
@@ -25,70 +26,145 @@ function rerunText(job) {
   return `The engine no longer holds this field. Running it again: ${stage}`;
 }
 
-/** "Aug – Oct 2025", "Sep 2025" or "Dec 2025 – Jan 2026" for a pass's first and last exposure. */
-function passSpan(p) {
-  const a = monthYear(p.start), b = monthYear(p.end);
-  if (a === b) return a;
-  return a.slice(-4) === b.slice(-4) ? `${a.slice(0, 3)} – ${b}` : `${a} – ${b}`;
-}
-
 function bandText(band) {
   const [detector, kind] = band.split('-');
   const range = BAND_RANGE[detector] ? `${detector} · ${BAND_RANGE[detector]}` : detector;
   return kind ? `${range} (halo of the saturated star)` : range;
 }
 
-/** The real images, one per pass, blinking in place, with the measured positions marked. */
-function Blink({ evidence, object }) {
+const SURVEY_SHORT = { '2mass': '2MASS', wise: 'WISE' };
+const surveyView = (image) => `survey:${image.survey}`;
+
+function Compass() {
+  return (
+    <span className="ev-tag ev-compass" aria-hidden="true">
+      <svg width="34" height="30" viewBox="0 0 34 30">
+        <path d="M24 26V7M24 26H7M20.5 10.5 24 7l3.5 3.5M10.5 22.5 7 26l3.5 3.5" fill="none" stroke="currentColor" />
+        <text x="24" y="5" textAnchor="middle">N</text><text x="2.5" y="29" textAnchor="middle">E</text>
+      </svg>
+    </span>
+  );
+}
+
+/** A scale bar of `bar` arcsec in the lower left of an image `side` arcsec wide. */
+function ScaleBar({ side, bar }) {
+  const half = side / 2;
+  return (
+    <>
+      <svg className="ev-marks" viewBox={`${-half} ${-half} ${side} ${side}`} aria-hidden="true">
+        <line className="ev-bar" x1={-0.92 * half} x2={-0.92 * half + bar} y1={0.91 * half} y2={0.91 * half} />
+      </svg>
+      <span className="ev-tag ev-scale" aria-hidden="true">{bar >= 60 ? `${bar / 60}′` : `${bar}″`}</span>
+    </>
+  );
+}
+
+/** Crosshair ticks around (cx, cy), scaled with the image (`k` = 1 on the SPHEREx patch). */
+function Ticks({ cx = 0, cy = 0, k = 1 }) {
+  const [tickIn, tickOut] = REF_TICK_ARCSEC.map((v) => v * k);
+  return (
+    <g className="ev-ref">
+      <line x1={cx - tickOut} y1={cy} x2={cx - tickIn} y2={cy} /><line x1={cx + tickIn} y1={cy} x2={cx + tickOut} y2={cy} />
+      <line x1={cx} y1={cy - tickOut} x2={cx} y2={cy - tickIn} /><line x1={cx} y1={cy + tickIn} x2={cx} y2={cy + tickOut} />
+    </g>
+  );
+}
+
+/** What the older survey image shows, in words. */
+function surveyCaption(image, mark, object) {
+  const when = `${image.label} · ${dayMonthYear(image.date)}${image.survey === 'wise' ? ' (mean date of the AllWISE exposures)' : ''}`;
+  const years = `${mark.years.toFixed(0)} years before SPHEREx`;
+  if (!mark.source) {
+    return `${when} · ${years}. The engine found no motion, so the ring is at its SPHEREx position: a fixed star sits in it here too.`;
+  }
+  const err = mark.then.err >= 1 ? ` (± ${mark.then.err.toFixed(0)}″)` : '';
+  const where = mark.inside
+    ? `Ring: where ${mark.source} puts ${object.name || 'it'} on that date${err}. Cross: its SPHEREx position.`
+    : `Where ${mark.source} puts it on that date lies outside this image. Cross: its SPHEREx position.`;
+  return `${when} · ${years}. ${where}`;
+}
+
+/**
+ * The real images, one per pass, blinking in place, with the measured positions marked; then the
+ * same sky in older surveys (2MASS, WISE), when they load, with where the object was predicted.
+ */
+function Blink({ evidence, object, surveys }) {
   const { passes } = evidence;
   const seen = useMemo(() => passes.filter((p) => p.point), [passes]);
-  const [view, setView] = useState(seen[0].index); // a pass index, or 'difference'
+  // A pass index, 'difference', or 'survey:<key>' for an older survey's image.
+  const [view, setView] = useState(seen[0].index);
   const [playing, setPlaying] = useState(() => passes.length > 1 && !prefersReducedMotion());
   const [marks, setMarks] = useState(true);
 
   useEffect(() => {
     if (!playing) return undefined;
-    const timer = setInterval(() => setView((v) => (v === 'difference' ? 0 : (v + 1) % passes.length)), BLINK_MS);
+    // Blinking goes through the SPHEREx passes only: the older images have another scale.
+    const timer = setInterval(() => setView((v) => (typeof v === 'number' ? (v + 1) % passes.length : 0)), BLINK_MS);
     return () => clearInterval(timer);
   }, [playing, passes.length]);
 
   const show = (v) => { setPlaying(false); setView(v); };
-  const step = (by) => show(view === 'difference' ? seen[0].index : (view + by + passes.length) % passes.length);
+  const step = (by) => show(typeof view === 'number' ? (view + by + passes.length) % passes.length : seen[0].index);
   const onKeyDown = (ev) => {
     if (ev.key === 'ArrowRight') { ev.preventDefault(); step(1); }
     if (ev.key === 'ArrowLeft') { ev.preventDefault(); step(-1); }
   };
 
   const half = evidence.patch_arcsec / 2;
-  const current = view === 'difference' ? null : passes[view];
+  const older = surveys.status === 'ok' ? surveys.data.images : [];
+  const current = typeof view === 'number' ? passes[view] : null;
+  const image = older.find((im) => surveyView(im) === view) || null;
+  const mark = image ? surveyMarks(object, evidence, surveys.data, image) : null;
   const [firstIndex, lastIndex] = evidence.difference_passes;
   const gaps = passes.some((p) => p.coverage < 1);
   const at = (p) => ({ cx: -p.point.east_arcsec, cy: -p.point.north_arcsec }); // east is left, north is up
-  const [tickIn, tickOut] = REF_TICK_ARCSEC;
 
-  const caption = current
-    ? `Pass ${current.index + 1} of ${passes.length} · ${dayMonthYear(current.start)} to ${dayMonthYear(current.end)} · median of ${current.n_frames} exposures${current.point ? '' : ' · the engine did not find the object in this pass'}`
-    : `${passSpan(passes[lastIndex])} minus ${passSpan(passes[firstIndex])}. Grey: no change. White: brighter now. Black: fainter now. An object that moved leaves a dark spot where it was and a bright one where it is.`;
+  let caption, label, tag;
+  if (current) {
+    caption = `Pass ${current.index + 1} of ${passes.length} · ${dayMonthYear(current.start)} to ${dayMonthYear(current.end)} · median of ${current.n_frames} exposures${current.point ? '' : ' · the engine did not find the object in this pass'}`;
+    label = `SPHEREx image of the sky around the object, pass ${current.index + 1} of ${passes.length}, ${passSpan(current)}`;
+    tag = passSpan(current);
+  } else if (image) {
+    caption = surveyCaption(image, mark, object);
+    label = `${image.label} image of the same sky, ${dayMonthYear(image.date)}`;
+    tag = `${SURVEY_SHORT[image.survey] || image.survey} · ${image.date.slice(0, 4)}`;
+  } else {
+    caption = `${passSpan(passes[lastIndex])} minus ${passSpan(passes[firstIndex])}. Grey: no change. White: brighter now. Black: fainter now. An object that moved leaves a dark spot where it was and a bright one where it is.`;
+    label = 'Difference image: last pass minus first pass';
+    tag = 'Difference';
+  }
+
+  let surveyMarksSvg = null;
+  if (image && marks) {
+    const side = surveys.data.patch_arcsec, h = side / 2;
+    // Marks keep their size on the screen: the older images cover more sky than the SPHEREx patch.
+    const k = side / evidence.patch_arcsec;
+    const ring = RING_ARCSEC * k;
+    const then = { cx: -mark.then.east, cy: -mark.then.north };
+    const now = { cx: -mark.now.east, cy: -mark.now.north };
+    surveyMarksSvg = (
+      <svg className="ev-marks" viewBox={`${-h} ${-h} ${side} ${side}`} aria-hidden="true">
+        {mark.source && <line className="ev-track" x1={then.cx} y1={then.cy} x2={now.cx} y2={now.cy} />}
+        <Ticks {...now} k={k} />
+        {mark.inside && <circle className="ev-ring" r={ring} {...then} />}
+        {mark.inside && mark.then.err > ring && <circle className="ev-ring ev-was" r={mark.then.err} {...then} />}
+      </svg>
+    );
+  }
 
   return (
     <div className="ev-view">
-      <div
-        className="ev-sky"
-        role="img"
-        aria-label={current
-          ? `SPHEREx image of the sky around the object, pass ${current.index + 1} of ${passes.length}, ${passSpan(current)}`
-          : 'Difference image: last pass minus first pass'}
-      >
+      <div className="ev-sky" role="img" aria-label={label}>
         {passes.map((p) => (
           <img key={p.index} className={view === p.index ? 'ev-on' : ''} src={`data:image/png;base64,${p.image_png_b64}`} alt="" draggable="false" />
         ))}
         <img className={view === 'difference' ? 'ev-on' : ''} src={`data:image/png;base64,${evidence.difference_png_b64}`} alt="" draggable="false" />
-        {marks && (
+        {older.map((im) => (
+          <img key={im.survey} className={view === surveyView(im) ? 'ev-on' : ''} src={`data:image/png;base64,${im.image_png_b64}`} alt="" draggable="false" />
+        ))}
+        {marks && !image && (
           <svg className="ev-marks" viewBox={`${-half} ${-half} ${2 * half} ${2 * half}`} aria-hidden="true">
-            <g className="ev-ref">
-              <line x1={-tickOut} y1="0" x2={-tickIn} y2="0" /><line x1={tickIn} y1="0" x2={tickOut} y2="0" />
-              <line x1="0" y1={-tickOut} x2="0" y2={-tickIn} /><line x1="0" y1={tickIn} x2="0" y2={tickOut} />
-            </g>
+            <Ticks />
             {current?.point && <circle className="ev-ring" r={RING_ARCSEC} {...at(current)} />}
             {!current && (
               <>
@@ -98,17 +174,12 @@ function Blink({ evidence, object }) {
             )}
           </svg>
         )}
-        <span className="ev-tag ev-when">{current ? passSpan(current) : 'Difference'}</span>
-        <span className="ev-tag ev-compass" aria-hidden="true">
-          <svg width="34" height="30" viewBox="0 0 34 30">
-            <path d="M24 26V7M24 26H7M20.5 10.5 24 7l3.5 3.5M10.5 22.5 7 26l3.5 3.5" fill="none" stroke="currentColor" />
-            <text x="24" y="5" textAnchor="middle">N</text><text x="2.5" y="29" textAnchor="middle">E</text>
-          </svg>
-        </span>
-        <svg className="ev-marks" viewBox={`${-half} ${-half} ${2 * half} ${2 * half}`} aria-hidden="true">
-          <line className="ev-bar" x1={-0.92 * half} x2={-0.92 * half + SCALE_BAR_ARCSEC} y1={0.91 * half} y2={0.91 * half} />
-        </svg>
-        <span className="ev-tag ev-scale" aria-hidden="true">{SCALE_BAR_ARCSEC}″</span>
+        {surveyMarksSvg}
+        <span className="ev-tag ev-when">{tag}</span>
+        <Compass />
+        {image
+          ? <ScaleBar side={surveys.data.patch_arcsec} bar={scaleBar(surveys.data.patch_arcsec)} />
+          : <ScaleBar side={evidence.patch_arcsec} bar={SCALE_BAR_ARCSEC} />}
       </div>
 
       {/* Arrow keys step through the passes; every action is also a button. */}
@@ -141,16 +212,133 @@ function Blink({ evidence, object }) {
           </button>
         </span>
       </div>
+      {surveys.status !== 'none' && (
+        <div className="ev-controls ev-older" role="group" aria-label="Older surveys">
+          <span className="ev-older-title">Older surveys</span>
+          {older.map((im) => (
+            <button
+              key={im.survey} type="button" className={`ev-opt ${view === surveyView(im) ? 'ev-on' : ''}`}
+              aria-pressed={view === surveyView(im)} aria-label={`${im.label}, ${dayMonthYear(im.date)}`} onClick={() => show(surveyView(im))}
+            >
+              {SURVEY_SHORT[im.survey] || im.survey} {im.date.slice(0, 4)}
+            </button>
+          ))}
+          {surveys.status === 'loading' && <span className="ev-older-state">loading 2MASS and WISE</span>}
+          {surveys.status === 'error' && <span className="ev-older-state">unavailable ({surveys.error})</span>}
+          {surveys.status === 'ok' && surveys.data.unavailable.map((g) => (
+            <span key={g.survey} className="ev-older-state" title={g.reason}>{SURVEY_SHORT[g.survey] || g.survey}: unavailable</span>
+          ))}
+        </div>
+      )}
       <p className="ev-caption" aria-live={playing ? 'off' : 'polite'}>{caption}</p>
       <p className="ev-note">
-        Real SPHEREx images, north up, east left, all on one grey scale. Each image pixel is half a SPHEREx
-        pixel ({evidence.patch_pixel_arcsec.toFixed(1)}″) and shows measured values only, nothing smoothed in.{' '}
-        <span className="ev-key"><i className="ev-key-ring" />measured position in the pass shown</span>{' '}
-        <span className="ev-key"><i className="ev-key-ref" />where it was in the first pass</span>
-        {object.saturated && ' The white core is saturated: too bright for the detector, so drawn white.'}
-        {gaps && ' Hatched: outside the frames, no data.'}
+        {image
+          ? <>Archive image from IRSA, north up, east left, resampled without smoothing to {image.pixel_arcsec.toFixed(1)}″ pixels and centred between the two marks.{' '}</>
+          : <>Real SPHEREx images, north up, east left, all on one grey scale. Each image pixel is half a SPHEREx
+            pixel ({evidence.patch_pixel_arcsec.toFixed(1)}″) and shows measured values only, nothing smoothed in.{' '}</>}
+        <span className="ev-key"><i className="ev-key-ring" />{image ? 'predicted position on the date shown' : 'measured position in the pass shown'}</span>{' '}
+        <span className="ev-key"><i className="ev-key-ref" />{image ? 'SPHEREx position' : 'where it was in the first pass'}</span>
+        {!image && object.saturated && ' The white core is saturated: too bright for the detector, so drawn white.'}
+        {(image || gaps) && ' Hatched: no data.'}
       </p>
     </div>
+  );
+}
+
+const STATUS = {
+  pass: { mark: '✓', label: 'Passed' },
+  weak: { mark: '~', label: 'Partly' },
+  fail: { mark: '✗', label: 'Failed' },
+  unknown: { mark: '–', label: 'Cannot tell' },
+};
+
+/** Independent tests that the motion is real and belongs to one object, each with its numbers. */
+function Proof({ checks }) {
+  const tally = proofTally(checks);
+  const parts = [`${tally.pass} of ${tally.decided} tests passed`];
+  if (tally.weak) parts.push(`${tally.weak} partly`);
+  if (tally.unknown) parts.push(`${tally.unknown} the data cannot settle`);
+  return (
+    <section className="ev-proof" aria-labelledby="ev-proof-title">
+      <div className="ev-proof-head">
+        <h5 id="ev-proof-title">Is the motion real?</h5>
+        <span>{parts.join(' · ')}</span>
+      </div>
+      <p className="ev-note">
+        Each test looks at a different part of the data, so a fake mover (noise, a glitch, two stars joined into
+        one track) fails some of them.
+      </p>
+      <ol className="ev-checks">
+        {checks.map((c) => (
+          <li key={c.key} className={`ev-check ev-check-${c.status in STATUS ? c.status : 'unknown'}`}>
+            <span className="ev-mark" aria-hidden="true">{(STATUS[c.status] || STATUS.unknown).mark}</span>
+            <div className="ev-check-body">
+              <p className="ev-check-title">
+                {c.title}<span className="ev-sr"> {(STATUS[c.status] || STATUS.unknown).label}.</span>
+              </p>
+              <p className="ev-check-summary">{c.summary}</p>
+              {c.details?.length > 0 && (
+                <details>
+                  <summary>Numbers</summary>
+                  <ul className="ev-check-details">{c.details.map((d, i) => <li key={i}>{d}</li>)}</ul>
+                </details>
+              )}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+/** A few single exposures per pass, unprocessed but for background and alignment, with the detection marked. */
+function Exposures({ evidence }) {
+  const rows = evidence.passes.filter((p) => p.exposures?.length);
+  if (!rows.length) return null;
+  const half = evidence.exposure_arcsec / 2;
+  const first = evidence.passes.find((p) => p.point);
+  const [tickIn, tickOut] = REF_TICK_ARCSEC;
+  return (
+    <section className="ev-exp" aria-labelledby="ev-exp-title">
+      <h5 id="ev-exp-title">Single exposures, as the detector took them</h5>
+      <p className="ev-note">
+        One SPHEREx exposure per image: nothing combined or smoothed, only its background removed and its pointing
+        aligned, on the same grey scale as above. Each is {evidence.exposure_arcsec.toFixed(0)}″ across, north up.{' '}
+        <span className="ev-key"><i className="ev-key-ring" />where the engine found it in that exposure</span>{' '}
+        <span className="ev-key"><i className="ev-key-ref" />where it was in {monthYear(first.point.date)}</span>
+      </p>
+      {rows.map((p) => (
+        <div key={p.index} className="ev-exp-row">
+          <p className="ev-exp-label">
+            {passSpan(p)} · {p.exposures.length} of the {p.n_cover} exposures that cover it
+          </p>
+          <ul className="ev-exp-strip">
+            {p.exposures.map((e) => (
+              <li key={`${e.mjd}-${e.detector}`}>
+                <div className="ev-exp-img">
+                  <img
+                    src={`data:image/png;base64,${e.image_png_b64}`} draggable="false"
+                    alt={`Exposure of ${e.time} UTC, detector D${e.detector}${e.point ? '' : ': the engine did not find the object in it'}`}
+                  />
+                  <svg className="ev-marks" viewBox={`${-half} ${-half} ${2 * half} ${2 * half}`} aria-hidden="true">
+                    <g className="ev-ref">
+                      <line x1={-tickOut} y1="0" x2={-tickIn} y2="0" /><line x1={tickIn} y1="0" x2={tickOut} y2="0" />
+                      <line x1="0" y1={-tickOut} x2="0" y2={-tickIn} /><line x1="0" y1={tickIn} x2="0" y2={tickOut} />
+                    </g>
+                    {e.point && <circle className="ev-ring" r={RING_ARCSEC} cx={-e.point.east_arcsec} cy={-e.point.north_arcsec} />}
+                  </svg>
+                </div>
+                <p className="ev-exp-meta">
+                  {dayMonthTime(e.time)}<br />
+                  D{e.detector}{e.wavelength_um ? ` · ${e.wavelength_um.toFixed(2)} µm` : ''}
+                  {!e.point && <><br /><span className="ev-dim">not found</span></>}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -333,6 +521,27 @@ export default function MotionEvidence({ object, field }) {
     () => (state.key === key && state.status === 'ok' ? motionChart(object, state.evidence) : null),
     [state, key, object],
   );
+  const checks = useMemo(
+    () => (state.key === key && state.status === 'ok' ? proofChecks(object, state.evidence) : null),
+    [state, key, object],
+  );
+  // Older survey images: asked for once the SPHEREx evidence is in, and never in its way. They
+  // depend on the object only through the motion that places it (numbers, so a new instance of
+  // the same object does not ask again).
+  const evidence = state.key === key && state.status === 'ok' ? state.evidence : null;
+  const { pmEast, pmNorth, err: pmErr, source } = predictionMotion(object);
+  const [older, setOlder] = useState({ evidence: null });
+  useEffect(() => {
+    if (!evidence) return undefined;
+    const ctrl = new AbortController();
+    fetchSurveyImages({ pmEast, pmNorth, err: pmErr, source }, evidence, { signal: ctrl.signal }).then(
+      (data) => { if (!ctrl.signal.aborted) setOlder({ evidence, status: data ? 'ok' : 'none', data }); },
+      (err) => { if (!ctrl.signal.aborted) setOlder({ evidence, status: 'error', error: err?.message || String(err) }); },
+    );
+    return () => ctrl.abort();
+  }, [evidence, pmEast, pmNorth, pmErr, source]);
+  const surveys = older.evidence === evidence ? older : { status: 'loading' };
+
   const brightness = useMemo(() => {
     if (state.key !== key || state.status !== 'ok' || !object.is_variable) return null;
     const series = brightnessSeries(state.evidence);
@@ -363,10 +572,14 @@ export default function MotionEvidence({ object, field }) {
         <>
           <h4 className={`ev-headline ev-tone-${verdict.tone}`}>{verdict.headline}</h4>
           {verdict.lines.map((line) => <p key={line} className="ev-line">{line}</p>)}
+          {/* Only for what the engine thinks moved: for a fixed star, "passed" would mix up
+              "it moved" and "it stood still". */}
+          {(object.kind === 'mover' || object.kind === 'candidate') && <Proof checks={checks} />}
           <div className="ev-body">
-            <Blink key={key} evidence={now.evidence} object={object} />
+            <Blink key={key} evidence={now.evidence} object={object} surveys={surveys} />
             <Chart model={model} brightness={brightness} />
           </div>
+          <Exposures evidence={now.evidence} />
         </>
       )}
     </section>

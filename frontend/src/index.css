@@ -7,7 +7,9 @@
   --hover: #121211;
   --veil: rgba(0, 0, 0, 0.72);
   --signal: #ff4d2e; /* Gaia's catalogued motion */
-  --measured: #5ce1ff; /* what our engine measured in SPHEREx images (MEASURED in lib/starfield.js) */
+  --measured: #5ce1ff; /* what our engine measured in SPHEREx images (MEASURED in lib/classes.js) */
+  --variable: #ffc440; /* changes brightness (VARIABLE in lib/classes.js) */
+  --galaxy: #b294ff; /* galaxies, nebulae, clusters (GALAXY in lib/classes.js) */
   --serif: 'Instrument Serif', 'Times New Roman', serif;
   --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Consolas, monospace;
   color-scheme: dark;

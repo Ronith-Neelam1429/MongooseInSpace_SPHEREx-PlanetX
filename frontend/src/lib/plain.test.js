@@ -87,7 +87,7 @@ describe('wording', () => {
   it('explains what older surveys found', () => {
     const a = (verdictName, observatories = ['spherex', 'allwise', 'catwise'], baseline = 16.2) => archiveSentence({ verdict: verdictName, observatories, baseline_yr: baseline });
     expect(a('confirmed')).toBe('Confirmed: AllWISE, CatWISE saw it somewhere else, so it has kept moving over 16 years.');
-    expect(a('stationary', ['spherex', 'twomass'], 26.4)).toBe('Not confirmed: 2MASS saw it in the same place over 26 years, so it is probably not moving.');
+    expect(a('stationary', ['spherex', '2mass'], 26.4)).toBe('Not confirmed: 2MASS saw it in the same place over 26 years, so it is probably not moving.');
     expect(a('unconfirmed', ['spherex'], 1)).toMatch(/too little/);
     expect(archiveSentence(null)).toBeNull();
   });
