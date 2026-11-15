@@ -141,8 +141,29 @@ export function measure(object, evidence) {
     stars: last.field_scatter ? last.field_scatter.n_stars : 0,
     seen: seen.length,
     passes: evidence.passes.length,
+    // Passes that covered the track and saw nothing (older backends do not send them).
+    missing: (evidence.missing_passes || []).map((i) => evidence.passes[i]).filter(Boolean),
     span: `between ${monthYear(first.point.date)} and ${monthYear(last.point.date)}`,
   };
+}
+
+/** Why a pass that saw nothing on the track rules out one moving object (the engine's own check). */
+function missingText(missing) {
+  const which = listText(missing.map((p) => `pass ${p.index + 1} (${passSpan(p)})`));
+  const them = missing.length === 1 ? 'That pass’s images cover' : 'Those passes’ images cover';
+  return `${which[0].toUpperCase()}${which.slice(1)} saw nothing on the track. ${them} the line between the other positions, where one moving object would have been seen, so these positions belong to different objects.`;
+}
+
+/** A significant straight-line fit through positions of different objects is not a measured speed. */
+function lineNotMotion(object) {
+  return `The ${object.pm_total.toFixed(1)}″ per year is only the slope of a line through those positions, not a speed: the engine does not count it as motion.`;
+}
+
+/** "Aug – Oct 2025", "Sep 2025" or "Dec 2025 – Jan 2026" for a pass's first and last exposure. */
+export function passSpan(p) {
+  const a = monthYear(p.start), b = monthYear(p.end);
+  if (a === b) return a;
+  return a.slice(-4) === b.slice(-4) ? `${a.slice(0, 3)} – ${b}` : `${a} – ${b}`;
 }
 
 function brightnessLine(v) {
@@ -199,6 +220,8 @@ export function describe(object, evidence) {
     tone = 'refuted';
     headline = 'Not a moving object.';
     lines.push(`The SPHEREx positions differ by ${arcsec(m.shift)} (${pixelsText(m.pixels)}) ${m.span}, but older catalogues show a separate, fixed source at each position. The engine linked two neighbours; nothing moved.`);
+    if (m.missing.length) lines.push(missingText(m.missing));
+    if (sigma >= 3) lines.push(lineNotMotion(object));
   } else {
     tone = 'still';
     const settled = verdict === 'stationary' && archive;
@@ -209,7 +232,10 @@ export function describe(object, evidence) {
     if (settled) {
       lines.push(`Positions from ${listText(archive.surveys)}, going back ${archive.years.toFixed(0)} years, show no motion either.`);
     } else if (!quiet) {
-      if (m.seen < m.passes) lines.push('It was not found in every pass, so these positions may belong to different objects.');
+      if (m.missing.length) {
+        lines.push(missingText(m.missing));
+        lines.push(lineNotMotion(object));
+      } else if (m.seen < m.passes) lines.push('It was not found in every pass, so these positions may belong to different objects.');
       else if (m.pixels < 1) lines.push('That is less than one SPHEREx pixel, too little for the engine to call it a mover.');
       else if (m.seen < 3) lines.push('Only two passes saw it. Two points always fit a line, so the engine asks for more before calling it a mover.');
       else lines.push('The engine did not accept it as a mover.');
@@ -268,7 +294,9 @@ export function motionChart(object, evidence) {
     const at = (t, v0, pm) => v0 + (pm * (t - fit.ref_mjd)) / DAYS_PER_YEAR;
     return { east: x.map((t) => at(t, fit.east_arcsec, pmEast)), north: x.map((t) => at(t, fit.north_arcsec, pmNorth)) };
   };
-  const lines = [{ kind: 'fit', label: 'SPHEREx fit', ...through(fit.pm_east, fit.pm_north) }];
+  // A static object's fitted line is drawn too (it is what the engine computed), but not called a motion.
+  const fitLabel = object.kind === 'static' ? 'SPHEREx straight-line fit (not accepted as motion)' : 'SPHEREx fit';
+  const lines = [{ kind: 'fit', label: fitLabel, ...through(fit.pm_east, fit.pm_north) }];
   const archive = archiveMotion(object);
   if (archive) lines.push({ kind: 'archive', label: `with ${listText(archive.surveys)}`, ...through(archive.pmEast, archive.pmNorth) });
   const catalog = catalogMotion(object);

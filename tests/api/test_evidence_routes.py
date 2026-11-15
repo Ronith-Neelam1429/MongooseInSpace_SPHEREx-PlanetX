@@ -295,6 +295,9 @@ def test_pass_without_a_measurement_keeps_its_image_but_has_no_point(served):
     ev = _get(_object_at(served, *BLINKER))
     assert [p["point"] is not None for p in ev["passes"]] == [True, False, True]
     assert ev["difference_passes"] == [0, 2]
+    # The middle pass covered it and saw nothing: said, so the verdict can give that reason.
+    assert ev["missing_passes"] == [1]
+    assert _get(_object_at(served, *MOVER_START))["missing_passes"] == []
     centre = (ev["patch_px"] - 1) // 2
     images = [_grey(p["image_png_b64"])[0] for p in ev["passes"]]
     sky = float(np.median(images[1]))

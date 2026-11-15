@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { prefersReducedMotion } from '../lib/camera.js';
 import {
-  brightnessSeries, dayMonthYear, describe, fetchEvidence, monthYear, motionChart, ticks,
+  brightnessSeries, dayMonthYear, describe, fetchEvidence, monthYear, motionChart, passSpan, ticks,
 } from '../lib/evidence.js';
 import './MotionEvidence.css';
 
@@ -23,13 +23,6 @@ const signed = (v, digits = 1) => `${v < 0 ? '−' : '+'}${Math.abs(v).toFixed(d
 function rerunText(job) {
   const stage = job.stage === 'downloading' ? `fetching frames ${job.frames_done}/${job.frames_total}` : RERUN_STAGE[job.stage] || 'working';
   return `The engine no longer holds this field. Running it again: ${stage}`;
-}
-
-/** "Aug – Oct 2025", "Sep 2025" or "Dec 2025 – Jan 2026" for a pass's first and last exposure. */
-function passSpan(p) {
-  const a = monthYear(p.start), b = monthYear(p.end);
-  if (a === b) return a;
-  return a.slice(-4) === b.slice(-4) ? `${a.slice(0, 3)} – ${b}` : `${a} – ${b}`;
 }
 
 function bandText(band) {

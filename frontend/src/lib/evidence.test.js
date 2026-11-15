@@ -169,7 +169,27 @@ suite('describe', () => {
     expect(v.headline).toBe('Not a moving object.');
     expect(v.lines).toEqual([
       'The SPHEREx positions differ by 14.0″ (2.3 SPHEREx pixels) between Aug 2025 and Aug 2026, but older catalogues show a separate, fixed source at each position. The engine linked two neighbours; nothing moved.',
+      'The 13.6″ per year is only the slope of a line through those positions, not a speed: the engine does not count it as motion.',
     ]);
+  });
+
+  // RW Aurigae's object 0: 15″/yr at 20σ, "static", because the middle pass covered the track and saw nothing.
+  it('says which pass saw nothing on the track, and that the fitted slope is not a speed', () => {
+    const ev = stillEvidence(6.3, -13.9);
+    ev.passes[1].point = null;
+    ev.missing_passes = [1];
+    const o = still({ pm_ra_cosdec: 6.36, pm_dec: -14.06, pm_total: 15.44, pm_err: 0.75, significance: 20.6 });
+    const v = describe(o, ev);
+    expect(v.headline).toBe('No reliable motion.');
+    expect(v.lines.slice(2)).toEqual([
+      'Pass 2 (Mar – May 2026) saw nothing on the track. That pass’s images cover the line between the other positions, where one moving object would have been seen, so these positions belong to different objects.',
+      'The 15.4″ per year is only the slope of a line through those positions, not a speed: the engine does not count it as motion.',
+    ]);
+    expect(motionChart(o, ev).lines[0].label).toBe('SPHEREx straight-line fit (not accepted as motion)');
+    // With the archive's refutation too, both reasons are given.
+    const refuted = describe({ ...o, archive: { ...o.archive, verdict: 'refuted' } }, ev);
+    expect(refuted.headline).toBe('Not a moving object.');
+    expect(refuted.lines[1]).toMatch(/^Pass 2 \(Mar – May 2026\) saw nothing on the track\./);
   });
 
   it('compares with a catalogued proper motion', () => {

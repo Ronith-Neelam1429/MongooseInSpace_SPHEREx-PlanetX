@@ -294,4 +294,5 @@ def build_evidence(run: EngineRun, object_id: int) -> MotionEvidence:
             pm_east=obj.pm_ra_cosdec, pm_north=obj.pm_dec,
         ),
         pm_floor_arcsec_yr=result.pm_floor_arcsec_yr,
+        missing_passes=sorted(obj.missing_passes),
     )

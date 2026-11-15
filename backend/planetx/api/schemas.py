@@ -280,6 +280,11 @@ class MotionEvidence(BaseModel):
     difference_passes: tuple[int, int] = Field(description="Pass indices (first, last) of the difference image")
     fit: EvidenceFit
     pm_floor_arcsec_yr: float = Field(description="As MotionResult.pm_floor_arcsec_yr")
+    missing_passes: list[int] = Field(
+        default_factory=list,
+        description="Passes whose frames covered the fitted track but found nothing there: the engine then "
+        "takes the positions for different objects, so the object is not a mover whatever its fitted motion",
+    )
 
 
 class SurveyCounts(BaseModel):

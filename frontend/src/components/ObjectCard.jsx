@@ -132,7 +132,12 @@ function EngineCard({ o, who, field, onBack, onClose }) {
         <details className="more">
           <summary>Details</summary>
           <dl className="kv">
-            <dt>Motion</dt><dd>{n(o.pm_total)} ± {n(o.pm_err)} ″/yr in SPHEREx alone ({n(o.significance, 1)}σ)</dd>
+            {/* A static object's fit is a slope through its positions, which the engine did not accept as motion. */}
+            <dt>{moving ? 'Motion' : 'Fitted slope'}</dt>
+            <dd>
+              {n(o.pm_total)} ± {n(o.pm_err)} ″/yr in SPHEREx alone ({n(o.significance, 1)}σ)
+              {!moving && ', not accepted as motion (see the evidence)'}
+            </dd>
             <dt>East, north</dt><dd>{signed(o.pm_ra_cosdec, 2)}, {signed(o.pm_dec, 2)} ″/yr · {n(o.position_angle_deg, 0)}° east of north</dd>
             {others.length > 0 && a.pm_ra_cosdec != null && a.pm_err != null && (
               <>
