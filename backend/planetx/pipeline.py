@@ -33,7 +33,12 @@ from planetx.engine import (
     frame_from_hdul,
     group_into_passes,
 )
-from planetx.observatories import SPHEREX_ONLY, FusedMotion, parse_observatories, refine_objects
+from planetx.observatories import (
+    SPHEREX_ONLY,
+    FusedMotion,
+    parse_observatories,
+    refine_objects,
+)
 from planetx.spherex import archive, cutouts
 
 if TYPE_CHECKING:
@@ -53,6 +58,8 @@ MIN_FRAMES = 2
 LIST_RETRY_WAITS_S = (5.0, 15.0, 30.0)
 # Leave one of archive.MAX_CONCURRENT_REQUESTS free for the interactive endpoints.
 DOWNLOAD_WORKERS = 3
+# How classify.check_objects's notes begin when Gaia could not answer.
+GAIA_UNAVAILABLE_NOTE = "Gaia unavailable "
 # IRSA statuses that mean "this file has no data at this position".
 NO_CUTOUT_STATUS = frozenset({400, 404, 422})
 
@@ -87,6 +94,9 @@ class FieldRun:
     result: EngineResult
     objects: list[FieldObject]  # movers first, then candidates, then the rest
     notes: list[str]  # caveats from the engine, the archival refit and the catalogue check
+    # Why the catalogue check (which needs Gaia) did not run although it was wanted, else
+    # None: classifications are then None, and the field is worth checking again later.
+    catalogue_skipped: str | None = None
 
 
 def pick_visits(visits: list[Visit]) -> list[Visit]:
@@ -191,20 +201,30 @@ def _load_frames(
     return frames, counts["no_data"], failures
 
 
-def _cross_check(result: EngineResult) -> tuple[list[FusedMotion], list[Known], list[str]]:
-    """Archival refit and catalogue check of the engine's objects.
+def _cross_check(
+    result: EngineResult, gaia_down: str | None = None
+) -> tuple[list[FusedMotion], list[Known], list[str], str | None]:
+    """Archival refit and catalogue check of the engine's objects; (fused, known, notes,
+    why the wanted catalogue check did not run or None).
 
     PLANETX_OBSERVATORIES=spherex means SPHEREx only, no other service: the
-    catalogue check is skipped too and every classification stays None.
+    catalogue check is skipped too and every classification stays None. A
+    caller that already knows Gaia is down passes why as `gaia_down`, and the
+    check is skipped without waiting for Gaia's timeout.
     """
     observatories = parse_observatories()
     fusion = refine_objects(result.objects, observatories=observatories)
     notes = list(fusion.notes)
     pixel = float(np.median([f.pixel_scale_arcsec for f in result.frames]))
     if observatories == SPHEREX_ONLY:
-        return fusion.fused, unchecked(result.objects, fusion.fused, pixel), notes
+        return fusion.fused, unchecked(result.objects, fusion.fused, pixel), notes, None
+    if gaia_down is not None:
+        return (fusion.fused, unchecked(result.objects, fusion.fused, pixel),
+                notes + [f"{GAIA_UNAVAILABLE_NOTE}({gaia_down}): objects were not checked against catalogues"], gaia_down)
     checked = check_objects(result.objects, fusion.fused, pixel, stacked=result.stacked)
-    return fusion.fused, checked.known, notes + checked.notes
+    # check_objects reports a Gaia failure only as this note (and classifies nothing).
+    skipped = next((n for n in checked.notes if n.startswith(GAIA_UNAVAILABLE_NOTE)), None)
+    return fusion.fused, checked.known, notes + checked.notes, skipped
 
 
 def analyse_field(
@@ -244,14 +264,16 @@ def analyse_frames(
     where: str = "field",
     should_stop: Callable[[], bool] = lambda: False,
     on_progress: Progress = lambda stage, done, total: None,
+    gaia_down: str | None = None,
 ) -> FieldRun:
     """The engine, the archival refit and the catalogue check on one field's frames.
 
     `n_visits` is the number of exposures picked for the field, of which `no_data`
     had no data at the position and `failures` (messages) could not be loaded;
     they only shape the error and the notes. `analyse_field` downloads the frames
-    itself; the survey crops them from cutouts shared by a whole patch. Raises as
-    `analyse_field` does.
+    itself; the survey crops them from cutouts shared by a whole patch. `gaia_down`
+    (why Gaia is known to be unavailable) skips the catalogue check up front.
+    Raises as `analyse_field` does.
     """
     _check(should_stop)
     if n_visits < MIN_FRAMES:
@@ -272,7 +294,7 @@ def analyse_frames(
 
     _check(should_stop)
     on_progress("checking", n_visits, n_visits)
-    fused, known, notes = _cross_check(result)
+    fused, known, notes, catalogue_skipped = _cross_check(result, gaia_down)
     notes = [*result.notes, *notes]
     if no_data:
         notes.append(f"{no_data} exposures had no data at this position")
@@ -282,4 +304,4 @@ def analyse_frames(
     rank = {"mover": 0, "candidate": 1, "static": 2}
     objects = [FieldObject(t, f, k) for t, f, k in zip(result.objects, fused, known, strict=True)]
     objects.sort(key=lambda o: (rank[o.known.kind], not o.tracked.is_variable, -o.tracked.pm_significance))
-    return FieldRun(result=result, objects=objects, notes=notes)
+    return FieldRun(result=result, objects=objects, notes=notes, catalogue_skipped=catalogue_skipped)

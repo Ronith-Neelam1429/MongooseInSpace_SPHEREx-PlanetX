@@ -320,15 +320,15 @@ def dry_run(ctx: PatchContext) -> dict[str, Any]:
     return {"dry_run": True, "ra": round(ra, 6), "dec": round(dec, 6)}
 
 
-def motion(ctx: PatchContext) -> dict[str, Any]:
+def motion(ctx: PatchContext, processes: int | None = None) -> dict[str, Any]:
     """The real processor: motion pipeline over the patch, notable objects into the candidates table.
 
     Imported on first use: it pulls in the whole pipeline (astropy, the engine,
     the archive clients), which `status`, `init` and the API do not need.
     """
-    from planetx.survey.motion import process_patch
+    from planetx.survey.motion import FIELD_PROCESSES, process_patch
 
-    return process_patch(ctx)
+    return process_patch(ctx, FIELD_PROCESSES if processes is None else processes)
 
 
 # Processors selectable from the CLI.
