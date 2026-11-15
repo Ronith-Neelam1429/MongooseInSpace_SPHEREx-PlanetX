@@ -5,14 +5,26 @@ motions and fluxes, so the engine's answers can be checked precisely.
 """
 from __future__ import annotations
 
+import io
+
 import astropy.units as u
 import numpy as np
 import pytest
 from astropy.coordinates import SkyCoord
+from astropy.io import fits
 from astropy.wcs import WCS
 from scipy.special import erf
+from synthetic import SHAPE, SIP_A00, make_mef, wavelength_at_raw_pixel
 
-from planetx.engine import Frame, PassSource, detect_sources, find_motion, fit_motion, group_into_passes
+from planetx.engine import (
+    Frame,
+    PassSource,
+    detect_sources,
+    find_motion,
+    fit_motion,
+    frame_from_hdul,
+    group_into_passes,
+)
 from planetx.engine.motion import SkyPlane
 
 PIX = 6.15  # arcsec / px, as SPHEREx
@@ -366,3 +378,13 @@ def test_frame_without_usable_pixels_is_skipped_not_fatal():
     r = find_motion(frames)
     assert any("skipped 1 frames" in n for n in r.notes)
     assert len(r.movers) == 1
+
+
+def test_frame_wavelength_ignores_celestial_sip_terms():
+    # The WCS-WAVE table is indexed by raw pixels; the synthetic header's SIP
+    # A_0_0 = 3 px would shift the lookup by 0.003 um if it were applied.
+    hdul = fits.open(io.BytesIO(make_mef(150.0, 20.0)))
+    frame = frame_from_hdul(hdul)
+    centre_x = (SHAPE[1] - 1) / 2
+    assert frame.wavelength_um == pytest.approx(wavelength_at_raw_pixel(centre_x), abs=1e-5)
+    assert frame.wavelength_um != pytest.approx(wavelength_at_raw_pixel(centre_x + SIP_A00), abs=1e-3)
