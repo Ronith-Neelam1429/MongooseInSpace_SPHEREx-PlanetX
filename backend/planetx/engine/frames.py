@@ -79,7 +79,7 @@ def bad_pixel_mask(flags: np.ndarray, header: fits.Header) -> np.ndarray:
     return flag_mask(flags, header, BAD_FLAG_NAMES)
 
 
-def _celestial_header(header: fits.Header) -> fits.Header:
+def celestial_header(header: fits.Header) -> fits.Header:
     """SPHEREx headers carry SIP distortion terms without the '-SIP' CTYPE
     suffix. astropy applies them anyway but logs a long INFO per frame; say
     explicitly that they apply."""
@@ -124,7 +124,7 @@ def frame_from_hdul(hdul: fits.HDUList, obs_id: str = "") -> Frame:
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FITSFixedWarning)
-        wcs = WCS(_celestial_header(header)).celestial
+        wcs = WCS(celestial_header(header)).celestial
         wavelength = float("nan")
         if "WCS-WAVE" in hdul:
             try:

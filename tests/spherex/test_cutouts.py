@@ -388,3 +388,27 @@ def test_crop_box_follows_irsas_rule(x, y, x0, y0):
     wcs = cutouts.cutout_wcs(synthetic_header(RA, DEC))
     ra, dec = (float(c) for c in wcs.pixel_to_world_values(x, y))
     assert cutouts.crop_box(wcs, (2000, 2000), ra, dec, 0.30683) == (x0, x0 + 180, y0, y0 + 180)
+
+
+def test_unpinned_entries_keep_a_floor_when_pins_fill_the_cap(tmp_path, monkeypatch):
+    """Pins alone at the cap: the newest unpinned entries still keep UNPINNED_FLOOR of it."""
+    import os
+
+    from planetx.config import Settings
+
+    monkeypatch.setattr(cutouts, "settings", Settings(cache_dir=tmp_path, cache_max_mb=1))
+    monkeypatch.setattr(archive, "fetch_cutout", lambda *a: b"x" * 200_000)
+    pins = [cutouts.cutout_path(URL, RA, DEC + 0.01 * i, 0.075) for i in range(6)]  # 1.2 MB pinned
+    with cutouts.pinned(pins):
+        for i, p in enumerate(pins):
+            cutouts.cached_cutout(URL, RA, DEC + 0.01 * i, 0.075)
+            os.utime(p, (1_000 + i, 1_000 + i))
+        oldest = cutouts.cached_cutout(URL, RA + 0.01, DEC, 0.075)
+        os.utime(oldest, (2_000, 2_000))
+        older = cutouts.cached_cutout(URL, RA + 0.02, DEC, 0.075)
+        os.utime(older, (3_000, 3_000))
+        newest = cutouts.cached_cutout(URL, RA + 0.03, DEC, 0.075)
+        # Besides the newest (just written), 0.4 MB unpinned > the 0.25 MB floor: the least
+        # recently used goes, the next one stays although the cache is above its cap.
+        assert all(p.exists() for p in pins)
+        assert newest.exists() and older.exists() and not oldest.exists()

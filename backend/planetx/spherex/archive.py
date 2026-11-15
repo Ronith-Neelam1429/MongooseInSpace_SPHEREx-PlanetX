@@ -55,6 +55,9 @@ MAX_CONCURRENT_REQUESTS = 4
 PASS_GAP_DAYS = 30
 SIA_CACHE_TTL_S = 600
 SIA_CACHE_MAX_ENTRIES = 256
+# Words that may follow POLYGON in an STC-S s_region before the vertices (IRSA sends ICRS).
+S_REGION_FRAMES = frozenset({"ICRS", "FK5", "J2000", "UNKNOWNFRAME", "GEOCENTER", "BARYCENTER", "TOPOCENTER",
+                             "UNKNOWNREFPOS", "SPHERICAL2"})
 
 _ALLOWED_NETLOC = "irsa.ipac.caltech.edu"
 # SPHEREx file paths contain only these characters; anything else (%, \, ?, ;) is refused.
@@ -235,7 +238,9 @@ def parse_s_region(text: str) -> np.ndarray:
     words = str(text).split()
     if not words or words[0].upper() != "POLYGON":
         raise UpstreamError(f"SIA s_region is not a POLYGON: {str(text)[:80]!r}")
-    numbers = words[2:] if len(words) > 1 and words[1].upper() == "ICRS" else words[1:]
+    numbers = words[1:]
+    while numbers and numbers[0].upper() in S_REGION_FRAMES:  # STC-S frame, reference position, ...
+        numbers = numbers[1:]
     try:
         values = np.array([float(w) for w in numbers])
     except ValueError:
@@ -268,17 +273,35 @@ def _query_collection(collection: str, ra: float, dec: float, radius_deg: float)
 
 def query_footprints(ra: float, dec: float, radius_arcsec: float) -> list[tuple[Visit, np.ndarray]]:
     """Like `query_visits` (same rows, order and errors) with each image's footprint
-    (`parse_s_region` vertices), and not cached."""
+    (`parse_s_region` vertices), and not cached.
+
+    A row whose footprint is missing or unreadable is left out (logged), so one bad
+    row cannot fail a survey patch on every retry; a collection where every row's
+    footprint is unreadable raises (the format must have changed).
+    """
     found: list[tuple[Visit, np.ndarray]] = []
     seen: set[str] = set()
     for collection in COLLECTIONS:
         table = _query_table(collection, ra, dec, radius_arcsec / 3600)
         if len(table) and "s_region" not in table.colnames:
             raise UpstreamError(f"SIA query {collection} returned no s_region column")
+        bad: list[str] = []
         for visit, region in zip(visits_from_table(table), table["s_region"] if len(table) else [], strict=True):
+            try:
+                if np.ma.is_masked(region):
+                    raise UpstreamError("SIA s_region is empty")
+                footprint = parse_s_region(region)
+            except UpstreamError as exc:
+                bad.append(f"{visit.access_url}: {exc}")
+                continue
             if visit.access_url not in seen:
                 seen.add(visit.access_url)
-                found.append((visit, parse_s_region(region)))
+                found.append((visit, footprint))
+        if bad and len(bad) == len(table):
+            raise UpstreamError(f"SIA query {collection}: no row has a readable s_region, e.g. {bad[0]}")
+        if bad:
+            log.warning("SIA query %s at ra=%s dec=%s: left out %d of %d rows with unreadable footprints, e.g. %s",
+                        collection, ra, dec, len(bad), len(table), bad[0])
     found.sort(key=lambda vf: (vf[0].mjd, vf[0].detector or 0, vf[0].access_url))
     return found
 

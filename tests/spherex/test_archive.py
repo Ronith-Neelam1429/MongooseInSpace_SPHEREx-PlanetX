@@ -390,3 +390,32 @@ def test_query_footprints_pairs_each_visit_with_its_footprint(session):
     found = archive.query_footprints(269.4485, 4.7394, 10)
     assert [v.obs_id for v, _ in found] == ["a", "b", "c"]
     assert [fp[0, 0] for _, fp in found] == [276.0, 276.35323504130406, 1.0]
+
+
+def test_parse_s_region_skips_any_stc_s_frame_words():
+    words = "POLYGON ICRS TOPOCENTER SPHERICAL2 1 2 3 4 5 6"
+    assert archive.parse_s_region(words).tolist() == [[1, 2], [3, 4], [5, 6]]
+    assert archive.parse_s_region("polygon j2000 1 2 3 4 5 6").shape == (3, 2)
+
+
+def test_query_footprints_leaves_out_rows_with_unreadable_footprints(session, caplog):
+    def table(rows, regions):
+        t = _sia_table(rows)
+        t["s_region"] = regions
+        return _votable_bytes(t)
+
+    dr1 = table([_row("a", 1, 60902.0), _row("b", 2, 60950.0)], [LIVE_S_REGION, "CIRCLE ICRS 1 2 3"])
+    qr3 = table([_row("c", 1, 61300.0, collection="spherex_qr3")], ["POLYGON ICRS 1 2 3 4 5 6"])
+    session(FakeResponse(200, dr1), FakeResponse(200, qr3))
+    with caplog.at_level("WARNING"):
+        found = archive.query_footprints(269.4485, 4.7394, 10)
+    assert [v.obs_id for v, _ in found] == ["a", "c"]
+    assert "left out 1 of 2 rows" in caplog.text
+
+
+def test_query_footprints_fails_when_no_row_is_readable(session):
+    t = _sia_table([_row("a", 1, 60902.0)])
+    t["s_region"] = ["BOX ICRS 1 2 3 4"]
+    session(FakeResponse(200, _votable_bytes(t)))
+    with pytest.raises(archive.UpstreamError, match="no row has a readable s_region"):
+        archive.query_footprints(269.4485, 4.7394, 10)

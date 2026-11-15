@@ -26,11 +26,13 @@ request out of a larger cutout of the same file locally.
 import base64
 import hashlib
 import io
+import logging
 import math
 import os
 import re
 import tempfile
 import threading
+import time
 import warnings
 from collections import Counter
 from collections.abc import Iterable, Iterator
@@ -44,8 +46,11 @@ from astropy.wcs import WCS, FITSFixedWarning
 from PIL import Image
 from reproject import reproject_interp
 
-from planetx.spherex import archive
 from planetx.config import settings
+from planetx.engine.frames import celestial_header
+from planetx.spherex import archive
+
+log = logging.getLogger(__name__)
 
 PIXEL_SCALE_ARCSEC = 6.15  # SPHEREx (SIA s_pixel_scale)
 # Requested cutout side: covers the output grid at any rotation (sqrt 2), plus a
@@ -82,6 +87,9 @@ CROP_PLANES = ("IMAGE", "FLAGS", "VARIANCE", "ZODI")
 _download_locks = [threading.Lock() for _ in range(64)]
 _evict_lock = threading.Lock()
 _pinned: Counter[Path] = Counter()
+# Share of the cap the unpinned entries (e.g. the website's cutouts) keep however much is pinned.
+UNPINNED_FLOOR = 0.25
+_last_over_cap_log = float("-inf")
 _pinned_lock = threading.Lock()
 
 
@@ -208,9 +216,12 @@ def _evict(root: Path, max_bytes: int, keep: Path) -> None:
     """Delete least recently used cutouts until the cache is at most max_bytes.
 
     `keep` (the entry just written) and pinned entries are never deleted, so a
-    single cutout larger than the cap still works. Entries vanishing mid-scan
-    (another thread or process evicting) are skipped.
+    single cutout larger than the cap still works. When they alone fill most of
+    the cap, the other entries still keep UNPINNED_FLOOR of it rather than all
+    going (the cache then stays above its cap, logged). Entries vanishing
+    mid-scan (another thread or process evicting) are skipped.
     """
+    global _last_over_cap_log
     with _evict_lock:
         with _pinned_lock:
             protected = {keep, *_pinned}
@@ -221,14 +232,20 @@ def _evict(root: Path, max_bytes: int, keep: Path) -> None:
             except FileNotFoundError:
                 continue
             entries.append((st.st_mtime, st.st_size, p))
-        total = sum(size for _, size, _ in entries)
+        fixed = sum(size for _, size, p in entries if p in protected)
+        budget = max(max_bytes - fixed, int(max_bytes * UNPINNED_FLOOR))
+        rest = sum(size for _, size, p in entries if p not in protected)
         for _, size, p in sorted(entries, key=lambda e: e[0]):
-            if total <= max_bytes:
+            if rest <= budget:
                 break
             if p in protected:
                 continue
             p.unlink(missing_ok=True)
-            total -= size
+            rest -= size
+        if fixed + rest > max_bytes and time.monotonic() - _last_over_cap_log > 60:
+            _last_over_cap_log = time.monotonic()
+            log.warning("cutout cache at %d MB, above its %d MB cap: %d MB are pinned or just written",
+                        (fixed + rest) // 2**20, max_bytes // 2**20, fixed // 2**20)
 
 
 def _wavelength_wcs(header: fits.Header, hdul: fits.HDUList) -> WCS:
@@ -252,22 +269,11 @@ def without_sip(header: fits.Header) -> fits.Header:
     return header
 
 
-def _sip_header(header: fits.Header) -> fits.Header:
-    """`header` with CTYPEs saying '-SIP' when it carries SIP cards (SPHEREx omits the suffix;
-    astropy applies the terms anyway but logs a long message per call)."""
-    header = header.copy()
-    if "A_ORDER" in header:
-        for key in ("CTYPE1", "CTYPE2"):
-            if key in header and not str(header[key]).endswith("-SIP"):
-                header[key] = f"{header[key]}-SIP"
-    return header
-
-
 def cutout_wcs(header: fits.Header) -> WCS:
     """The celestial WCS (SIP included) of a cutout's IMAGE `header`, as `crop_box` takes it."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FITSFixedWarning)
-        return WCS(_sip_header(header)).celestial
+        return WCS(celestial_header(header)).celestial
 
 
 def crop_box(wcs: WCS, shape: tuple[int, int], ra: float, dec: float, size_deg: float
