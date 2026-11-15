@@ -12,7 +12,8 @@ from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS
 from scipy.special import erf
 
-from planetx.engine import Frame, detect_sources, find_motion, group_into_passes
+from planetx.engine import Frame, PassSource, detect_sources, find_motion, fit_motion, group_into_passes
+from planetx.engine.motion import SkyPlane
 
 PIX = 6.15  # arcsec / px, as SPHEREx
 FWHM = 9.0  # arcsec, as SPHEREx PSF_FWHM
@@ -164,6 +165,38 @@ def test_a_sample_of_each_window_is_grouped_like_the_full_list():
 def test_window_without_frames_is_not_a_pass():
     # 135 days with no gap over 60: three 45-day windows, the middle one empty.
     assert group_into_passes([0.0, 5.0, 40.0, 95.0, 130.0, 135.0], 60.0) == [[0, 1, 2], [3, 4, 5]]
+
+
+def test_sky_plane_agrees_with_astropy_offsets():
+    # The engine's own offset maths replaced astropy's (for speed); it must
+    # give the same answers, also across RA 0/360 and close to a pole.
+    rng = np.random.default_rng(13)
+    for centre in [(150.0, 20.0), (359.9999, -30.0), (0.0001, 45.0), (270.0, 89.5)]:
+        sky, plane = SkyCoord(*centre, unit="deg"), SkyPlane(*centre)
+        east, north = rng.uniform(-300, 300, (2, 50))
+        there = sky.spherical_offsets_by(east * u.arcsec, north * u.arcsec)
+        ra, dec = plane.sky(east, north)
+        assert ((ra >= 0) & (ra < 360)).all()
+        assert SkyCoord(ra, dec, unit="deg").separation(there).arcsec.max() < 1e-6
+        back_east, back_north = plane.offsets(there.ra.deg, there.dec.deg)
+        np.testing.assert_allclose(back_east, east, atol=1e-6)
+        np.testing.assert_allclose(back_north, north, atol=1e-6)
+
+
+def test_fit_motion_takes_a_skycoord_centre():
+    # 10"/yr due north, one position a year: callers outside the engine pass a SkyCoord.
+    sources = []
+    for k in range(3):
+        c = CENTER.spherical_offsets_by(5 * u.arcsec, (-20 + 10 * k) * u.arcsec)
+        sources.append(PassSource(
+            pass_index=k, ra=c.ra.deg, dec=c.dec.deg, sigma_arcsec=0.3, mjd=61000 + 365.25 * k,
+            n_det=5, n_cover=5, snr=50.0, flux_by_detector={},
+        ))
+    ra, dec, ref_mjd, pm_east, pm_north, pm_err, chi2_dof = fit_motion(sources, CENTER)
+    assert pm_east == pytest.approx(0.0, abs=1e-6) and pm_north == pytest.approx(10.0, abs=1e-6)
+    assert ref_mjd == pytest.approx(61000 + 365.25) and chi2_dof == pytest.approx(0.0, abs=1e-9)
+    middle = SkyCoord(sources[1].ra, sources[1].dec, unit="deg")
+    assert SkyCoord(ra, dec, unit="deg").separation(middle).arcsec < 1e-6
 
 
 def test_detects_star_at_subpixel_position():
