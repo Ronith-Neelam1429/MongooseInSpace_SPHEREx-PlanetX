@@ -1,6 +1,7 @@
 // "About this object": the answer of GET /api/object/profile (`ObjectProfile` in
 // backend/planetx/api/schemas.py) turned into short display text and chart models. Every field
 // of the profile may be null; each helper returns null when it has nothing to say.
+import { measuredMotion, motionsAgree, motionVerdict } from './plain.js';
 
 const SUN_RADIUS_KM = 695700;
 // Reference bodies by radius in Sun radii (diameter ratios equal radius ratios).
@@ -14,6 +15,9 @@ const EARTH_ORBIT_KM_S = 29.8;
 const MOON_KM = 384400;
 const LY_PER_PC = 3.26156;
 const MAX_NAME = 100;
+// The backend's limits (backend/planetx/api/routes/profile.py): a value past them fails the request.
+const MAX_PM_MAS = 20000;
+const MAG_RANGE = [-30, 40];
 
 const ok = (v) => typeof v === 'number' && Number.isFinite(v);
 const group = (v) => Math.round(v).toLocaleString('en-US');
@@ -301,25 +305,53 @@ export function pathModel(p, nowYear) {
 
 /**
  * Distance from the Sun against year, when the track carries distances and a closest approach:
- * { points: [{ year, ly }], closest: { year, ly }, now: { year, ly } | null, phrase } or null.
+ * { inSpan, points: [{ year, ly }], closest: { year, ly }, now: { year, ly } | null, phrase } or
+ * null. When the closest point lies outside the track's years (`path.closest_in_span` false, or
+ * computed from the points when the backend leaves it out) there is no curve to draw: `inSpan` is
+ * false, `points` is null and the phrase says how rough so long an extrapolation is.
  */
 export function approachModel(p, nowYear) {
   const c = p?.path?.closest_approach;
   if (!c || !ok(c.year) || !ok(c.dist_ly)) return null;
-  const points = (p.path.points || []).filter((q) => ok(q?.year) && ok(q.dist_ly)).map((q) => ({ year: q.year, ly: q.dist_ly }))
-    .sort((a, b) => a.year - b.year);
+  const all = (Array.isArray(p.path.points) ? p.path.points : []).filter((q) => ok(q?.year));
+  const years = all.map((q) => q.year);
+  const inSpan = typeof p.path.closest_in_span === 'boolean' ? p.path.closest_in_span
+    : years.length > 0 && c.year >= Math.min(...years) && c.year <= Math.max(...years);
+  const closest = { year: c.year, ly: c.dist_ly };
+  if (!inSpan) {
+    return {
+      inSpan: false,
+      points: null,
+      closest,
+      now: null,
+      phrase: `Straight-line motion would bring it closest to the Sun around ${yearText(c.year)}, at about ${lyText(c.dist_ly)} light-years, `
+        + 'far outside this view; such long extrapolations are rough.',
+    };
+  }
+  const points = all.filter((q) => ok(q.dist_ly)).map((q) => ({ year: q.year, ly: q.dist_ly })).sort((a, b) => a.year - b.year);
   if (points.length < 2) return null;
   const nowLy = p.distance?.ly;
   const when = c.year > nowYear ? 'will pass closest' : 'passed closest';
   return {
+    inSpan: true,
     points,
-    closest: { year: c.year, ly: c.dist_ly },
+    closest,
     now: ok(nowLy) ? { year: nowYear, ly: nowLy } : null,
     phrase: `It ${when} to the Sun around ${yearText(c.year)}, at about ${lyText(c.dist_ly)} light-years.`,
   };
 }
 
-/** What pulls on it: { summary, companions: [{ key, name, text }], wobble } or null. */
+/**
+ * Whether the backend's gravity summary already says what a sentence of ours would: it covers the
+ * RUWE / unseen-companion hint and the non-single-star flag itself (planetx/profile/service.py).
+ */
+const SAYS_WOBBLE = /\bRUWE\b|wobble|unseen companion|companion we cannot see/i;
+const SAYS_NON_SINGLE = /non-single/i;
+
+/**
+ * What pulls on it: { summary, companions: [{ key, name, text }], wobble } or null. `wobble` holds
+ * only what the summary does not already say (no RUWE hint or non-single-star flag twice).
+ */
 export function gravityView(p) {
   const g = p?.gravity;
   if (!g) return null;
@@ -335,12 +367,13 @@ export function gravityView(p) {
       text: bits.join(' · '),
     };
   });
+  const summary = typeof g.summary === 'string' && g.summary ? g.summary : null;
   const wobble = [
-    g.wobble_hint && `Gaia's fit to its motion is poor${ok(g.ruwe) ? ` (RUWE ${g.ruwe.toFixed(2)})` : ''}, which suggests an unseen companion tugging it.`,
-    ok(g.non_single_star) && g.non_single_star > 0 && 'Gaia lists it as a non-single star.',
+    g.wobble_hint && !SAYS_WOBBLE.test(summary || '') && `Gaia's fit to its motion is poor${ok(g.ruwe) ? ` (RUWE ${g.ruwe.toFixed(2)})` : ''}, which suggests an unseen companion tugging it.`,
+    ok(g.non_single_star) && g.non_single_star > 0 && !SAYS_NON_SINGLE.test(summary || '') && 'Gaia lists it as a non-single star.',
   ].filter(Boolean).join(' ') || null;
-  if (!g.summary && !companions.length && !wobble) return null;
-  return { summary: g.summary || null, companions, wobble };
+  if (!summary && !companions.length && !wobble) return null;
+  return { summary, companions, wobble };
 }
 
 /**
@@ -465,23 +498,56 @@ export function knownProfileParams(row) {
   };
 }
 
+/** A catalogue entry's motion as { east, north } in arcsec/yr, or null when it lists none. */
+const listedMotion = (x) => (ok(x?.pm_ra_cosdec) && ok(x?.pm_dec) ? { east: x.pm_ra_cosdec, north: x.pm_dec } : null);
+
 /**
- * The profile request for an engine object: its measured position, its motion in mas/yr (only
- * when the engine accepted it as moving: a static object's slope is noise), and the Gaia id and
- * SIMBAD name its catalogue matches carry (`who` from lib/names.js identify).
+ * The catalogue entries an engine object really is (`who` from lib/names.js identityOf), lead
+ * first: none unless its name is the lead match's own (not "near Gaia DR3 …", and not a false
+ * track that joins different objects), and only entries whose catalogued motion agrees with the
+ * measured one. A Gaia entry right after a SIMBAD lead is that star's Gaia counterpart (both
+ * lib/names.js and the backend list them so), and must also agree with the lead's motion. A mover
+ * needs a listed motion to agree with; for a static object an entry without one is fine.
+ */
+function sameObjectMatches(o, who, m, moving) {
+  const matches = who?.matches || [];
+  const lead = matches[0];
+  if (!lead || !who.name || who.name !== lead.name || /^near /i.test(who.name)) return [];
+  const measured = ok(m.east) && ok(m.north) ? m : null;
+  const agrees = (x) => {
+    const theirs = listedMotion(x);
+    if (!theirs) return !moving;
+    return !measured || motionsAgree(measured, theirs);
+  };
+  if (!agrees(lead)) return [];
+  const out = [lead];
+  const next = matches[1];
+  if (lead.catalog === 'simbad' && next?.catalog === 'gaia' && agrees(next)) {
+    const a = listedMotion(lead), b = listedMotion(next);
+    if (!a || !b || motionsAgree({ ...b, err: 0 }, a)) out.push(next);
+  }
+  return out;
+}
+
+/**
+ * The profile request for an engine object: its measured position; its motion in mas/yr (the
+ * archive refit when that confirmed it), only when it is accepted as moving and not a fake motion
+ * (a static object's slope is noise); and the Gaia id and SIMBAD name of the catalogue object it
+ * really is (sameObjectMatches), never a neighbour's.
  */
 export function engineProfileParams(o, who) {
-  const matches = who?.matches || [];
-  const gaia = matches.find((x) => x.catalog === 'gaia' && /^Gaia DR3 \d+$/.test(x.name || ''));
-  const simbad = matches.find((x) => x.catalog === 'simbad' && x.name);
-  const moving = o.kind !== 'static' && ok(o.pm_ra_cosdec) && ok(o.pm_dec);
+  const m = measuredMotion(o);
+  const moving = o.kind !== 'static' && motionVerdict(o)?.verdict !== 'fake_motion' && ok(m.east) && ok(m.north);
+  const same = sameObjectMatches(o, who, m, moving);
+  const gaia = same.find((x) => x.catalog === 'gaia' && /^Gaia DR3 \d+$/.test(x.name || ''));
+  const simbad = same.find((x) => x.catalog === 'simbad' && x.name);
   return {
     ra: o.ra, dec: o.dec,
     gaia_id: gaia ? gaia.name.slice('Gaia DR3 '.length) : null,
     name: simbad ? simbad.name : null,
-    pmra: moving ? o.pm_ra_cosdec * 1000 : null,
-    pmdec: moving ? o.pm_dec * 1000 : null,
-    pm_err: moving && ok(o.pm_err) ? o.pm_err * 1000 : null,
+    pmra: moving ? m.east * 1000 : null,
+    pmdec: moving ? m.north * 1000 : null,
+    pm_err: moving && ok(m.err) ? m.err * 1000 : null,
     mag: finite((simbad || gaia)?.magnitude),
   };
 }
@@ -491,14 +557,16 @@ export function profileQuery(params) {
   const { ra, dec, gaia_id: gaiaId, name, pmra, pmdec, pm_err: pmErr, mag } = params || {};
   if (!ok(ra) || !ok(dec) || dec < -90 || dec > 90) return null;
   const q = new URLSearchParams({ ra: (((ra % 360) + 360) % 360).toFixed(6), dec: dec.toFixed(6) });
-  if (gaiaId != null && /^\d{1,20}$/.test(String(gaiaId))) q.set('gaia_id', String(gaiaId));
+  if (gaiaId != null && /^\d{1,19}$/.test(String(gaiaId))) q.set('gaia_id', String(gaiaId));
   const n = typeof name === 'string' ? name.trim().slice(0, MAX_NAME) : '';
   if (n) q.set('name', n);
-  if (ok(pmra) && ok(pmdec)) {
+  // The motion goes as a whole or not at all: a part out of range (or missing) drops all three.
+  const inRange = (v) => ok(v) && Math.abs(v) <= MAX_PM_MAS;
+  if (inRange(pmra) && inRange(pmdec) && (pmErr == null || (inRange(pmErr) && pmErr >= 0))) {
     q.set('pmra', pmra.toFixed(3));
     q.set('pmdec', pmdec.toFixed(3));
-    if (ok(pmErr) && pmErr >= 0) q.set('pm_err', pmErr.toFixed(3));
+    if (pmErr != null) q.set('pm_err', pmErr.toFixed(3));
   }
-  if (ok(mag)) q.set('mag', mag.toFixed(2));
+  if (ok(mag) && mag >= MAG_RANGE[0] && mag <= MAG_RANGE[1]) q.set('mag', mag.toFixed(2));
   return q.toString();
 }

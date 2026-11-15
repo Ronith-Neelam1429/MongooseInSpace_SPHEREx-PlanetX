@@ -44,3 +44,29 @@ export async function resolveSkyUrl() {
   }
   throw new Error(`${SPHEREX_SKY.label} imagery is unreachable`);
 }
+
+/** Waits (ms) before each new try at the sky imagery: IRSA often answers 502/503 for a moment. */
+export const SKY_RETRY_MS = [2000, 5000, 10000];
+
+/**
+ * Run `task` (a function returning a promise) until it succeeds, waiting `delays[i]` ms before
+ * try i + 2. `onFailure(err, willRetry)` hears every failure, `onSuccess(value)` the first
+ * success. Returns a function that cancels what is still pending (no callback runs after it).
+ */
+export function retrying(task, delays, { onSuccess, onFailure }) {
+  let cancelled = false;
+  let timer = 0;
+  const attempt = (n) => {
+    Promise.resolve().then(task).then(
+      (value) => { if (!cancelled) onSuccess(value); },
+      (err) => {
+        if (cancelled) return;
+        const willRetry = n < delays.length;
+        onFailure(err, willRetry);
+        if (willRetry) timer = setTimeout(() => attempt(n + 1), delays[n]);
+      },
+    );
+  };
+  attempt(0);
+  return () => { cancelled = true; clearTimeout(timer); };
+}

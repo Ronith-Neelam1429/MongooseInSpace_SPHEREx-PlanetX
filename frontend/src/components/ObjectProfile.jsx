@@ -232,7 +232,7 @@ function ProfileBody({ profile: p }) {
           </p>
           {v.approach && (
             <>
-              <ApproachChart model={v.approach} />
+              {v.approach.inSpan && <ApproachChart model={v.approach} />}
               <p className="pf-note">{v.approach.phrase}</p>
             </>
           )}

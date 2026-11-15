@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import A from 'aladin-lite';
-import { SPHEREX_SKY, resolveSkyUrl } from '../lib/surveys.js';
+import { SKY_RETRY_MS, SPHEREX_SKY, resolveSkyUrl, retrying } from '../lib/surveys.js';
 import { COVERAGE_LAYERS } from '../lib/crawl.js';
 
 const C = 299792458;
@@ -121,21 +121,26 @@ export default function SkyMap({ initial, frame, grid, coverage, onReady, onView
     return () => { cancelled = true; };
   }, [initial]);
 
-  // The SPHEREx cube: one layer for good; frame changes only move the slice.
+  // The SPHEREx cube: one layer for good; frame changes only move the slice. Finding the mirror
+  // is retried (SKY_RETRY_MS), since one failed `properties` fetch would leave the map black; the
+  // HUD hears each failure and is cleared once the imagery is found.
   useEffect(() => {
     const aladin = aladinRef.current;
     if (!ready || !aladin) return undefined;
-    let stale = false;
-    resolveSkyUrl().then((url) => {
-      if (stale) return;
-      const layer = A.HiPS(url, { name: SPHEREX_SKY.label });
-      aladin.setBaseImageLayer(layer);
-      layerRef.current = { layer, cube: true };
-      applyFrame();
-    }).catch((err) => {
-      if (!stale) cb.current.onSurveyError?.(err.message);
+    const cancel = retrying(resolveSkyUrl, SKY_RETRY_MS, {
+      onSuccess(url) {
+        const layer = A.HiPS(url, { name: SPHEREX_SKY.label });
+        aladin.setBaseImageLayer(layer);
+        layerRef.current = { layer, cube: true };
+        applyFrame();
+        cb.current.onSurveyError?.(null);
+      },
+      onFailure(err, willRetry) {
+        console.warn('SPHEREx sky imagery:', err);
+        cb.current.onSurveyError?.(`${err.message}${willRetry ? '; trying again' : ''}`);
+      },
     });
-    return () => { stale = true; clearTimeout(retry.current); };
+    return () => { cancel(); clearTimeout(retry.current); };
   }, [ready]);
 
   useEffect(() => { applyFrame(); }, [frame]);
