@@ -48,7 +48,15 @@ object is on that date. Click a picture for a large view (`Esc` closes it).
   endpoints, with the measured positions; a difference image beside them.
 
 Then a one-line verdict in plain words, and for engine results the proof checklist, the position
-chart and the single exposures; numbers sit in a folded **Details**. "Back to the patch" (or `Esc`)
+chart and the single exposures; numbers sit in a folded **Details**. Right after the verdict,
+**About this object** (`ObjectProfile`, wording in `lib/profile.js`, from `GET /object/profile`):
+distance, size, temperature and speed as four figures with a plain sentence each ("the light you
+see left it in 2020", "About 1/5 the Sun's width — 2 Jupiters across"); the object's disc next to
+Jupiter / the Sun (log scale when sizes differ hugely); why it moves; its sky track over thousands
+of years with today ringed, and its distance from the Sun with the closest approach; what pulls
+on it (companions, a poor-fit wobble hint); and a folded **For researchers** with every raw value,
+its error and source, links and a "Copy JSON" button. Parts the backend could not fill are left
+out. "Back to the patch" (or `Esc`)
 returns to the list. The panel and the large view follow the system's light or dark theme; the
 sky map and the pictures stay dark.
 
@@ -63,8 +71,7 @@ field stars, and a plain field star must be pointed at directly. Hovering a mark
 list row, and hovering or focusing a row rings its marker. A click that misses inside the open
 patch does nothing; a click outside the dashed circle opens a new patch there.
 
-Also: a wavelength control over the SPHEREx DR1 all-sky cube (AllWISE, 2MASS and DSS2 for
-comparison); a **Survey** layer drawing the offline crawler's patches (searched in cyan, failed
+Also: a wavelength control over the SPHEREx DR1 all-sky cube (the map's only sky image); a **Survey** layer drawing the offline crawler's patches (searched in cyan, failed
 in red, the next 300 to search outlined) with a legend and a progress line ("312 of 49,152
 patches searched"); and a **Candidates** list of what that survey has flagged, ranked by score or
 newest first, filterable by class, each row with a small SPHEREx picture (loaded only for rows in
@@ -76,7 +83,7 @@ open patch, so a copied link reopens the same one. Shortcuts: `/` focuses search
 With reduced motion turned on in the OS, the globe stays still and the camera jumps instead of flying.
 
 Catalogue queries run in the browser. Each service has mirrors, tried in order and retried once:
-SIMBAD TAP (CDS, Harvard), VizieR and Sesame (CDS, Harvard), HiPS (IRSA, ESA, CDS).
+SIMBAD TAP (CDS, Harvard), VizieR and Sesame (CDS, Harvard). The SPHEREx sky tiles come from IRSA.
 
 ## Commands
 ```bash
@@ -93,7 +100,8 @@ Set `VITE_API_BASE` (see `.env.example`) to the PlanetX API (`docs/API.md` in th
   so a browser can't ask it directly),
 - `GET /motion` for the engine (polled),
 - `GET /survey/status`, `GET /survey/coverage?status=` and `GET /candidates` (plus
-  `/candidates/{id}/thumbnail.png`) for the survey layer and list.
+  `/candidates/{id}/thumbnail.png`) for the survey layer and list,
+- `GET /object/profile` for an object card's "About this object" (left out without a server).
 
 Without it the panel says the server is not connected. A server without `/candidates` (404) shows
 the list as not available.
@@ -108,6 +116,8 @@ for this cube), and the renderer's grey clear colour is replaced with black. Re-
 - `src/components/SkyMap.jsx`: Aladin setup, survey/cube handling, coverage overlay, events
 - `src/components/InfoPanel.jsx`: panel for the open patch (stacks under the map on phones)
 - `src/components/ObjectCard.jsx`: card for one selected object: pictures, verdict, proof, details
+- `src/components/ObjectProfile.jsx`: the card's "About this object"; `src/lib/profile.js` turns
+  the profile into figures, sentences and chart models (tested against `lib/__fixtures__/`)
 - `src/components/SkyPictures.jsx`: the telescope pictures viewer (play, step, large view) and
   `KnownPictures` for catalogued objects
 - `src/components/MotionEvidence.jsx`, `useEvidence.js`: an engine object's evidence (pictures,

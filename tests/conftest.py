@@ -8,6 +8,7 @@ import pytest
 
 from planetx.classify import catalogs
 from planetx.config import Settings
+from planetx.profile import fetchers as profile_fetchers
 from planetx.spherex import archive, cutouts
 
 
@@ -19,6 +20,10 @@ def cache_dir(tmp_path, monkeypatch):
 
 
 def _no_catalogue_calls(method, url, **kwargs):
+    raise AssertionError(f"offline test tried to reach a catalogue service: {url}")
+
+
+def _no_profile_calls(method, url, params, timeout):
     raise AssertionError(f"offline test tried to reach a catalogue service: {url}")
 
 
@@ -34,6 +39,8 @@ def _offline_archive(request, monkeypatch, tmp_path_factory):
     monkeypatch.setattr(archive, "_session", None)
     monkeypatch.setattr(catalogs, "_send", _no_catalogue_calls)
     monkeypatch.setattr(catalogs, "RETRY_WAIT_S", 0.0)
+    monkeypatch.setattr(profile_fetchers, "_open", _no_profile_calls)
+    monkeypatch.setattr(profile_fetchers, "RETRY_WAIT_S", 0.0)
     archive._sia_cache.clear()
     yield
     archive._sia_cache.clear()

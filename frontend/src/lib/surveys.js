@@ -1,5 +1,5 @@
-// Sky backgrounds (HiPS). The first is SPHEREx itself: IRSA's DR1 all-sky cube, 102 spectral
-// frames from 0.75 to 5.0 µm. Others list mirrors (IRSA, ESA, CDS); the first that answers wins.
+// The sky background (HiPS): SPHEREx itself, IRSA's DR1 all-sky cube, 102 spectral frames from
+// 0.75 to 5.0 µm.
 
 /** Wavelength (µm) of each SPHEREx DR1 cube frame; frame = 17 * (band - 1) + (channel - 1). */
 export const SPHEREX_WAVELENGTHS = [
@@ -17,52 +17,23 @@ export const SPHEREX_FRAMES = SPHEREX_WAVELENGTHS.map((um, frame) => ({ frame, u
   .filter((f) => !BLANK.has(f.frame));
 export const DEFAULT_FRAME = 33; // 1.63 µm (band 2), close to the classic H band
 
-export const SURVEYS = [
-  {
-    id: 'spherex', label: 'SPHEREx', cube: true,
-    urls: ['https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube'],
-  },
-  {
-    id: 'allwise', label: 'AllWISE',
-    urls: [
-      'https://irsa.ipac.caltech.edu/data/hips/CDS/AllWISE/RGB-W4-W2-W1',
-      'https://skies.esac.esa.int/AllWISEColor',
-      'https://alasky.cds.unistra.fr/AllWISE/RGB-W4-W2-W1',
-    ],
-  },
-  {
-    id: '2mass', label: '2MASS',
-    urls: [
-      'https://irsa.ipac.caltech.edu/data/hips/CDS/2MASS/Color',
-      'https://alasky.cds.unistra.fr/2MASS/Color',
-      'https://alaskybis.cds.unistra.fr/2MASS/Color',
-    ],
-  },
-  {
-    id: 'dss', label: 'DSS2',
-    urls: [
-      'https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/color',
-      'https://skies.esac.esa.int/DSSColor',
-      'https://alasky.cds.unistra.fr/DSS/DSSColor',
-    ],
-  },
-];
+export const SPHEREX_SKY = {
+  label: 'SPHEREx',
+  urls: ['https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube'],
+};
 
-export const surveyById = (id) => SURVEYS.find((s) => s.id === id) || SURVEYS[0];
+let resolved = null;
 
-const resolved = new Map();
-
-/** Resolve a survey to the first mirror whose `properties` answers (cached). */
-export async function resolveSurveyUrl(id) {
-  const s = surveyById(id);
-  if (resolved.has(s.id)) return resolved.get(s.id);
-  for (const url of s.urls) {
+/** The first SPHEREx HiPS mirror whose `properties` answers (cached once found). */
+export async function resolveSkyUrl() {
+  if (resolved) return resolved;
+  for (const url of SPHEREX_SKY.urls) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 6000);
     try {
       const res = await fetch(`${url}/properties`, { signal: ctrl.signal });
       if (res.ok) {
-        resolved.set(s.id, url);
+        resolved = url;
         return url;
       }
     } catch {
@@ -71,5 +42,31 @@ export async function resolveSurveyUrl(id) {
       clearTimeout(t);
     }
   }
-  throw new Error(`${s.label} imagery is unreachable`);
+  throw new Error(`${SPHEREX_SKY.label} imagery is unreachable`);
+}
+
+/** Waits (ms) before each new try at the sky imagery: IRSA often answers 502/503 for a moment. */
+export const SKY_RETRY_MS = [2000, 5000, 10000];
+
+/**
+ * Run `task` (a function returning a promise) until it succeeds, waiting `delays[i]` ms before
+ * try i + 2. `onFailure(err, willRetry)` hears every failure, `onSuccess(value)` the first
+ * success. Returns a function that cancels what is still pending (no callback runs after it).
+ */
+export function retrying(task, delays, { onSuccess, onFailure }) {
+  let cancelled = false;
+  let timer = 0;
+  const attempt = (n) => {
+    Promise.resolve().then(task).then(
+      (value) => { if (!cancelled) onSuccess(value); },
+      (err) => {
+        if (cancelled) return;
+        const willRetry = n < delays.length;
+        onFailure(err, willRetry);
+        if (willRetry) timer = setTimeout(() => attempt(n + 1), delays[n]);
+      },
+    );
+  };
+  attempt(0);
+  return () => { cancelled = true; clearTimeout(timer); };
 }

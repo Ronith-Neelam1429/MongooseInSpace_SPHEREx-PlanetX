@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { prefersReducedMotion } from '../lib/camera.js';
 import { dayMonthYear, monthYear, scaleBar } from '../lib/evidence.js';
 import { compass, positionAngle, speed } from '../lib/plain.js';
@@ -227,6 +227,13 @@ export default function StarTimelapse({ row }) {
   const waiting = overlay
     ? (!overlayReady && (usable.length < 2 ? (failed ? 'No images could be loaded.' : null) : null))
     : null;
+  // The star itself, framed and named on top of the other marks: every position the current
+  // picture shows for it (the whole path when tracing), so a bright field can't hide which one it is.
+  let target = null;
+  if (tracing && story) target = { points: story.points.map((p) => p.pos), pad: Math.max(1.5 * story.fwhm, patch.side * 0.03) };
+  else if (m?.inside) target = { points: [m.at], pad: ring };
+  else if (mThen && mNow) target = { points: [mThen, mNow].filter((k) => k.inside).map((k) => k.at), pad: ring };
+  if (target && !target.points.length) target = null;
   const short = (im) => `${im.button.split(' ')[0]} ${im.button.includes('SPHEREx') ? monthYear(im.date) : im.date.slice(0, 4)}`;
 
   let label = 'Images loading';
@@ -307,6 +314,7 @@ export default function StarTimelapse({ row }) {
               {mNow.inside && <circle className="tl-ring tl-now" r={ring} cx={-mNow.at.east} cy={-mNow.at.north} />}
             </svg>
           )}
+          {marks && target && <TargetMark points={target.points} pad={target.pad} name={row.name} side={patch.side} />}
           {overlay && overlayReady && <span className="ev-tag ev-when"><b className="tl-red">{short(older)}</b> → <b className="tl-cyan">{short(newer)}</b></span>}
           {timelapse && current && <span className="ev-tag ev-when">{current.tag}</span>}
           {tracing && story && <span className="ev-tag ev-when">Path {story.span}</span>}
@@ -446,6 +454,42 @@ export default function StarTimelapse({ row }) {
   );
 }
 
+/**
+ * Corner brackets around the star (as on the sky map), its name, and the rest of the picture
+ * dimmed a little, so it is clear which of the stars in view this card is about. `points` are
+ * the star's positions in this picture (east, north arcsec); `pad` is the margin around them.
+ */
+function TargetMark({ points, pad, name, side }) {
+  const id = useId();
+  const h = side / 2;
+  const xs = points.map((p) => -p.east), ys = points.map((p) => -p.north);
+  const x0 = Math.min(...xs) - 1.6 * pad, x1 = Math.max(...xs) + 1.6 * pad;
+  const y0 = Math.min(...ys) - 1.6 * pad, y1 = Math.max(...ys) + 1.6 * pad;
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const arm = Math.min(x1 - x0, y1 - y0) * 0.28;
+  const corners = [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]]
+    .map(([x, y, dx, dy]) => `M${x + dx * arm} ${y}H${x}V${y + dy * arm}`).join('');
+  // The name centred above the brackets (below them near the top edge), kept inside the picture.
+  const font = side * 0.036;
+  const half = Math.min(h * 0.9, (name.length * font * 0.62) / 2);
+  const lx = Math.max(-h * 0.95 + half, Math.min(h * 0.95 - half, cx));
+  const ly = y0 - font * 0.5 > -h + font * 1.6 ? y0 - font * 0.5 : y1 + font * 1.1;
+  const spot = Math.hypot(x1 - x0, y1 - y0) / 2;
+  return (
+    <svg className="ev-marks tl-target" viewBox={`${-h} ${-h} ${side} ${side}`} aria-hidden="true">
+      <defs>
+        <radialGradient id={id} gradientUnits="userSpaceOnUse" cx={cx} cy={cy} r={spot * 2.2}>
+          <stop offset="0.45" stopColor="#000" stopOpacity="0" />
+          <stop offset="1" stopColor="#000" stopOpacity="0.5" />
+        </radialGradient>
+      </defs>
+      <rect className="tl-dim" x={-h} y={-h} width={side} height={side} style={{ fill: `url(#${id})` }} />
+      <path className="tl-bracket" d={corners} />
+      <text className="tl-label tl-name" fontSize={font} x={lx} y={ly} textAnchor="middle">{name}</text>
+    </svg>
+  );
+}
+
 /** The arrow from the older ring to the newer one, stopping `gap` arcsec short of each centre. */
 function arrowEnds(from, to, gap) {
   const x1 = -from.east, y1 = -from.north, x2 = -to.east, y2 = -to.north;
@@ -531,6 +575,7 @@ function TraceMarks({ story, side }) {
   const xy = (p) => `${-p.east},${-p.north}`;
   const ring = Math.max(1.5 * fwhm, side * 0.03);
   const font = side * 0.034;
+  // Labels sit right of TargetMark's brackets (1.6 rings out), not on them.
   const a = seen[0], b = seen[seen.length - 1];
   if (!moved) {
     // Nothing to trace: one ring where it was found (or is expected), and what that means.
@@ -538,7 +583,7 @@ function TraceMarks({ story, side }) {
     return (
       <svg className="ev-marks" viewBox={`${-h} ${-h} ${side} ${side}`} aria-hidden="true">
         <circle className={`tl-pt tl-still ${seen.length ? '' : 'tl-pt-unseen'}`} r={ring} cx={-at.east} cy={-at.north} />
-        <text className="tl-label" fontSize={font} x={-at.east + ring * 1.25} y={-at.north - ring * 0.5}>
+        <text className="tl-label" fontSize={font} x={-at.east + ring * 1.9} y={-at.north - ring * 0.5}>
           {seen.length > 1 ? 'stays put' : seen.length ? 'found once' : 'too faint'}
         </text>
       </svg>
@@ -561,7 +606,7 @@ function TraceMarks({ story, side }) {
       ))}
       {[a, b].map((p, i) => (
           <text
-            key={p.key} className="tl-label" fontSize={font} x={-p.pos.east + ring * 1.2} y={-p.pos.north + (i ? -ring : ring + font)}
+            key={p.key} className="tl-label" fontSize={font} x={-p.pos.east + ring * 1.9} y={-p.pos.north + (i ? -ring : ring + font)}
             style={{ fill: p.css }}
           >
             {p.date.slice(0, 4)}

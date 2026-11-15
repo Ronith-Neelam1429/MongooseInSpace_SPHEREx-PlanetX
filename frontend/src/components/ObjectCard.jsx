@@ -12,6 +12,8 @@ import { useChecks, useEvidence, useVerdict } from './useEvidence.js';
 import StarTimelapse from './StarTimelapse.jsx';
 import Spectrum from './Spectrum.jsx';
 import Stats from './Stats.jsx';
+import ObjectProfile from './ObjectProfile.jsx';
+import { engineProfileParams, knownProfileParams } from '../lib/profile.js';
 import { engineTarget, knownTarget } from '../lib/spectrum.js';
 
 const n = (v, d = 2) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
@@ -123,6 +125,7 @@ function EngineCard({ o, who, field, backLabel, onBack, onClose }) {
   const others = a.observatories.filter((x) => x !== 'spherex').map((x) => OBSERVATORY[x] || x);
   const crossing = moving ? moonCrossing(m.pm) : null;
   const spectrumTarget = useMemo(() => engineTarget(o), [o]);
+  const profileParams = useMemo(() => engineProfileParams(o, who), [o, who]);
   return (
     <>
       <Head tone="measured-bg" kicker={`Measured in SPHEREx images · ${verdict(o)}`} title={name} backLabel={backLabel} onBack={onBack} onClose={onClose} />
@@ -165,6 +168,7 @@ function EngineCard({ o, who, field, backLabel, onBack, onClose }) {
             <p className="line dim">A candidate, not a discovery: it stays one until other data confirm it.</p>
           )}
         </section>
+        <EvidenceBoundary><ObjectProfile params={profileParams} /></EvidenceBoundary>
 
         {checks && <section className="ev"><EvidenceBoundary><Proof checks={checks} verdict={tested} /></EvidenceBoundary></section>}
         {ev.status === 'ok' && (
@@ -235,6 +239,7 @@ function KnownCard({ row, measured, tracked, onPick, onBack, onClose }) {
   ].filter(Boolean).join(' · ');
   const result = measured?.o || tracked;
   const spectrumTarget = useMemo(() => knownTarget(row, epochNow()), [row]);
+  const profileParams = useMemo(() => knownProfileParams(row), [row]);
   return (
     <>
       <Head tone={fast ? 'signal-bg' : 'plain-bg'} kicker={`In the ${source} catalogue${o && s ? 's' : ''}`} title={row.name} onBack={onBack} onClose={onClose} />
@@ -266,6 +271,7 @@ function KnownCard({ row, measured, tracked, onPick, onBack, onClose }) {
             </p>
           )}
         </section>
+        <EvidenceBoundary><ObjectProfile params={profileParams} /></EvidenceBoundary>
         <SpectrumSection target={spectrumTarget} />
         <details className="more">
           <summary>Details</summary>

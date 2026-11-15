@@ -14,7 +14,7 @@ import { StarField, arrowYears } from './lib/starfield.js';
 import { Camera } from './lib/camera.js';
 import { FAST_ARCSEC_YR, identify, knownObjects, mapTarget, notableKnown, targetRow } from './lib/names.js';
 import { shortClaim, shortName, speed, verdict } from './lib/plain.js';
-import { DEFAULT_FRAME, SPHEREX_FRAMES, SURVEYS, surveyById } from './lib/surveys.js';
+import { DEFAULT_FRAME, SPHEREX_FRAMES } from './lib/surveys.js';
 import { TARGET_FOV, findTarget } from './lib/targets.js';
 import { readViewFromUrl, writeViewToUrl } from './lib/url.js';
 import { otherObjects } from './lib/evidence.js';
@@ -102,7 +102,6 @@ export default function App() {
 
   const [ready, setReady] = useState(false);
   const [tilesLoading, setTilesLoading] = useState(false);
-  const [survey, setSurvey] = useState('spherex');
   const [frame, setFrame] = useState(DEFAULT_FRAME);
   const [skyFrame, setSkyFrame] = useState(DEFAULT_FRAME); // debounced: dragging shouldn't fetch every frame
   const [surveyError, setSurveyError] = useState(null);
@@ -482,10 +481,8 @@ export default function App() {
     if (o) pick({ kind: 'engine', obj: o });
   }, [motion, pick]);
 
-  const pickSurvey = (id) => { setSurveyError(null); setSurvey(id); };
   const frameIdx = Math.max(0, SPHEREX_FRAMES.findIndex((x) => x.frame === frame));
   const fr = SPHEREX_FRAMES[frameIdx];
-  const isCube = surveyById(survey).cube;
   const panel = listOpen ? 'list' : sel ? 'patch' : null;
   // Every object's card opens with its telescope pictures (they need the backend), so it gets half the window.
   const wide = panel === 'patch' && Boolean(focus) && Boolean(API_BASE);
@@ -497,7 +494,6 @@ export default function App() {
       <main className={`stage ${sel && show.gaia ? 'dimmed' : ''}`}>
         <SkyMap
           initial={INITIAL}
-          survey={survey}
           frame={skyFrame}
           grid={show.grid}
           coverage={show.crawl && crawl.status === 'ok' ? crawl.info.coverage : null}
@@ -532,9 +528,6 @@ export default function App() {
         <nav className={`layers ${layersOpen ? 'open' : ''}`} aria-label="Layers">
           <button type="button" className="opt layers-toggle" aria-expanded={layersOpen} onClick={() => setLayersOpen(!layersOpen)}>Layers</button>
           <div className="layer-groups">
-            <div className="group" role="group" aria-label="Sky image">
-              {SURVEYS.map((s) => <Toggle key={s.id} on={survey === s.id} onClick={() => pickSurvey(s.id)}>{s.label}</Toggle>)}
-            </div>
             <div className="group" role="group" aria-label="Shown on the map">
               <Toggle on={show.gaia} title="Stars from the Gaia catalogue" onClick={() => setShow({ ...show, gaia: !show.gaia })}>Stars</Toggle>
               <Toggle on={show.simbad} title="Named objects from the SIMBAD catalogue" onClick={() => setShow({ ...show, simbad: !show.simbad })}>Named</Toggle>
@@ -549,21 +542,19 @@ export default function App() {
 
         <footer className="hud">
           <Readout ref={readout} />
-          {isCube && (
-            <label className="lambda">
-              <span className="dim">Wavelength</span>
-              <input
-                type="range"
-                min="0"
-                max={SPHEREX_FRAMES.length - 1}
-                value={frameIdx}
-                onChange={(e) => setFrame(SPHEREX_FRAMES[+e.target.value].frame)}
-                aria-label="SPHEREx wavelength"
-                aria-valuetext={`${fr.um.toFixed(2)} micrometres`}
-              />
-              <span className="tabular">{fr.um.toFixed(2)} µm</span>
-            </label>
-          )}
+          <label className="lambda">
+            <span className="dim">Wavelength</span>
+            <input
+              type="range"
+              min="0"
+              max={SPHEREX_FRAMES.length - 1}
+              value={frameIdx}
+              onChange={(e) => setFrame(SPHEREX_FRAMES[+e.target.value].frame)}
+              aria-label="SPHEREx wavelength"
+              aria-valuetext={`${fr.um.toFixed(2)} micrometres`}
+            />
+            <span className="tabular">{fr.um.toFixed(2)} µm</span>
+          </label>
           {surveyError && <span className="hud-note" role="alert">{surveyError}</span>}
           {show.crawl && <SurveyLegend crawl={crawl} />}
           <div className="zoom">

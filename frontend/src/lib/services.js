@@ -1,4 +1,5 @@
 import { epochNow, propagate, separation } from './coords.js';
+import { profileQuery } from './profile.js';
 
 // Client-side access to SIMBAD, VizieR (Gaia DR3), Sesame and the project backend.
 // CDS hosts mirrors; we try them in order and remember whichever answered last.
@@ -374,4 +375,20 @@ export async function runSpectrum(target, { signal, onProgress } = {}) {
     onProgress?.(job);
     await sleep(MOTION_POLL_MS, signal);
   }
+}
+
+/**
+ * Everything known about one object for its card's "About this object" section
+ * (GET {API_BASE}/object/profile, `ObjectProfile` in backend/planetx/api/schemas.py). `params` is
+ * { ra, dec, gaia_id, name, pmra, pmdec, pm_err, mag } with motions in mas/yr, all but ra/dec
+ * optional (see profileQuery in lib/profile.js). Resolves to the profile, whose fields may each be
+ * null, or null when no backend is configured; rejects without a usable position.
+ */
+export async function fetchProfile(params, { signal } = {}) {
+  if (!API_BASE) return null;
+  const query = profileQuery(params);
+  if (!query) throw new Error('no position to look up');
+  const j = await apiJson(`/object/profile?${query}`, { signal, timeoutMs: 60000 });
+  if (!j || typeof j !== 'object' || Array.isArray(j)) throw new Error('bad response');
+  return j;
 }
