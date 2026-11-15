@@ -262,3 +262,36 @@ export async function runMotion(ra, dec, sizeDeg, { signal, onProgress } = {}) {
     await sleep(MOTION_POLL_MS, signal);
   }
 }
+
+/**
+ * Measure a SPHEREx spectrum of one object (GET {API_BASE}/spectrum), polling like runMotion: the
+ * backend fetches tens of exposures on first use. `target` is { ra, dec, pmra, pmdec, epoch } with
+ * motions in mas/yr and `epoch` the decimal year of ra/dec (motion and epoch optional). `onProgress`
+ * gets { stage, frames_done, frames_total }. Resolves to the SpectrumResult
+ * (backend/planetx/api/schemas.py), or null when no backend is configured; rejects with the
+ * backend's reason when the run fails.
+ */
+export async function runSpectrum(target, { signal, onProgress } = {}) {
+  if (!API_BASE) return null;
+  const { ra, dec, pmra = 0, pmdec = 0, epoch } = target;
+  const moving = Number.isFinite(pmra) && Number.isFinite(pmdec) && (pmra !== 0 || pmdec !== 0);
+  let url = `${API_BASE}/spectrum?ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}`;
+  if (moving) url += `&pmra=${pmra.toFixed(1)}&pmdec=${pmdec.toFixed(1)}&epoch=${(epoch ?? decimalYear()).toFixed(3)}`;
+  for (;;) {
+    const t = withTimeout(signal, 30000);
+    let job;
+    try {
+      const res = await fetch(url, { signal: t.signal });
+      if (res.status === 503) throw new Error('the server is busy with other spectra; try again shortly');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      job = await res.json();
+    } finally {
+      t.done();
+    }
+    if (job.status === 'done' && job.result) return job.result;
+    if (job.status === 'failed') throw new Error(job.error || 'the measurement failed');
+    if (job.status !== 'running') throw new Error('bad response');
+    onProgress?.(job);
+    await sleep(MOTION_POLL_MS, signal);
+  }
+}

@@ -1,5 +1,5 @@
-import { Component, Fragment } from 'react';
-import { formatDec, formatRa } from '../lib/coords.js';
+import { Component, Fragment, useMemo } from 'react';
+import { decimalYear, formatDec, formatRa } from '../lib/coords.js';
 import { FAST_ARCSEC_YR, displayName, identityOf } from '../lib/names.js';
 import {
   archiveSentence, claim, compass, confidence, distanceText, measuredMotion, moonCrossing, motionsAgree, speed, verdict,
@@ -9,6 +9,8 @@ import { trackedAt } from '../lib/evidence.js';
 import { EnginePictures, Exposures, Chart, Proof } from './MotionEvidence.jsx';
 import { useChecks, useEvidence, useVerdict } from './useEvidence.js';
 import { KnownPictures } from './SkyPictures.jsx';
+import Spectrum from './Spectrum.jsx';
+import { engineTarget, knownTarget } from '../lib/spectrum.js';
 
 const n = (v, d = 2) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
 const signed = (v, d) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`;
@@ -47,6 +49,16 @@ class EvidenceBoundary extends Component {
   render() {
     return this.state.failed ? <p className="line dim">This part of the evidence could not be shown.</p> : this.props.children;
   }
+}
+
+/** The card's spectrum section, below the pictures: measured only when asked. */
+function SpectrumSection({ target }) {
+  return (
+    <section className="card-spectrum" aria-labelledby="spectrum-title">
+      <h3 id="spectrum-title">Spectrum</h3>
+      <EvidenceBoundary><Spectrum target={target} /></EvidenceBoundary>
+    </section>
+  );
 }
 
 function Head({ tone, kicker, title, backLabel, onBack, onClose }) {
@@ -103,6 +115,7 @@ function EngineCard({ o, who, field, backLabel, onBack, onClose }) {
   const a = o.archive;
   const others = a.observatories.filter((x) => x !== 'spherex').map((x) => OBSERVATORY[x] || x);
   const crossing = moving ? moonCrossing(m.pm) : null;
+  const spectrumTarget = useMemo(() => engineTarget(o), [o]);
   return (
     <>
       <Head tone="measured-bg" kicker={`Measured in SPHEREx images · ${verdict(o)}`} title={name} backLabel={backLabel} onBack={onBack} onClose={onClose} />
@@ -110,6 +123,7 @@ function EngineCard({ o, who, field, backLabel, onBack, onClose }) {
         <section className="card-pictures ev" aria-label="Telescope pictures">
           <EvidenceBoundary><EnginePictures object={o} ev={ev} title={name} /></EvidenceBoundary>
         </section>
+        <SpectrumSection target={spectrumTarget} />
 
         <section className="card-verdict">
           <p className={`verdict-line ${said?.tone === 'moved' ? 'measured' : ''}`}>{said ? said.headline : verdict(o)}</p>
@@ -194,6 +208,7 @@ function KnownCard({ row, measured, tracked, onPick, onBack, onClose }) {
     row.mag != null && `magnitude ${row.mag.toFixed(1)}`,
   ].filter(Boolean).join(' · ');
   const result = measured?.o || tracked;
+  const spectrumTarget = useMemo(() => knownTarget(row, decimalYear()), [row]);
   return (
     <>
       <Head tone={fast ? 'signal-bg' : 'plain-bg'} kicker={`In the ${source} catalogue${o && s ? 's' : ''}`} title={row.name} onBack={onBack} onClose={onClose} />
@@ -201,6 +216,7 @@ function KnownCard({ row, measured, tracked, onPick, onBack, onClose }) {
         <section className="card-pictures" aria-label="Telescope pictures">
           <EvidenceBoundary><KnownPictures row={row} title={row.name} /></EvidenceBoundary>
         </section>
+        <SpectrumSection target={spectrumTarget} />
         <section className="card-verdict">
           <p className={`verdict-line ${fast ? 'signal' : ''}`}>{KNOWN_VERDICT[cls]}</p>
           {row.pm != null && row.pm >= FAST_ARCSEC_YR / 10 ? (
