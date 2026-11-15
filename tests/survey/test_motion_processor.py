@@ -14,6 +14,7 @@ from planetx.survey.queue import PatchQueue
 
 NSIDE = 64
 NEP_IPIX = patch_containing(NEP.ra.deg, NEP.dec.deg, NSIDE)
+gaia_status = motion.gaia_status  # the real one (the autouse fixture replaces it)
 
 
 def _sep_deg(ra1, dec1, ra2, dec2):
@@ -69,11 +70,18 @@ def _stored(db):
         return store.patch_candidates(NSIDE, NEP_IPIX)
 
 
+@pytest.fixture(autouse=True)
+def gaia_answers(monkeypatch):
+    """Gaia is up unless a test says otherwise (offline tests reach no catalogue)."""
+    monkeypatch.setattr(motion, "gaia_status", lambda ra, dec, should_stop: None)
+
+
 class FakePatch:
     """Stands in for `patch_frames.load`: records the requests and each field run."""
 
     def __init__(self, monkeypatch, run, load_error=None):
         self.requests, self.runs, self.run, self.load_error = None, [], run, load_error
+        self.gaia_down = None  # set by analyse_patch
         monkeypatch.setattr(patch_frames, "load", self.load)
 
     @contextmanager
@@ -186,3 +194,61 @@ def test_irsa_outage_fails_the_patch_for_a_retry(db, monkeypatch, where):
     with PatchQueue(db) as q:
         row = q.patch_row(NSIDE, NEP_IPIX)
     assert row["status"] == "pending" and row["attempts"] == 1 and "UpstreamError" in row["last_error"]
+
+
+# -- Gaia down ----------------------------------------------------------------
+
+def test_a_patch_analysed_while_gaia_is_down_is_requeued_once_it_answers(db, monkeypatch):
+    """Gaia down: the patch is still analysed (classifications None, fields counted as unchecked).
+    The next patch that finds Gaia up puts it back at the front of the queue."""
+    ra0, dec0 = patch_center(NEP_IPIX, NSIDE)
+    fake = FakePatch(monkeypatch, lambda i, ra, dec: None)
+
+    def run(i, ra, dec):
+        if fake.gaia_down:
+            return field_run([field_object(ra0, dec0, classification=None)], catalogue_skipped=fake.gaia_down)
+        return field_run([field_object(ra0, dec0, classification="unknown_candidate")])
+
+    fake.run = run
+    status = iter(["Gaia request failed: ConnectTimeout", None, None])
+    monkeypatch.setattr(motion, "gaia_status", lambda ra, dec, should_stop: next(status))
+    assert worker.run(worker.PROCESSORS["motion"], db, max_patches=1).done == 1
+    with PatchQueue(db) as q:
+        summary = q.patch_row(NSIDE, NEP_IPIX)["summary"]
+    assert summary["fields_unchecked"] == 64 and summary["by_classification"] == {"unchecked": 1}
+
+    # Gaia is back: the first patch claimed after that requeues the unchecked one, which comes next.
+    assert worker.run(worker.PROCESSORS["motion"], db, max_patches=2).done == 2
+    with PatchQueue(db) as q:
+        summary = q.patch_row(NSIDE, NEP_IPIX)["summary"]
+    assert summary["fields_unchecked"] == 0 and summary["by_classification"] == {"unknown_candidate": 1}
+    assert [s.candidate.classification for s in _stored(db)] == ["unknown_candidate"]
+
+
+def test_gaia_status_asks_again_after_a_wait(monkeypatch):
+    from planetx.classify import catalogs
+
+    calls = []
+
+    def gaia(ra, dec, radius):
+        calls.append(radius)
+        if len(calls) == 1:
+            raise catalogs.CatalogError("Gaia request failed: ConnectTimeout")
+        return []
+
+    monkeypatch.setattr(catalogs, "fetch_gaia", gaia)
+    monkeypatch.setattr(motion, "GAIA_PROBE_WAITS_S", (0.01,))
+    assert gaia_status(270.0, 66.0, lambda: False) is None
+    assert calls == [motion.GAIA_PROBE_RADIUS_ARCSEC] * 2
+
+    def down(ra, dec, radius):
+        raise catalogs.CatalogError("Gaia request failed: ConnectTimeout")
+
+    monkeypatch.setattr(catalogs, "fetch_gaia", down)
+    assert gaia_status(270.0, 66.0, lambda: False) == "Gaia request failed: ConnectTimeout"
+    monkeypatch.setattr(motion, "GAIA_PROBE_WAITS_S", (60.0,))
+    with pytest.raises(worker.PatchAbandoned):
+        gaia_status(270.0, 66.0, lambda: True)
+    # SPHEREx only: no catalogue check, nothing to ask.
+    monkeypatch.setattr(motion, "parse_observatories", lambda: motion.SPHEREX_ONLY)
+    assert gaia_status(270.0, 66.0, lambda: False) is None

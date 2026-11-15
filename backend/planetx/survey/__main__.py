@@ -4,6 +4,7 @@
     uv run python -m planetx.survey status
     uv run python -m planetx.survey run --processor dry-run --db /tmp/scratch.sqlite
     uv run python -m planetx.survey requeue-failed
+    uv run python -m planetx.survey requeue-unchecked
 
 The database defaults to settings.db_path (env PLANETX_DB); `--db` overrides it.
 """
@@ -99,6 +100,18 @@ def _cmd_requeue_failed(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_requeue_unchecked(args: argparse.Namespace) -> int:
+    try:
+        queue = PatchQueue(args.db)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    with queue:
+        n = queue.requeue_unchecked()
+    print(f"{args.db}: requeued {n} patches whose catalogue check did not run")
+    return 0
+
+
 def _positive_int(text: str) -> int:
     value = int(text)
     if value < 1:
@@ -145,6 +158,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p_requeue = sub.add_parser("requeue-failed", help="give failed patches a fresh set of attempts")
     p_requeue.set_defaults(func=_cmd_requeue_failed)
+
+    p_unchecked = sub.add_parser(
+        "requeue-unchecked",
+        help="redo done patches analysed while Gaia was down (the motion worker also does this on its own)")
+    p_unchecked.set_defaults(func=_cmd_requeue_unchecked)
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")

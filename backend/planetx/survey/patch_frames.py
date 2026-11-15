@@ -336,6 +336,7 @@ class PatchFrames:
         self.paths: list[Path | None] = [None] * len(plan.requests)
         self.errors: list[str | None] = [None] * len(plan.requests)  # None: downloaded or no data here
         self.no_data = [False] * len(plan.requests)
+        self.gaia_down: str | None = None  # set when Gaia is known to be down: fields skip the catalogue check
         self._open: dict[int, OpenCutout] = {}  # per request, opened on first use: every field crops it
 
     def download(self, should_stop: Callable[[], bool]) -> None:
@@ -441,7 +442,7 @@ class PatchFrames:
         ra, dec, _ = self.plan.fields[i]
         return pipeline.analyse_frames(
             frames, n_visits=len(self.plan.by_field[i]), no_data=no_data, failures=failures,
-            where=f"field ra={ra} dec={dec}", should_stop=should_stop,
+            where=f"field ra={ra} dec={dec}", should_stop=should_stop, gaia_down=self.gaia_down,
         )
 
 

@@ -39,6 +39,8 @@ from typing import Any
 import numpy as np
 
 from planetx import pipeline
+from planetx.classify import catalogs
+from planetx.observatories import SPHEREX_ONLY, parse_observatories
 from planetx.spherex import cutouts
 from planetx.survey import patch_frames
 from planetx.survey.candidates import (
@@ -49,7 +51,7 @@ from planetx.survey.candidates import (
     score,
 )
 from planetx.survey.patches import centers, children, patches_containing, validate_nside
-from planetx.survey.queue import Patch
+from planetx.survey.queue import Patch, PatchQueue
 from planetx.survey.worker import PatchAbandoned, PatchContext
 
 log = logging.getLogger(__name__)
@@ -58,7 +60,10 @@ FIELD_NSIDE = 512
 # Fields analysed at once, one process each. A field takes ~20 s of CPU and ~0.5 GB of
 # memory; the M1 this runs on has 4 performance cores (and 4 slower ones) and 16 GB.
 FIELD_PROCESSES = 4
-STOP_POLL_S = 1.0  # how often a patch waiting on its field processes checks should_stop
+STOP_POLL_S = 1.0
+# Gaia (needed for the catalogue check) is asked about a small cone before each patch.
+GAIA_PROBE_RADIUS_ARCSEC = 10.0
+GAIA_PROBE_WAITS_S = (30.0,)  # how often a patch waiting on its field processes checks should_stop
 FIELD_TIMEOUT_S = 1800.0  # a field process that gives no result for this long has died
 FIELD_SIZE_DEG = 0.2  # the largest field the pipeline is validated on
 # Radius every field's frames cover: half the raw cutout's side, less the 0.001 deg
@@ -117,8 +122,9 @@ def _candidate(found: pipeline.FieldObject, field: Field) -> Candidate:
     )
 
 
-FieldOutcome = tuple[int, list[Candidate]] | str
-"""One field's result: (objects owned by the patch, its notable ones), or why it has no data."""
+FieldOutcome = tuple[int, list[Candidate], bool] | str
+"""One field's result: (objects owned by the patch, its notable ones, whether its catalogue
+check could not run), or why it has no data."""
 
 
 def _field_outcome(
@@ -129,14 +135,16 @@ def _field_outcome(
         run = frames.field_run(i, should_stop)
     except pipeline.FieldFailed as exc:
         return str(exc)
+    unchecked = run.catalogue_skipped is not None
     if not run.objects:
-        return 0, []
+        return 0, [], unchecked
     ra = np.array([o.tracked.ra for o in run.objects])
     dec = np.array([o.tracked.dec for o in run.objects])
     mine = (patches_containing(ra, dec, patch.nside) == patch.ipix) & (nearest_field(ra, dec, fields) == i)
     owned = [o for o, keep in zip(run.objects, mine, strict=True) if keep]
     log.debug("patch %d field %d/%d: %d objects, %d here", patch.ipix, i + 1, len(fields), len(run.objects), len(owned))
-    return len(owned), [_candidate(o, fields[i]) for o in owned if is_notable(o.known.kind, o.tracked.is_variable)]
+    found = [_candidate(o, fields[i]) for o in owned if is_notable(o.known.kind, o.tracked.is_variable)]
+    return len(owned), found, unchecked
 
 
 # Set in each field process by _start_field_process: its inputs, or why it could not start.
@@ -204,11 +212,13 @@ def _outcomes(
 
 def _analyse_fields(
     patch: Patch, fields: Sequence[Field], frames: Any, should_stop: Callable[[], bool], processes: int
-) -> tuple[list[Candidate], int, int]:
-    """(notable objects owned by the patch, objects owned, fields without data)."""
+) -> tuple[list[Candidate], int, int, int]:
+    """(notable objects owned by the patch, objects owned, fields without data,
+    fields whose catalogue check could not run)."""
     found: list[Candidate] = []
     owned_objects = 0
     no_data = 0
+    unchecked_fields = 0
     for i, outcome in enumerate(_outcomes(patch, fields, frames, should_stop, processes)):
         field = fields[i]
         if isinstance(outcome, str):
@@ -216,23 +226,27 @@ def _analyse_fields(
                      patch.ipix, i + 1, len(fields), field.ra, field.dec, outcome)
             no_data += 1
             continue
-        owned, notable = outcome
+        owned, notable, unchecked = outcome
         owned_objects += owned
         found += notable
+        unchecked_fields += unchecked
         log.info("patch %d field %d/%d: %d objects here, %d notable so far",
                  patch.ipix, i + 1, len(fields), owned, len(found))
-    return found, owned_objects, no_data
+    return found, owned_objects, no_data, unchecked_fields
 
 
 def analyse_patch(
-    patch: Patch, fields: Sequence[Field], should_stop: Callable[[], bool], processes: int = FIELD_PROCESSES
+    patch: Patch, fields: Sequence[Field], should_stop: Callable[[], bool], processes: int = FIELD_PROCESSES,
+    gaia_down: str | None = None,
 ) -> tuple[list[Candidate], dict[str, Any]]:
     """Run the pipeline on each field; (the patch's notable objects, a JSON summary).
 
     Raises PatchAbandoned when `should_stop()` turns true, and lets
     `archive.UpstreamError` (IRSA down after the retries) through, so the
     queue retries the patch later. A field with too little data
-    (`pipeline.FieldFailed`) is counted and skipped.
+    (`pipeline.FieldFailed`) is counted and skipped. `gaia_down` (why Gaia is
+    unavailable) skips every field's catalogue check; the summary's
+    `fields_unchecked` counts the fields left unchecked, for `requeue_unchecked`.
     """
     if not fields:
         raise ValueError("a patch needs at least one field")
@@ -240,7 +254,8 @@ def analyse_patch(
     requests = [cutouts.cutout_request(f.ra, f.dec, f.size_deg) for f in fields]
     try:
         with patch_frames.load(requests, should_stop) as frames:
-            found, owned_objects, no_data = _analyse_fields(patch, fields, frames, should_stop, processes)
+            frames.gaia_down = gaia_down
+            found, owned_objects, no_data, unchecked = _analyse_fields(patch, fields, frames, should_stop, processes)
     except pipeline.Stopped:
         raise PatchAbandoned("stopped while listing or downloading the patch's cutouts") from None
     log.info("patch %d: %d fields analysed in %.0fs", patch.ipix, len(fields), time.monotonic() - started)
@@ -250,6 +265,7 @@ def analyse_patch(
         "fields": len(fields),
         "fields_analysed": len(fields) - no_data,
         "fields_without_data": no_data,
+        "fields_unchecked": unchecked,
         "objects": owned_objects,
         "candidates": len(found),
         "by_classification": dict(Counter(c.classification or "unchecked" for c in found)),
@@ -264,10 +280,49 @@ def store(db_path: Path, patch: Patch, found: Sequence[Candidate]) -> None:
         candidates.replace_patch(patch.nside, patch.ipix, found, found_at=time.time())
 
 
+def gaia_status(ra: float, dec: float, should_stop: Callable[[], bool]) -> str | None:
+    """Why Gaia cannot answer now, or None when it can (or the catalogue check is off).
+
+    One small cone at (ra, dec), tried again after each of GAIA_PROBE_WAITS_S so a
+    blip does not cost a whole patch's check. Raises PatchAbandoned on a stop.
+    """
+    if parse_observatories() == SPHEREX_ONLY:
+        return None
+    for wait in (*GAIA_PROBE_WAITS_S, None):
+        try:
+            catalogs.fetch_gaia(ra, dec, GAIA_PROBE_RADIUS_ARCSEC)
+            return None
+        except catalogs.CatalogError as exc:
+            if wait is None:
+                return str(exc)
+            log.warning("Gaia did not answer (%s); asking again in %gs", exc, wait)
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if should_stop():
+                raise PatchAbandoned("stopped while waiting for Gaia")
+            time.sleep(min(STOP_POLL_S, max(deadline - time.monotonic(), 0)))
+    raise AssertionError("unreachable")
+
+
 def process_patch(ctx: PatchContext, processes: int = FIELD_PROCESSES) -> dict[str, Any]:
-    """The `motion` processor (see the module docstring)."""
+    """The `motion` processor (see the module docstring).
+
+    The catalogue check needs Gaia. When Gaia is down the patch is still analysed
+    (the engine's work is most of the cost), with classifications left None and
+    `fields_unchecked` counted; the first patch that finds Gaia answering again
+    first returns those patches to the queue, so they are checked after all.
+    """
     patch = ctx.patch
-    found, summary = analyse_patch(patch, patch_fields(patch.ipix, patch.nside), ctx.should_stop, processes)
+    gaia_down = gaia_status(*patch.center, ctx.should_stop)
+    if gaia_down is None and parse_observatories() != SPHEREX_ONLY:
+        with PatchQueue(ctx.db_path) as queue:
+            if n := queue.requeue_unchecked():
+                log.warning("Gaia answers again: %d patch(es) analysed without it are back in the queue", n)
+    elif gaia_down is not None:
+        log.warning("Gaia unavailable (%s): patch %d is analysed without the catalogue check "
+                    "and requeued once Gaia answers", gaia_down, patch.ipix)
+    found, summary = analyse_patch(patch, patch_fields(patch.ipix, patch.nside), ctx.should_stop, processes,
+                                   gaia_down=gaia_down)
     if ctx.should_stop():  # lost the lease while finishing: another worker may be writing
         raise PatchAbandoned("stopped before storing the results")
     store(ctx.db_path, patch, found)
