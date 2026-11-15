@@ -157,31 +157,28 @@ def _g(star: CatalogObject) -> float:
     return star.magnitude if star.magnitude is not None else math.inf
 
 
-def gaia_truth(obj: TrackedObject, catalog: FieldCatalog) -> GaiaVerdict:
-    """What Gaia DR3 says about a track (see the module docstring)."""
+def gaia_truth(obj: TrackedObject, catalog: FieldCatalog, faint: FieldCatalog | None = None) -> GaiaVerdict:
+    """What Gaia DR3 says about a track (see the module docstring).
+
+    `catalog` holds the stars SPHEREx sees in single frames (`visible_gaia`).
+    When none of them lies under every pass, `faint` (all Gaia stars) is asked
+    for one star under every pass: stacks reach fainter, and red stars that are
+    faint in Gaia's G band are bright in SPHEREx's infrared. Only a single star
+    under every pass counts there, never hopping between faint stars, which lie
+    everywhere in a crowded field.
+    """
     per_pass = [
         {i for i, _ in catalog.near(s.ra, s.dec, s.mjd, pass_radius(s))} for s in obj.sources
     ]
     common = set.intersection(*per_pass) if per_pass else set()
+    if not common and faint is not None and len(faint):
+        deep = _one_star_verdict(obj, faint, [
+            {i for i, _ in faint.near(s.ra, s.dec, s.mjd, pass_radius(s))} for s in obj.sources
+        ])
+        if deep is not None:
+            return deep
     if common:
-        # Prefer the star whose own motion agrees best with the track, then the brightest.
-        def badness(i: int) -> tuple[float, float]:
-            st = catalog.objects[i]
-            miss = math.hypot((st.pm_ra_cosdec or 0.0) - obj.pm_ra_cosdec, (st.pm_dec or 0.0) - obj.pm_dec)
-            return (miss, _g(st))
-        star = catalog.objects[min(common, key=badness)]
-        name = f"{star.name} (G {_g(star):.1f})"
-        if star.pm_ra_cosdec is None or star.pm_dec is None:
-            return GaiaVerdict("ambiguous", star, False, f"{name} lies under every pass but has no Gaia proper motion")
-        pm = star.pm_total
-        if pm < STATIC_PM_ARCSEC_YR:
-            return GaiaVerdict("static", star, False, f"{name} lies under every pass and moves only {pm:.3f}\"/yr")
-        if pm > REAL_PM_ARCSEC_YR and pm > REAL_PM_FACTOR * obj.pm_err:
-            return GaiaVerdict("real_mover", star, False, f"{name} lies under every pass and moves {pm:.2f}\"/yr")
-        return GaiaVerdict(
-            "ambiguous", star, False,
-            f"{name} lies under every pass; its {pm:.2f}\"/yr is too slow to tell against SPHEREx's {obj.pm_err:.2f}\"/yr error",
-        )
+        return _one_star_verdict(obj, catalog, per_pass)
     slow = [
         {i for i in found if catalog.objects[i].pm_total < STATIC_PM_ARCSEC_YR * 10} for found in per_pass
     ]
@@ -192,6 +189,34 @@ def gaia_truth(obj: TrackedObject, catalog: FieldCatalog) -> GaiaVerdict:
         )
     n_empty = sum(not found for found in per_pass)
     return GaiaVerdict("ambiguous", None, False, f"no Gaia star (G <= {VISIBLE_G_MAG:g}) under {n_empty} of {len(per_pass)} passes")
+
+
+def _one_star_verdict(obj: TrackedObject, catalog: FieldCatalog, per_pass: list[set[int]]) -> GaiaVerdict | None:
+    """The verdict from the one Gaia star under every pass, or None when there is none."""
+    common = set.intersection(*per_pass) if per_pass else set()
+    if not common:
+        return None
+
+    # Prefer the star whose own motion agrees best with the track, then the brightest.
+    def badness(i: int) -> tuple[float, float]:
+        st = catalog.objects[i]
+        miss = math.hypot((st.pm_ra_cosdec or 0.0) - obj.pm_ra_cosdec, (st.pm_dec or 0.0) - obj.pm_dec)
+        return (miss, _g(st))
+
+    star = catalog.objects[min(common, key=badness)]
+    name = f"{star.name} (G {_g(star):.1f})"
+    if star.pm_ra_cosdec is None or star.pm_dec is None:
+        return GaiaVerdict("ambiguous", star, False, f"{name} lies under every pass but has no Gaia proper motion")
+    pm = star.pm_total
+    if pm < STATIC_PM_ARCSEC_YR:
+        return GaiaVerdict("static", star, False, f"{name} lies under every pass and moves only {pm:.3f}\"/yr")
+    if pm > REAL_PM_ARCSEC_YR and pm > REAL_PM_FACTOR * obj.pm_err:
+        return GaiaVerdict("real_mover", star, False, f"{name} lies under every pass and moves {pm:.2f}\"/yr")
+    return GaiaVerdict(
+        "ambiguous", star, False,
+        f"{name} lies under every pass; its {pm:.2f}\"/yr is too slow to tell against SPHEREx's "
+        f"{obj.pm_err:.2f}\"/yr error",
+    )
 
 
 # --- pixel and track checks ------------------------------------------------------
@@ -484,9 +509,10 @@ def audit_objects(
 ) -> list[MoverAudit]:
     """`audit_result` for any of the run's objects (e.g. near-movers held back by the 1 px bar)."""
     catalog = visible_gaia(stars)
+    everything = FieldCatalog([s for s in stars if s.catalog == "gaia"])
     out = []
     for obj in objects:
-        verdict = gaia_truth(obj, catalog)
+        verdict = gaia_truth(obj, catalog, everything)
         cause, evidence, numbers = diagnose(obj, result, catalog, verdict)
         st = verdict.star
         out.append(MoverAudit(

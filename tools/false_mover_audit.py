@@ -318,6 +318,20 @@ def load_engine(path: str):
     return module.find_motion
 
 
+def public_command(argv: list[str]) -> str:
+    """The command line as the results file shows it: local paths (a home directory) left out."""
+    import shlex
+
+    out, hide = [], {"--baseline-engine": "DIR", "--out": None}
+    for k, arg in enumerate(argv):
+        flag = argv[k - 1] if k else ""
+        if flag in hide:
+            out.append(hide[flag] or Path(arg).name)
+        else:
+            out.append(arg)
+    return "uv run python tools/false_mover_audit.py " + shlex.join(out)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fields", help="comma-separated field names (default: every cached field)")
@@ -350,7 +364,8 @@ def main() -> None:
         try:
             frames = load_frames(spec)
         except (FileNotFoundError, KeyError, ValueError) as exc:
-            notes.append(f"{spec.name}: skipped ({exc})")
+            # The note goes into a published file: the exception type, not its local paths.
+            notes.append(f"{spec.name}: skipped ({type(exc).__name__}: its cached cutouts are incomplete)")
             print(f"{spec.name}: skipped ({exc})", flush=True)
             continue
         if len(frames) < 10:
@@ -371,7 +386,7 @@ def main() -> None:
     out = {
         "name": "false_movers", "version": 1,
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "command": "uv run python tools/false_mover_audit.py " + " ".join(sys.argv[1:]),
+        "command": public_command(sys.argv[1:]),
         "notes": [*NOTES, *notes],
         "fields": audit.fields,
         "movers": [m.to_json() for m in audit.movers],
@@ -381,7 +396,7 @@ def main() -> None:
     }
     if baseline is not None:
         out["baseline"] = {
-            "engine": args.baseline_label or args.baseline_engine, **baseline.summaries(),
+            "engine": args.baseline_label or Path(args.baseline_engine).name, **baseline.summaries(),
             "movers": [m.to_json() for m in baseline.movers],
             "near_movers": [m.to_json() for m in baseline.near],
             "fast_stars": fm.clean_json(baseline.fast),

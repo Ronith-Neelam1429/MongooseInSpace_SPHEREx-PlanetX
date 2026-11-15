@@ -123,6 +123,19 @@ def test_static_star_without_a_pixel_problem_is_fake_for_another_reason():
     assert (a.truth, a.cause) == ("static", "other")
 
 
+def test_star_too_faint_for_single_frames_still_settles_the_truth():
+    # Stacks reach below G 19.5 (and red stars are faint in G): one faint static
+    # Gaia star under every pass still shows the motion is not real ...
+    r = _run([_walk(0, 0, 2.5)])
+    (a,) = fm.audit_result(r, [_star(1.2, 0, g=20.6)], field_ra=150, field_dec=20)
+    assert a.truth == "static" and a.gaia_g_mag == pytest.approx(20.6)
+    # ... but faint stars under different passes are not a "hop": they are everywhere.
+    track = _walk(-10, 0, 10.0)
+    hop = [_star(e, n, g=20.6, name=f"Gaia DR3 {k}") for k, (e, n) in enumerate(track)]
+    (b,) = fm.audit_result(_run([track]), hop, field_ra=150, field_dec=20)
+    assert (b.truth, b.cause) == ("ambiguous", None)
+
+
 def test_track_hopping_between_static_stars_is_a_chance_link():
     # Each pass sits on a different slow Gaia star 10" apart.
     track = _walk(-10, 0, 10.0)
