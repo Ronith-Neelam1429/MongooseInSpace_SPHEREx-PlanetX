@@ -248,6 +248,49 @@ curl 'http://127.0.0.1:8000/api/spectrum?ra=331.04415&dec=-56.78284&pmra=3982&pm
 # Eps Indi B: T-dwarf shape (J/H/K peaks, deep 3.3 um methane, 4 um peak): "suggests a cool brown dwarf"
 ```
 
+### `GET /api/object/profile?ra=&dec=&gaia_id=&name=&pmra=&pmdec=&pm_err=&mag=`
+Everything the catalogues say about one focused object (`ObjectProfile`): identity, distance,
+size and temperature, motion and Galactic population, a 20,000-year sky path with closest
+approach, plain `why_moving` sentences, and companions or a Gaia "wobble" hint. Answers in
+~3 s (at most ~30 s); the same request is served from memory for an hour (two minutes when
+a catalogue failed). **Every part may be null**, and a catalogue that fails or runs late
+becomes a sentence in `notes`: the status is 200 unless a parameter is invalid (422).
+- `ra`, `dec`: the object's position now (or engine-measured). `gaia_id` (digits) and `name`
+  (SIMBAD name, at most 100 characters) skip the position search when known.
+- `pmra`, `pmdec`, `pm_err` (mas/yr, RA component includes cos dec, |value| <= 20,000): a
+  motion measured on the page, used only when no catalogue has one (`motion.source: "measured"`).
+  `mag`: used only for `abs_mag_g` when Gaia has no G.
+- Lookups: Gaia DR3 from IRSA Gator (`gaia_dr3_source`): the brightest star whose track since
+  2025.3 passes within 5" (10" when `pmra/pmdec` >= 1"/yr). A fast star has moved far from its
+  2016 position, so the search adds a 160" cone of stars faster than 1"/yr. SIMBAD (Harvard
+  mirror) by name, else by Gaia id, else within 5" after moving J2000 positions by their
+  motion. Gaia FLAME/GSP-Phot parameters from VizieR `I/355/paramp` (Harvard mirror).
+- `distance.source`: `gaia_parallax` | `simbad_parallax` (>= 3 sigma; 3-5 sigma has a `note`) |
+  `photometric_estimate` (Gaia GSP-Phot). `light_left_year` is negative for BCE.
+- `physical`: Gaia FLAME values where they exist, otherwise estimates named in the `*_source`
+  fields (Stefan-Boltzmann radius from luminosity and temperature, luminosity from absolute G
+  and a bolometric correction, main-sequence mass). The JSON key is `class` (the Python model
+  field is `class_`). Added beyond the first contract: `luminosity_source`.
+- `motion.source`: `gaia` | `simbad` | `measured` (`simbad` added beyond the first contract).
+  `uvw_km_s` (U toward the Galactic centre) and `population` need a distance and a radial
+  velocity. Population cuts on the speed relative to the local standard of rest: thin disk
+  < 85 km/s, thick disk < 180, halo above. `estimated_distance_pc` = [lo, hi] for a motion
+  without a distance, assuming 20-100 km/s.
+- `path`: 41 points centred on now. With a distance: astropy `apply_space_motion` over
+  20,000 years (`dist_ly` and `closest_approach` only with a radial velocity). Without a
+  distance: a great circle over 2,000 years.
+- `gravity.companions`: Gaia stars within 0.5 pc projected (cone capped at 15') whose parallax
+  agrees within 3 sigma plus the projected separation as depth, and whose motion agrees within
+  10 % (at least 3 mas/yr); `likely` when within 5 % and 2 sigma. `period_yr` is Kepler III
+  from the projected separation and estimated masses. Not searched for parallaxes under
+  5 sigma or motions under 20 mas/yr. `wobble_hint`: RUWE > 1.4.
+- `solar_system` is reserved for asteroids and comets and is always null for now.
+
+```sh
+curl 'http://127.0.0.1:8000/api/object/profile?ra=269.4473&dec=4.7685'
+# Barnard's Star: 1.83 pc, 90 km/s across + -110 km/s radial, thick disk, closest 3.77 ly in 11736
+```
+
 ## Errors
 
 | Status | Meaning |
