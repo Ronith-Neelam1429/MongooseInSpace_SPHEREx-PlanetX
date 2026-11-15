@@ -200,8 +200,9 @@ function SurveyProgress({ survey }) {
 function GaiaAgreement({ file, index }) {
   const doc = file?.status === 'ok' ? file.doc : null;
   const pts = useMemo(() => gaiaPoints(doc), [doc]);
-  const resid = useMemo(() => pts.flatMap((p) => p.resid), [pts]);
-  const pulls = useMemo(() => pts.flatMap((p) => p.pull), [pts]);
+  // Histograms use clean matches only (no blend or chance-match doubt), as summary.pull_std does.
+  const resid = useMemo(() => pts.filter((p) => p.clean).flatMap((p) => p.resid), [pts]);
+  const pulls = useMemo(() => pts.filter((p) => p.clean).flatMap((p) => p.pull), [pts]);
   const words = confusionText(doc?.summary?.confusion);
   const spread = doc?.summary?.pull_std ?? stdDev(pulls);
   const outside = (vals, lo, hi) => vals.filter((v) => v < lo || v >= hi).length;

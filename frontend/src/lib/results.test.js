@@ -90,6 +90,14 @@ describe('causeRows', () => {
   });
 });
 
+describe('gaia points clean flag', () => {
+  it('keeps the clean flag, treating rows without it as clean', () => {
+    const row = { spherex_pm_ra: 0, spherex_pm_dec: 0, spherex_pm_err: 1, gaia_pm_ra: 0, gaia_pm_dec: 0 };
+    expect(gaiaPoints({ objects: [row, { ...row, clean: false }, { ...row, clean: true }] }).map((p) => p.clean))
+      .toEqual([true, false, true]);
+  });
+});
+
 describe('injection heatmap', () => {
   const doc = {
     grid: [

@@ -140,6 +140,8 @@ export function gaiaPoints(doc) {
       gMag: o.g_mag,
       truth: o.truth,
       mover: Boolean(o.engine_is_mover),
+      // Rows without the flag (older files) count as clean; the summary's pull_std uses clean rows only.
+      clean: o.clean !== false,
       resid: [sra - gra, sdec - gdec],
       pull: [(sra - gra) / err, (sdec - gdec) / err],
     });
