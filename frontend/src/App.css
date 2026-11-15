@@ -123,7 +123,7 @@
 
 .iconbtn {
   width: 32px; height: 32px; display: inline-grid; place-items: center; padding: 0; flex: none;
-  background: #000; border: 1px solid var(--line); color: var(--fg);
+  background: var(--bg); border: 1px solid var(--line); color: var(--fg);
 }
 .iconbtn:hover:not(:disabled) { border-color: var(--fg); }
 .iconbtn:disabled { color: var(--faint); cursor: default; }
@@ -141,7 +141,7 @@
 .btn:hover { background: transparent; color: var(--fg); }
 
 /* ---------- panel ---------- */
-.panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #000; border-left: 1px solid var(--line); }
+.panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); color: var(--fg); border-left: 1px solid var(--line); }
 .panel-head { padding: 22px 28px 22px; border-bottom: 1px solid var(--line); }
 .panel-tools { display: flex; justify-content: space-between; align-items: center; min-height: 28px; }
 .tools { display: flex; align-items: center; gap: 16px; }
@@ -188,7 +188,7 @@
 .rowlist { margin: 10px -10px 0; padding: 0; list-style: none; }
 .row {
   display: grid; align-items: baseline; column-gap: 10px; width: 100%; padding: 8px 10px; background: none; border: 0;
-  border-top: 1px solid #141413; text-align: left; font-size: 12px; font-variant-numeric: tabular-nums;
+  border-top: 1px solid var(--rule); text-align: left; font-size: 12px; font-variant-numeric: tabular-nums;
 }
 .row:hover, .row:focus, .row.lit { background: var(--hover); }
 .row.lit { box-shadow: inset 2px 0 0 var(--fg); }
@@ -201,7 +201,7 @@
 .row-type, .row-sub, .row-score { color: var(--dim); }
 .row-pm, .row-score { text-align: right; }
 .badge {
-  padding: 1px 6px; border: 1px solid rgba(92, 225, 255, 0.45); color: var(--measured);
+  padding: 1px 6px; border: 1px solid color-mix(in srgb, var(--measured) 45%, transparent); color: var(--measured);
   font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap;
 }
 
@@ -274,6 +274,30 @@
   .with-panel .readout { display: none; }
   .zoom { display: none; }
   .lambda, .hud-note { margin-right: 0; }
+}
+
+/* ---------- the patch's verdict and an object's: one line first, then the rest ---------- */
+.verdict-line {
+  font-family: var(--serif); font-weight: 400; font-size: 26px; line-height: 1.1; letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.verdict-line + .line, .verdict-line + .lede { margin-top: 10px; }
+.summary .btn { margin: 16px 0 8px; }
+.summary .progress, .summary .state { margin-top: 12px; }
+.panel-body section > .player { margin-top: 14px; }
+.card-head .title { margin-top: 6px; }
+.card-verdict .lede { margin-top: 10px; }
+.card-verdict .line { margin-top: 8px; }
+.card-said { margin-top: 14px; display: grid; gap: 6px; }
+.more > .facts { margin-top: 14px; }
+.more > .facts + .kv { margin-top: 16px; }
+/* The card's sections already carry the rule and spacing. */
+.panel-body > section > .ev-proof { margin-top: 0; padding-top: 0; border-top: 0; }
+.more.ev > .ev-exp { margin-top: 10px; padding-top: 0; border-top: 0; }
+.more.ev > .ev-exp > h5 { display: none; }
+
+@media (max-width: 760px) {
+  .verdict-line { font-size: 22px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

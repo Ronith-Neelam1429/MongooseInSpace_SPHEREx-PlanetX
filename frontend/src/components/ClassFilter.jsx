@@ -3,9 +3,16 @@ import { CLASSES, SHOW_ALL, SHOW_MOVING, isAll, isMovingOnly } from '../lib/clas
 
 const count = (n) => n.toLocaleString('en-US');
 
+// The colour tokens of index.css that match each class's canvas colour, so a glyph follows the
+// theme of what it sits on (the panel can be light; the map is always dark).
+const TOKEN = {
+  candidate: 'var(--measured)', mover: 'var(--measured)', fast: 'var(--signal)', variable: 'var(--variable)',
+  star: 'var(--fg)', galaxy: 'var(--galaxy)', other: 'var(--dim)',
+};
+
 /** The legend glyph of a class, drawn the way the map draws it. */
 export function ClassMark({ cls, size = 12 }) {
-  const c = `rgb(${cls.rgb})`;
+  const c = TOKEN[cls.id] || `rgb(${cls.rgb})`;
   const h = size / 2;
   let shape;
   if (cls.mark === 'dot') shape = <circle cx={h} cy={h} r={size * 0.22} fill={c} />;
