@@ -36,11 +36,6 @@ def run(target: str, detectors=None, per_pass: int = 6, stack: bool = False):
     return coord, find_motion(frames, stack=stack)
 
 
-# Known problem: WISE 0855's stacked significance (5.5 sigma with per-detector stacks) rests on
-# hand-set centroid errors. Strict, so a fix shows up as XPASS.
-STACK_ORDER_REASON = "WISE 0855's stacked significance rests on uncalibrated centroid errors"
-
-
 def sep(coord, obj) -> float:
     return coord.separation(SkyCoord(obj.ra, obj.dec, unit="deg")).arcsec
 
@@ -91,16 +86,13 @@ def test_north_ecliptic_pole_is_measured_in_time_windows():
     assert r.pm_floor_arcsec_yr < 0.5
 
 
-@pytest.mark.xfail(strict=True, reason=STACK_ORDER_REASON)
 def test_wise0855_motion_measured_in_stacks():
-    # Too faint for single frames; found in per-pass stacks. Direction and
-    # speed come out right, but its stacked positions scatter more than their
-    # errors allow (and more than a physical parallax explains), so its
-    # significance is ~3 sigma and the engine rightly withholds "mover".
-    # Literature: ~8.1"/yr at PA ~275.
+    # Too faint for single frames; found in per-detector, per-pass stacks. With
+    # position errors calibrated on the field's static stars it is a 10 sigma
+    # mover (7.05"/yr PA 276, 2026-11-14). Literature: ~8.1"/yr at PA ~275.
     coord, r = run("wise0855", stack=True)
-    assert r.movers == []
     (w,) = [o for o in r.objects if sep(coord, o) < 10]
+    assert r.movers == [w]
     assert w.pm_total == pytest.approx(8.1, rel=0.15)
     assert angle_diff(w.position_angle_deg, 275.0) < 12
-    assert w.pm_significance > 2.5
+    assert w.pm_significance >= 5

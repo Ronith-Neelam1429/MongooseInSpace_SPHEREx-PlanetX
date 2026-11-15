@@ -531,3 +531,27 @@ def test_stacks_per_detector_keep_a_faint_red_object():
     assert m is nearest(r, e0 - 4.0, n0)
     assert m.pm_ra_cosdec == pytest.approx(-8.0, abs=3.0)
     assert all({d.detector for d in s.detections} == {3} for s in m.sources)
+
+
+def test_position_errors_are_calibrated_on_the_fields_static_stars():
+    # 200 static stars whose pass positions scatter by 0.5" while their errors
+    # say 0.25": the field's own stars say errors are twice too small. One
+    # star sits far off its line (a blend) and must not drag the factor.
+    from planetx.engine.motion import _error_scale
+
+    rng = np.random.default_rng(19)
+    plane = SkyPlane(150.0, 20.0)
+    groups = []
+    for k in range(200):
+        e0, n0 = rng.uniform(-150, 150, 2)
+        g = []
+        for p, mjd in enumerate(PASS_MJDS):
+            de, dn = rng.normal(0, 0.5, 2) + (30.0 if k == 0 and p == 1 else 0.0)
+            ra, dec = plane.sky(e0 + de, n0 + dn)
+            g.append(PassSource(p, float(ra), float(dec), 0.25, mjd, 8, 8, 50.0, {}, []))
+        groups.append(g)
+    scale, used = _error_scale(groups, plane)
+    assert used == 199
+    assert scale == pytest.approx(2.0, rel=0.1)
+    # Too few static stars: keep the global error model.
+    assert _error_scale(groups[1:4], plane) == (1.0, 0)

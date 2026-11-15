@@ -15,8 +15,10 @@ Pipeline (all in sky coordinates, so frames never need resampling):
    - "mover" links for sources left unmatched, allowing up to
      `max_pm_arcsec_yr` of motion and requiring similar brightness.
 6. Fit linear motion to every linked object; flag it as a mover when the
-   motion is significant against both its own errors and the field's
-   systematic floor (measured from the static stars).
+   motion is significant against its errors. Position errors are first
+   calibrated on the field's static stars (how far they stray from straight
+   lines), and a proper-motion floor is added if static stars' fitted
+   motions still exceed their errors.
 7. Compare per-pass fluxes in the same detector to flag variables.
 
 Intra-pass motion (fast asteroids moving within one visit) is not handled yet.
@@ -47,9 +49,27 @@ MAX_PASS_DAYS = 60.0
 # Per-pass position floor for saturated stars. Measured on Barnard's Star
 # against Gaia (detectors 1-3 and 4-6, 3 passes): per-axis scatter ~0.8"
 # (0.13 px). 0.2 px keeps ~50% margin; fits came out chi2/dof ~0.6-0.7 at
-# 0.25 px, i.e. errors overstated. Revisit with more saturated stars.
+# 0.25 px, i.e. errors overstated. The six calibration fields hold only two
+# saturated static stars, too few to re-derive it; revisit with more.
 SATURATED_PASS_FLOOR_PX = 0.2
-PASS_FLOOR_ARCSEC = 0.3
+# Per-pass position floor (alignment residuals and the like, which averaging a
+# pass's frames can't beat), fitted with the detect.CENTROID_* constants to
+# the pass-to-pass scatter of static stars; the second is for stacks.
+PASS_FLOOR_ARCSEC = 0.08
+STACK_PASS_FLOOR_ARCSEC = 0.0  # stacks: the fit put all of it in STACK_CENTROID_FLOOR_PX
+# Per-field calibration of position errors (`_error_scale`): static tracks
+# needed, and the weight (in degrees of freedom) of the fitted global model,
+# which a field's own static stars then pull the scale away from.
+CALIB_MIN_TRACKS = 5
+CALIB_PRIOR_DOF = 20
+# Static tracks off a straight line by more than this chance (blends, chance
+# links) don't take part in the calibration.
+CALIB_OUTLIER_PVALUE = 1e-3
+# Linking decisions (does this source continue that track?) add this to every
+# position error: a straight line can't follow parallax (Eps Indi B: 0.28",
+# WISE 0855: 0.44"), and calibrated errors of bright stars (~0.1") would
+# otherwise cut a nearby star's track in pieces. Fits don't use it.
+LINK_FLOOR_ARCSEC = 0.3
 # Saturated patch this large marks a very bright star (R Dra: ~90-100 px).
 BRIGHT_SAT_AREA_PX = 50
 BRIGHT_CAUTION_ARCSEC = 150.0
@@ -128,6 +148,9 @@ class EngineResult:
     input_frames: list[Frame] = field(default_factory=list)
     input_passes: list[list[int]] = field(default_factory=list)  # into input_frames
     stacked: bool = False
+    # Factor applied to unsaturated pass-position errors, from this field's
+    # static stars (1.0 when there were too few to tell).
+    position_error_scale: float = 1.0
 
     @property
     def movers(self) -> list[TrackedObject]:
@@ -341,10 +364,11 @@ def _merge_pass(
         w = weights[c]
         formal = float(1 / np.sqrt(w.sum()))
         n = len(members)
-        scatter = float(np.hypot(mx.std(), my.std()) / np.sqrt(2 * n)) if n > 2 else 0.0
-        # Alignment leaves ~0.1-0.3" residuals per pass (measured from static
-        # stars), which averaging many frames of a bright star can't beat.
-        sigma = float(np.hypot(max(formal, scatter), PASS_FLOOR_ARCSEC))
+        # (Not for stacks: a pass's few per-detector stacks differ by colour, not noise.)
+        scatter = float(np.hypot(mx.std(), my.std()) / np.sqrt(2 * n)) if n > 2 and not stacked else 0.0
+        # The within-pass scatter guards against passes worse than their
+        # detections' errors say (e.g. a neighbour pulling some centroids).
+        sigma = float(np.hypot(max(formal, scatter), STACK_PASS_FLOOR_ARCSEC if stacked else PASS_FLOOR_ARCSEC))
         if any(dets[m].saturated for m in members):
             # Saturated-patch centres share a bias that averaging can't remove.
             sigma = max(sigma, SATURATED_PASS_FLOOR_PX * frames[frame_ids[0]].pixel_scale_arcsec)
@@ -538,7 +562,69 @@ def _line_pvalue(sources: list[PassSource], plane: SkyPlane) -> float:
     """
     x, y = _source_offsets(plane, sources)
     t = np.array([s.mjd for s in sources]) / DAYS_PER_YEAR
-    return float(_line_pvalues(x, y, t, np.array([s.sigma_arcsec for s in sources])))
+    sig = np.hypot(np.array([s.sigma_arcsec for s in sources]), LINK_FLOOR_ARCSEC)
+    return float(_line_pvalues(x, y, t, sig))
+
+
+def _error_scale(groups: list[list[PassSource]], plane: SkyPlane) -> tuple[float, int]:
+    """Factor by which this field's static stars say unsaturated pass errors are off.
+
+    How far static stars' pass positions stray from straight lines measures
+    the field's real position errors (crowding, PSF, alignment differ from
+    field to field). The squared factor is their chi2 per degree of freedom,
+    pulled towards 1 (the global error model) with weight `CALIB_PRIOR_DOF`
+    so a sparse field can't swing it far. Tracks fitting a line worse than
+    `CALIB_OUTLIER_PVALUE` at the current factor are left out (blends, chance
+    links). Saturated stars have their own floor and are left out too.
+
+    Returns (factor, static tracks used); (1.0, 0) when there are too few.
+    """
+    tracks = [
+        g for g in groups
+        if len(g) >= 3 and not any(d.saturated for s in g for d in s.detections)
+    ]
+    if len(tracks) < CALIB_MIN_TRACKS:
+        return 1.0, 0
+    chi2 = np.empty(len(tracks))
+    dof = np.empty(len(tracks))
+    for k, g in enumerate(tracks):
+        x, y = _source_offsets(plane, g)
+        t = np.array([s.mjd for s in g]) / DAYS_PER_YEAR
+        chi2[k] = _fit_line(x, y, t, np.array([s.sigma_arcsec for s in g]))[4]
+        dof[k] = 2 * (len(g) - 2)
+    scale2 = 1.0
+    for _ in range(5):
+        keep = chdtrc(dof, chi2 / scale2) >= CALIB_OUTLIER_PVALUE
+        new = (chi2[keep].sum() + CALIB_PRIOR_DOF) / (dof[keep].sum() + CALIB_PRIOR_DOF)
+        if np.isclose(new, scale2):
+            break
+        scale2 = new
+    return float(np.sqrt(scale2)), int(keep.sum())
+
+
+def _pm_floor(pm_x: np.ndarray, pm_y: np.ndarray, pm_err: np.ndarray) -> float:
+    """Extra proper-motion error (arcsec/yr) that static stars' fitted motions need.
+
+    Static stars should show motions consistent with their errors: then
+    (pm / err)^2 summed over both axes is chi2 with 2 degrees of freedom,
+    median 2 ln 2. If the median is larger, systematics their position errors
+    don't capture are at work, and the floor F added in quadrature to every
+    error brings it back. Real motions of field stars (mostly << 0.1"/yr) count
+    as such systematics, which only errs on the cautious side.
+    """
+    z2 = pm_x**2 + pm_y**2
+    target = 2 * np.log(2)
+
+    def excess(floor: float) -> float:
+        return float(np.median(z2 / (pm_err**2 + floor**2))) - target
+
+    if excess(0.0) <= 0:
+        return 0.0
+    lo, hi = 0.0, float(np.sqrt(z2.max()))
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if excess(mid) > 0 else (lo, mid)
+    return hi
 
 
 def _flux_compatible(a: PassSource, b: PassSource, max_ratio: float) -> bool:
@@ -955,7 +1041,7 @@ def _link_movers(
         return [], []
     px, py = _source_offsets(plane, pool)
     pt = np.array([s.mjd for s in pool]) / DAYS_PER_YEAR
-    psig = np.array([s.sigma_arcsec for s in pool])
+    psig = np.hypot(np.array([s.sigma_arcsec for s in pool]), LINK_FLOOR_ARCSEC)
     ppass = np.array([s.pass_index for s in pool])
     in_pass = [np.nonzero(ppass == pk)[0] for pk in range(n_passes)]
     # A pair is never linked across more than the fastest motion over the
@@ -1108,6 +1194,15 @@ def find_motion(
     groups = _link_static(per_pass, plane, static_arcsec)
     multi = [g for g in groups if len(g) >= 2]
     singles = [g[0] for g in groups if len(g) == 1]
+    # Calibrate position errors on this field's static stars before anything
+    # (linking, fits, significances) relies on them.
+    error_scale, n_calib = _error_scale(multi, plane)
+    if n_calib:
+        for srcs in per_pass:
+            for s in srcs:
+                if not any(d.saturated for d in s.detections):
+                    s.sigma_arcsec *= error_scale
+        notes.append(f"position errors scaled by {error_scale:.2f} to match {n_calib} static stars")
 
     # --- mover linking among sources seen in only one pass ---------------------
     # A single-pass source only counts as "missing" elsewhere if another pass
@@ -1133,11 +1228,7 @@ def find_motion(
             continue
     floor_pm = 0.0
     if len(raw) >= 5:
-        pms = np.hypot([r[3] for r in raw], [r[4] for r in raw])
-        # Static stars' apparent motions are what alignment and centroid
-        # systematics alone produce. Their 2-D magnitude is Rayleigh-distributed,
-        # whose median is sigma*sqrt(ln 4); invert for the per-axis sigma.
-        floor_pm = float(np.median(pms) / np.sqrt(np.log(4)))
+        floor_pm = _pm_floor(np.array([r[3] for r in raw]), np.array([r[4] for r in raw]), np.array([r[5] for r in raw]))
     else:
         notes.append("too few static stars to measure the systematic floor")
 
@@ -1231,5 +1322,6 @@ def find_motion(
         objects=objects,
         unlinked=unlinked,
         pm_floor_arcsec_yr=floor_pm,
+        position_error_scale=error_scale,
         notes=notes,
     )
